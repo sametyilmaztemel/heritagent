@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Experiment artifacts (large outputs; manifests and analysis docs stay in git)
+/results/
+/checkpoints/
+/runs/
+*.log
+
+# Local model caches and benchmark data
+/data/
+models/
+*.gguf
+*.safetensors
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Secrets / local config
+.env
+.env.local
+config/local/
