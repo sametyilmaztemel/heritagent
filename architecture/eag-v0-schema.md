@@ -1,6 +1,6 @@
 # EAG v0 — Executable Agent Genome, schema proposal
 
-**Status: PROPOSAL — pending cross-review** (SPEC §31/§32: builder proposes, research role critiques; no implementation until reviewed). Author: builder-role session, 2026-10-02. Decision recorded in `research/decisions/ADR-0001-eag-v0-schema.md`.
+**Status: REVISED after critic round 1 (2026-10-02) — re-review requested.** Originally proposed 2026-10-02 (builder role); revised same day per Research/Critic review on PR #1 / issue #3 — see §7 "Review resolution". Decision recorded in `research/decisions/ADR-0001-eag-v0-schema.md`.
 
 ## 1. Scope and goals
 
@@ -18,14 +18,14 @@ Design goals:
 
 - **D1 — Two-layer design.** `Genome` (this schema) references `Gene` artifacts stored in a trait registry keyed by content hash. Gene payload formats per type:
   - `policy`: JSON config (e.g. planner params, retry budget, retrieval top-k) + optional prompt-template file reference.
-  - `skill`: markdown skill doc with structured frontmatter (`name`, `purpose`, `when_to_apply`, `procedure`) — Voyager/SkillRL-compatible so baselines can consume it unchanged.
+  - `skill`: markdown skill doc with structured frontmatter that is a **SkillRL-compatible superset**: `name`, `principle`, `when_to_apply` (SkillRL field names, so baselines consume them unchanged) plus a `procedure[]` list whose entries carry **stable step IDs** (e.g. `S1`, `S2`). M0 gates and scores the skill as a whole; stable step IDs are reserved so future SkillShapley-style step attribution needs no re-extraction. A projection adapter strips `procedure[]` (and maps fields 1:1) to yield a strict SkillRL skill for the baseline arm.
   - `regulatory`: a named predicate (v0: counter-based; see D5).
 - **D2 — Gene slots.** v0 slots: `cognition.planner`, `cognition.verifier`, `cognition.reflection`, `memory.retrieval`, `memory.compression`, `execution.tool_selector`, `execution.retry_policy`, `execution.error_recovery`, plus `skills[]` (open list). Each slot is optional; absence = framework default (explicitly recorded, not implicit).
 - **D3 — Provenance is mandatory** (`origin`: seed | mutation | recombination | assimilation; `source_trajectory`; `cig_record` for assimilated genes; `born_generation`). This is what makes the Lineage Graph (SPEC §13) derivable rather than separately maintained.
-- **D4 — Somatic envelope.** Somatic candidates: same geneRef + `validation: {state: candidate|rejected|validated, gate_reports: [...]}`. The gate reports are CIG stage outputs (see §4).
-- **D5 — Regulation v0**: `express_when` map from gene_id → predicate over runtime counters (`consecutive_failures`, `failing_tools`, `repeated_tool_error`, `steps_without_progress`, `task_type`). Ablation tooling MUST evaluate regulated genes under their conditions (SkillShapley lesson: unconditional ablation misvalues conditionally-expressed genes).
+- **D4 — Somatic envelope.** Somatic candidates: same geneRef + `validation: {state: candidate|rejected|validated, gate_reports: [...]}`. Each gate report references the **aggregate CIG record** for the candidate; per-seed/per-run raw measurements live in that record's immutable children (see §4).
+- **D5 — Regulation v0**: `express_when` map from gene_id → predicate over **agent-observable runtime counters only** (`consecutive_failures`, `failing_tools`, `repeated_tool_error`, `steps_without_progress`). Environment-label predicates (e.g. `task_type`) are excluded from the runtime regulation vocabulary: they would leak oracle task labels into gene expression. Trait specialization is expressed as applicability metadata in the trait itself (`when_to_apply` in skill payloads), which is evaluated evidence-side, not as a genotype-level environment predicate. Ablation tooling MUST evaluate regulated genes under their conditions (SkillShapley lesson: unconditional ablation misvalues conditionally-expressed genes).
 - **D6 — Versioning.** `schema_version` for the manifest format; `gene.version` integer, monotonically increased on artifact change; `genome_id` = `G-<content-hash-prefix>`; lineage edges store genome-id pairs + typed diffs (SPEC §13 JSON).
-- **D7 — Fitness is NOT stored in the genome.** Fitness vectors live in the evaluation store keyed by (genome_id, env, seed). Genomes stay pure specification; no Lamarckian shortcut of baking scores into heritable state.
+- **D7 — Evaluation metadata is NOT stored in the genome.** Fitness vectors live in the evaluation store keyed by (genome_id, env, seed); backbone evidence lives in a separate **BackboneEvaluationRegistry** keyed by `(genome_id, model_hash, benchmark, seed)`. Genomes stay pure specification; no Lamarckian shortcut of baking scores into heritable state, and no implied "tested-on" claims inside the genotype (SPEC §34 anti-overclaim).
 
 ## 3. JSON Schema (draft 2020-12)
 
@@ -43,8 +43,6 @@ Design goals:
     "lineage_id":        {"type": "string"},
     "parent":            {"type": ["string", "null"],
                           "description": "parent genome_id; null for founders"},
-    "backbone_tested":   {"type": "array", "items": {"type": "string"},
-                          "description": "advisory only; informational, not a constraint"},
     "genes": {
       "type": "object",
       "properties": {
@@ -127,9 +125,10 @@ Design goals:
       "required": ["metric", "op", "value"],
       "properties": {
         "metric": {"enum": ["consecutive_failures", "failing_tools", "repeated_tool_error",
-                            "steps_without_progress", "task_type"]},
+                            "steps_without_progress"],
+                   "description": "agent-observable runtime counters only; environment labels (task_type etc.) are excluded by design"},
         "op":     {"enum": [">=", ">", "==", "<", "<="]},
-        "value":  {"type": ["number", "string"]}
+        "value":  {"type": "number"}
       },
       "additionalProperties": false
     }
@@ -141,7 +140,28 @@ Design goals:
 
 **Somatic trait envelope** (`somatic/0.1`): `{"candidate": <geneRef>, "validation": {"state": "candidate|rejected|validated", "gate_reports": [<CIGRecordId>]}}`.
 
-**CIG record** (`cig/0.1`): one per candidate evaluation — `{"cig_id", "candidate_gene_id", "genome_id", "stages": {"replay": {...measurements, threshold, pass}, "ablation": {...}, "generalization": {...}, "interaction_regression": {...}}, "verdict": "reject|promote", "thresholds_used": {...}, "artifacts": {...}}`. Written before thresholds are re-tuned (SPEC §33 pre-registration applies at the trait level too).
+**CIG record** (`cig/0.1`) — **two-level evidence structure**: one **aggregate record** per candidate carrying the verdict, plus **immutable per-seed/per-run child records** with the raw stage measurements. The aggregate references its children (e.g. `CIG-0042` → `CIG-0042/S11`, `CIG-0042/S23`, `CIG-0042/S41`); children are append-only and never edited. This keeps the genome and somatic envelope free of evaluation detail while preserving full auditability and per-seed noise analysis.
+
+```json
+{
+  "cig_id": "CIG-0042",
+  "candidate_gene_id": "look_before_heat_v1",
+  "genome_id": "G-0f1e2d3c",
+  "child_records": ["CIG-0042/S11", "CIG-0042/S23", "CIG-0042/S41"],
+  "stages": {
+    "replay":                {"measurements_ref": "children", "threshold": "...", "pass": true},
+    "ablation":              {"measurements_ref": "children", "threshold": "...", "pass": true},
+    "generalization_in_scope":  {"measurements_ref": "children", "threshold": "...", "pass": true},
+    "generalization_out_of_scope": {"measurements_ref": "children", "threshold": "...", "pass": true},
+    "interaction_regression":{"measurements_ref": "children", "threshold": "...", "pass": true}
+  },
+  "verdict": "reject|promote",
+  "thresholds_used": {"version": "exp-0001-v2", "values": {}},
+  "artifacts": {}
+}
+```
+
+Written before thresholds are re-tuned (SPEC §33 pre-registration applies at the trait level too).
 
 ## 5. Example instance (v0)
 
@@ -179,9 +199,11 @@ Design goals:
 - No population fields — population state lives in the Evolution Engine store, keyed by genome_id.
 - Gene payloads for `policy` are config+prompt refs only; v0 does not allow arbitrary code genes (DGM-style) — typed configs first, code genes reconsidered only if expressiveness blocks Milestone 0.
 
-## 7. Open questions for cross-review (research role)
+## 7. Review resolution (critic round 1, 2026-10-02)
 
-1. Should `regulation` predicates include task-type matching in v0, or is `consecutive_failures`-style counters enough for ALFWorld-class environments? (Concern: task_type predicates could let traits overfit the mining split.)
-2. Is one CIG record per candidate sufficient, or do we need per-seed records (noise audit) as first-class?
-3. `backbone_tested` as advisory array vs. strict registry of evaluated backbones — which avoids implied claims (SPEC §34)?
-4. Skill payload: adopt SkillRL-style `{name, principle, when_to_apply}` frontmatter verbatim for baseline comparability, or extend with `procedure` steps (SkillShapley needs step-level structure if we reuse removal-based attribution)?
+All four cross-review questions from PR #1 / issue #3 are resolved as follows; decisions recorded in ADR-0001.
+
+1. **Regulation predicates (task_type):** removed from the runtime regulation vocabulary. v0 regulation uses agent-observable counters only; specialization is trait applicability metadata (`when_to_apply`), evaluated evidence-side — not a genotype-level environment predicate (D5). No oracle-label leakage into gene expression.
+2. **CIG evidence granularity:** two-level records adopted — aggregate candidate verdict + immutable per-seed/per-run children (`CIG-0042/S11`, ...) referenced by the aggregate (§4). Genome stays free of evaluation detail; per-seed noise analysis remains first-class.
+3. **backbone_tested:** removed from the heritable genome manifest. Backbone evidence lives in a separate BackboneEvaluationRegistry keyed `(genome_id, model_hash, benchmark, seed)` (D7) — evaluation metadata, not genotype, and no implied claims inside the genome.
+4. **Skill payload format:** SkillRL-compatible superset — `name`, `principle`, `when_to_apply` (SkillRL names) + stable `procedure[]` step IDs. M0 scores whole skills; step IDs reserve SkillShapley-style attribution without re-extraction; a projection adapter emits strict SkillRL skills for the baseline arm (D1).
