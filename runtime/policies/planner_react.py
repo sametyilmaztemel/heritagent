@@ -1,9 +1,10 @@
-"""ReAct-style planner policy (G0 seed; issue #7 criterion 6).
+"""ReAct-style planner policy (G0 seed; issue #7 criterion 6; tool catalog per critic review).
 
 The planner owns the reasoning format: it builds the model messages
-(including only the currently expressed skills it is given) and parses
-ReAct-formatted replies into typed step decisions. Parsing fails closed —
-the execution loop's retry policy decides whether to reprompt.
+(including only the currently expressed skills AND the tool catalog from
+`env.list_tools()`, rendered deterministically) and parses ReAct-formatted
+replies into typed step decisions. Parsing fails closed — the execution
+loop's retry policy decides whether to reprompt.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 
-from runtime.model_adapters import ModelMessage
+from runtime.model_adapters import ModelMessage, ToolSpec
 from runtime.policies.decisions import StepDecision, ToolAction
 from runtime.policies.errors import PlanParseError
 from runtime.skills import skill_block
@@ -33,17 +34,33 @@ _ACTION_RE = re.compile(r"Action:\s*([A-Za-z0-9_\-]+)\s*$", re.MULTILINE)
 _INPUT_RE = re.compile(r"Action Input:\s*(\{.*\})\s*$", re.DOTALL)
 
 
+def tool_catalog_block(tools: list[ToolSpec]) -> str:
+    """Deterministic, evaluation-safe rendering of the offered tool catalog
+    (names, descriptions, argument JSON Schemas). Only `env.list_tools()`
+    content enters here — no skill applicability or other evaluation-only
+    metadata can appear."""
+    if not tools:
+        return "Available tools: (none)"
+    lines = ["Available tools:"]
+    for tool in tools:
+        lines.append(f"- {tool.name}: {tool.description}")
+        lines.append(f"  Action Input JSON Schema: "
+                     f"{json.dumps(tool.parameters_schema, sort_keys=True)}")
+    return "\n".join(lines)
+
+
 class ReActPlanner:
     def __init__(self, config: dict):
         if config.get("style") != "react":
             raise ValueError("ReActPlanner requires a 'react' style policy config")
         self.max_plan_steps = int(config["max_plan_steps"])
 
-    def build_messages(self, *, task: str, observations: list[str], skills, step: int,
-                       max_steps: int) -> list[ModelMessage]:
+    def build_messages(self, *, task: str, observations: list[str], skills, tools: list[ToolSpec],
+                       step: int, max_steps: int) -> list[ModelMessage]:
         system = (
             "You are a ReAct agent. Solve the task step by step using the available tools.\n"
-            f"{FORMAT_INSTRUCTIONS}\n\nExpressed skills (use when applicable):\n{skill_block(skills)}"
+            f"{FORMAT_INSTRUCTIONS}\n\n{tool_catalog_block(tools)}\n\n"
+            f"Expressed skills (use when applicable):\n{skill_block(skills)}"
         )
         history = "\n".join(f"[{i}] {content}" for i, content in enumerate(observations))
         user = (f"Task: {task}\n\nObservations so far:\n{history}\n\n"
