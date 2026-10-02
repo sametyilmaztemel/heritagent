@@ -75,12 +75,19 @@ def _assert_no_evaluation_only(projection: dict) -> None:
 
 
 def project_for_runtime(genome: dict, registry: TraitRegistry) -> dict:
-    """Project a validated genome into runtime-consumable payloads.
+    """Project a genome into runtime-consumable payloads.
 
+    Validates its own input at the boundary — ``load_genome`` runs here
+    (structural invariants, typed slots, URI grammar, name/version/kind
+    semantics, and with the registry: digest + binding integrity) — so the
+    projection never depends on the caller having pre-validated the genome.
     Reads every gene artifact from the registry and strips evaluation-only
     metadata. The output contains genome identity + regulation (runtime
     logic) and projected payloads only.
     """
+    from genome.validation.loader import load_genome
+
+    load_genome(genome, registry)
     projection: dict = {
         "genome_id": genome["genome_id"],
         "schema_version": genome["schema_version"],

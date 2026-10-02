@@ -30,7 +30,8 @@
         "child_records": {
           "type": "array",
           "items": {"type": "string", "pattern": "^CIG-[0-9]{4,}/S[A-Za-z0-9_-]*$"},
-          "minItems": 1
+          "minItems": 1,
+          "uniqueItems": true
         },
         "stages": {
           "type": "object",

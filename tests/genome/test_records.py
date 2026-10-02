@@ -124,6 +124,48 @@ def test_cig_schema_rejects_placeholder_verdict():
         store.add_aggregate(bad)
 
 
+def test_duplicate_child_records_rejected_by_schema():
+    bad = aggregate_record(children=("CIG-0042/S11", "CIG-0042/S11"))
+    store = CigRecordStore()
+    with pytest.raises(GenomeValidationError):
+        store.add_aggregate(bad)
+
+
+def test_undeclared_child_rejected_at_insert():
+    store = CigRecordStore()
+    store.add_aggregate(aggregate_record(children=("CIG-0042/S11",)))
+    with pytest.raises(RecordConsistencyError, match="not declared"):
+        store.add_child(child_record(cig_id="CIG-0042/S23", stage="ablation", seed=23))
+
+
+def test_orphan_child_detected_by_verify():
+    store = full_store()
+    ghost = child_record(cig_id="CIG-0042/S99-ghost", stage="ablation", seed=99,
+                         parent_cig_id="CIG-0042")
+    # white-box injection simulates externally corrupted evidence that
+    # bypassed add_child; verify() must still catch it
+    store._children[ghost["cig_id"]] = ghost
+    issues = store.verify()
+    assert any("orphan" in i for i in issues)
+    with pytest.raises(RecordConsistencyError):
+        store.require_consistent()
+
+
+def test_seed_id_mismatch_rejected_at_insert():
+    store = CigRecordStore()
+    store.add_aggregate(aggregate_record(children=("CIG-0042/S11",)))
+    with pytest.raises(RecordConsistencyError, match="seed"):
+        store.add_child(child_record(cig_id="CIG-0042/S11", seed=23))
+
+
+def test_seed_mismatch_detected_by_verify():
+    store = CigRecordStore()
+    store.add_aggregate(aggregate_record(children=("CIG-0042/S11",)))
+    store.add_child(child_record(cig_id="CIG-0042/S11", seed=11))
+    store._children["CIG-0042/S11"]["seed"] = 23  # simulate post-insert corruption
+    assert any("seed" in i for i in store.verify())
+
+
 def test_somatic_lifecycle_candidate_to_validated():
     store = SomaticStore()
     store.add(somatic_envelope(state="candidate"))

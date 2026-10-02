@@ -98,6 +98,24 @@ def test_regulation_must_reference_known_genes():
         load_genome(genome)
 
 
+def test_skill_gene_rejected_in_policy_slot(doc_genome):
+    doc_genome["genes"]["cognition"]["planner"]["type"] = "skill"
+    with pytest.raises(GenomeValidationError, match="was expected"):
+        load_genome(doc_genome)
+
+
+def test_policy_gene_rejected_in_skills_list(doc_genome):
+    doc_genome["genes"]["skills"][0]["type"] = "policy"
+    with pytest.raises(GenomeValidationError, match="was expected"):
+        load_genome(doc_genome)
+
+
+def test_regulatory_gene_rejected_in_policy_slot(doc_genome):
+    doc_genome["genes"]["cognition"]["planner"]["type"] = "regulatory"
+    with pytest.raises(GenomeValidationError, match="was expected"):
+        load_genome(doc_genome)
+
+
 def test_semantic_checks_pass_with_registry_content(registry):
     genome = registered_genome(registry)
     assert load_genome(genome, registry) == genome
@@ -119,6 +137,16 @@ def test_digest_mismatch_against_registry_bytes_rejected(registry):
     path = registry.root / "skills" / digest
     path.write_bytes(path.read_bytes() + b" ")
     with pytest.raises(RegistryIntegrityError, match="tampered"):
+        load_genome(genome, registry)
+
+
+def test_loader_rejects_forged_binding(registry):
+    genome = registered_genome(registry)
+    # hand-crafted URI: retry identity pointed at the planner's content
+    planner_digest = genome["genes"]["cognition"]["planner"]["artifact"].split("sha256:")[1]
+    genome["genes"]["execution"]["retry_policy"]["artifact"] = \
+        fake_uri("policies", "retry_backoff_v1", 1, digest=planner_digest)
+    with pytest.raises(RegistryIntegrityError, match="bound"):
         load_genome(genome, registry)
 
 

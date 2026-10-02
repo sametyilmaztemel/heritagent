@@ -43,8 +43,15 @@ def diff_genomes(parent: dict, child: dict, fitness_delta: float | None = None) 
                     mutations.add(f"skills+: {ref['gene_id']}@{ref['version']}")
             else:
                 mutations.add(f"{path}+: {ref['gene_id']}@{ref['version']}")
-        elif old["gene_id"] == ref["gene_id"] and old["version"] == ref["version"]:
+        elif old["gene_id"] == ref["gene_id"] and old["version"] == ref["version"] \
+                and old["artifact"] == ref["artifact"]:
             inheritance.add(ref["gene_id"])
+        elif old["gene_id"] == ref["gene_id"] and old["version"] == ref["version"]:
+            # same identity bound to different content — never inheritance
+            # (defense in depth; the registry rejects such rebinding per D6)
+            old_d = old["artifact"].split("sha256:")[1][:8]
+            new_d = ref["artifact"].split("sha256:")[1][:8]
+            mutations.add(f"{path}: {ref['gene_id']}@{ref['version']} rebinds sha256:{old_d} -> sha256:{new_d}")
         else:
             mutations.add(f"{path}: {old['gene_id']}@{old['version']} -> {ref['gene_id']}@{ref['version']}")
 

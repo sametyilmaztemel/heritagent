@@ -70,6 +70,7 @@ def _check_gene_ref(ref: dict, path: str, registry: TraitRegistry | None) -> Non
         raise GenomeValidationError(errors)
     if registry is not None:
         registry.resolve(ref["artifact"])  # digest == stored bytes; integrity errors propagate as-is
+        registry.verify_binding(ref["artifact"])  # identity not rebound to other content (D6)
 
 
 def _check_regulation(genome: dict) -> None:

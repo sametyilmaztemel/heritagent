@@ -71,6 +71,23 @@ def test_diff_detects_slot_mutation_and_skill_removal(registry):
     assert edge["assimilated_traits"] == []
 
 
+def test_same_identity_different_artifact_is_rebind_mutation(registry):
+    # ADR-0001 D6: same (gene_id, version) must never bind to different
+    # content; even if it slips through, diff must NOT count it as inheritance
+    import copy
+    parent = registered_parent_genome(registry)
+    child = copy.deepcopy(parent)
+    child["genome_id"] = "G-22222222"
+    child["generation"] = 1
+    child["parent"] = parent["genome_id"]
+    child["genes"]["execution"]["retry_policy"]["artifact"] = \
+        "registry://policies/retry_backoff_v1@1/sha256:" + "ff" * 32
+    edge = diff_genomes(parent, child)
+    assert "planner_react_v1" in edge["inheritance"]
+    assert "retry_backoff_v1" not in edge["inheritance"]
+    assert any("rebinds" in m for m in edge["mutations"])
+
+
 def test_diff_rejects_self_diff(parent_and_child):
     parent, _ = parent_and_child
     with pytest.raises(ValueError, match="must differ"):

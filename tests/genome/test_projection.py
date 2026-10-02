@@ -79,3 +79,20 @@ def test_projection_leak_guard_is_defense_in_depth(registry, monkeypatch):
                         ("name", "principle", "when_to_apply", "procedure", "applicability"))
     with pytest.raises(GenomeValidationError, match="leaked evaluation-only"):
         project_for_runtime(genome, registry)
+
+
+def test_projection_validates_input_at_boundary(registry):
+    # project_for_runtime must not trust a pre-validated caller:
+    # a genome whose URI name disagrees with gene_id is rejected here
+    from tests.conftest import fake_uri, minimal_genome
+    genome = minimal_genome()
+    genome["genes"]["cognition"]["planner"]["artifact"] = fake_uri("policies", "planner_other_v1", 1)
+    with pytest.raises(GenomeValidationError, match="gene_id"):
+        project_for_runtime(genome, registry)
+
+
+def test_projection_rejects_wrong_type_in_slot(registry):
+    genome = registered_genome(registry)
+    genome["genes"]["cognition"]["planner"]["type"] = "skill"
+    with pytest.raises(GenomeValidationError, match="was expected"):
+        project_for_runtime(genome, registry)

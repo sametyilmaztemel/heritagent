@@ -44,6 +44,38 @@ def test_unknown_gene_type_rejected(registry):
         registry.put("behaviour", "b_v1", 1, {})
 
 
+def test_rebinding_identity_to_different_content_rejected(registry):
+    registry.put("policy", "p_v1", 1, {"v": 1})
+    with pytest.raises(RegistryIntegrityError, match="already bound"):
+        registry.put("policy", "p_v1", 1, {"v": 2})
+
+
+def test_binding_persists_across_registry_instances(tmp_path):
+    from genome.validation.registry import TraitRegistry
+    registry_a = TraitRegistry(tmp_path / "shared")
+    uri_a = registry_a.put("policy", "p_v1", 1, {"v": 1})
+    registry_b = TraitRegistry(tmp_path / "shared")
+    with pytest.raises(RegistryIntegrityError, match="already bound"):
+        registry_b.put("policy", "p_v1", 1, {"v": 2})
+    assert registry_b.resolve(uri_a)
+
+
+def test_content_sharing_across_identities_allowed(registry):
+    uri_a = registry.put("policy", "a_v1", 1, {"shared": True})
+    uri_b = registry.put("policy", "b_v1", 1, {"shared": True})
+    assert uri_a != uri_b
+    assert registry.resolve(uri_a) == registry.resolve(uri_b)
+
+
+def test_verify_binding_catches_forged_uri(registry):
+    registry.put("policy", "p_v1", 1, {"v": 1})
+    other_uri = registry.put("policy", "q_v1", 1, {"v": 2})
+    other_digest = parse_uri(other_uri)["digest"]
+    forged = f"registry://policies/p_v1@1/sha256:{other_digest}"
+    with pytest.raises(RegistryIntegrityError, match="bound"):
+        registry.verify_binding(forged)
+
+
 def test_digest_collision_detected(registry):
     uri = registry.put("policy", "p_v1", 1, {"v": 1})
     digest = parse_uri(uri)["digest"]
