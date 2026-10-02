@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/eag/0.1/cig.json",
+  "title": "CIG Record v0.1",
+  "description": "Two-level Causal Inheritance Gate evidence: one aggregate record per candidate carrying the verdict, plus immutable per-seed/per-run child records (aggregate CIG-0042 -> children CIG-0042/S11, ...). Children are append-only; the genome and somatic envelope reference the aggregate only (ADR-0001, section 4).",
+  "oneOf": [{"$ref": "#/$defs/aggregate"}, {"$ref": "#/$defs/child"}],
+  "$defs": {
+    "stageName": {
+      "enum": ["replay", "ablation", "generalization_in_scope",
+               "generalization_out_of_scope", "interaction_regression"]
+    },
+    "stageResult": {
+      "type": "object",
+      "required": ["measurements_ref", "pass"],
+      "properties": {
+        "measurements_ref": {"const": "children",
+                              "description": "raw measurements live in the immutable child records"},
+        "threshold": {"type": "string"},
+        "pass": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "aggregate": {
+      "type": "object",
+      "required": ["cig_id", "candidate_gene_id", "genome_id", "child_records", "stages", "verdict", "thresholds_used"],
+      "properties": {
+        "cig_id": {"type": "string", "pattern": "^CIG-[0-9]{4,}$"},
+        "candidate_gene_id": {"type": "string", "pattern": "^[a-z0-9_]+(_v[0-9]+)?$"},
+        "genome_id": {"type": "string", "pattern": "^G-[a-z0-9]{8,}$"},
+        "child_records": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^CIG-[0-9]{4,}/S[A-Za-z0-9_-]*$"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "stages": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "replay":                     {"$ref": "#/$defs/stageResult"},
+            "ablation":                   {"$ref": "#/$defs/stageResult"},
+            "generalization_in_scope":    {"$ref": "#/$defs/stageResult"},
+            "generalization_out_of_scope": {"$ref": "#/$defs/stageResult"},
+            "interaction_regression":     {"$ref": "#/$defs/stageResult"}
+          }
+        },
+        "verdict": {"enum": ["reject", "promote"]},
+        "thresholds_used": {
+          "type": "object",
+          "required": ["version"],
+          "properties": {
+            "version": {"type": "string"},
+            "values":  {"type": "object"}
+          },
+          "additionalProperties": false
+        },
+        "artifacts": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "child": {
+      "type": "object",
+      "required": ["cig_id", "parent_cig_id", "seed", "stage", "measurements"],
+      "properties": {
+        "cig_id": {"type": "string", "pattern": "^CIG-[0-9]{4,}/S[A-Za-z0-9_-]*$",
+                    "description": "child id: /S<seed> optionally suffixed with a run label, e.g. CIG-0042/S11 or CIG-0042/S11-replay"},
+        "parent_cig_id": {"type": "string", "pattern": "^CIG-[0-9]{4,}$"},
+        "seed": {"type": ["integer", "string"]},
+        "stage": {"$ref": "#/$defs/stageName"},
+        "measurements": {"type": "object",
+                          "description": "append-only raw measurements for this (seed, stage) run"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

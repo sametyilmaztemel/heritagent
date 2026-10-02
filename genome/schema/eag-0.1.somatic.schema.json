@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/eag/0.1/somatic.json",
+  "title": "Somatic Trait Envelope v0.1",
+  "description": "Lifetime-learned candidate trait held outside the germline. Same gene container as EAG genes plus a validation envelope; assimilation is a lifecycle-state transition, not a format change (ADR-0001 D4).",
+  "type": "object",
+  "required": ["candidate", "validation"],
+  "properties": {
+    "candidate": {"$ref": "#/$defs/geneRef"},
+    "validation": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": {"enum": ["candidate", "rejected", "validated"]},
+        "gate_reports": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^CIG-[0-9]{4,}$"},
+          "minItems": 1,
+          "description": "aggregate CIG record ids backing the state; required non-empty once the candidate has been decided (rejected/validated)"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "if": {
+    "properties": {"validation": {"required": ["state"], "properties": {"state": {"enum": ["rejected", "validated"]}}}},
+    "required": ["validation"]
+  },
+  "then": {"properties": {"validation": {"required": ["state", "gate_reports"]}}},
+  "$defs": {
+    "geneRef": {
+      "type": "object",
+      "required": ["gene_id", "version", "type", "artifact", "origin", "provenance"],
+      "properties": {
+        "gene_id":  {"type": "string", "pattern": "^[a-z0-9_]+(_v[0-9]+)?$"},
+        "version":  {"type": "integer", "minimum": 1},
+        "type":     {"enum": ["policy", "skill", "regulatory"]},
+        "artifact": {"type": "string",
+                     "pattern": "^registry://(policies|skills|regulators)/[a-z0-9_]+(_v[0-9]+)?@[1-9][0-9]*/sha256:[0-9a-f]{64}$"},
+        "origin":   {"enum": ["seed", "mutation", "recombination", "assimilation"]},
+        "provenance": {
+          "type": "object",
+          "required": ["born_generation"],
+          "properties": {
+            "source_trajectory":   {"type": "string"},
+            "cig_record":          {"type": "string"},
+            "born_generation":     {"type": "integer", "minimum": 0},
+            "notes":               {"type": "string"}
+          }
+        }
+      },
+      "if": {
+        "properties": {"origin": {"const": "assimilation"}},
+        "required": ["origin"]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "required": ["born_generation", "source_trajectory", "cig_record"]
+          }
+        }
+      }
+    }
+  }
+}

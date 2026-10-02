@@ -39,3 +39,22 @@ All four requested changes applied; schema artifact updated in the same revision
 | # | Critic requirement | Resolution |
 |---|---|---|
 | R1 | Enforce real content-addressed artifact URI grammar + `sha256:<64-hex>` in JSON Schema; real 64-hex examples | D8 added: canonical v0 grammar `registry://<kind>/<gene_id>@<version>/sha256:<64-hex>`, `kind ∈ {policies, skills, regulators}`; `artifact.pattern` enforces the full grammar including the 64-hex digest (portable pattern, no custom format checker). Example instance uses genuine 64-hex SHA-256 digests. The "artifact-addressed" weakening option was rejected — content addressing stands. Validator tests to additionally check name↔gene_id and digest↔artifact equality (noted for issue #4) |
+
+## Review resolution — implementation review (PR #21, 2026-10-02)
+
+Code-review blocking fixes applied to the implementation and schema artifacts (schema doc updated in the same commit to stay in sync):
+
+| # | Blocking group | Resolution |
+|---|---|---|
+| 1 | Typed slot semantics | Genome schema: cognition/memory/execution slots → `policyRef` (`type` const `policy`), `skills[]` → `skillRef` (const `skill`); negative tests for wrong-type-in-slot; `project_for_runtime()` runs `load_genome` (incl. registry digest/binding checks) at its own boundary |
+| 2 | Gene identity/version immutability | Registry keeps a `(kind, gene_id, version) -> digest` binding index; rebinding an identity to different content → `RegistryIntegrityError` (D6: version increment required); hand-crafted URIs caught by `verify_binding`; `diff_genomes()` includes artifact URI in the inheritance test — same id/version with a different artifact is a `rebinds` mutation, never inheritance |
+| 3 | CIG evidence integrity | `child_records` `uniqueItems`; `add_child` rejects children not declared in the aggregate; `verify()` flags orphan/undeclared children and child-id/seed incoherence (`/S<seed>` digits must match the `seed` field, enforced at insert and in verify) |
+
+Non-blocking follow-ups recorded: deeper payload-shape validation with #7/#9; canonical `genome_id` hashing tracked in issue #22 (blocks #13, not #4).
+
+## Final hardening (PR #21 re-review, 2026-10-02)
+
+| # | Requirement | Resolution |
+|---|---|---|
+| 1 | Record stores must not retain/return externally mutable shared dict references | `CigRecordStore.add_aggregate/add_child` and `SomaticStore.add` deep-copy on insertion; `aggregates` / `children` / `all()` return deep copies. Tests: input mutation after add leaves stored state unchanged; accessor mutation leaves stored state unchanged |
+| 2 | Registry-attached validation must reject unbound identity/version URIs | `verify_binding()` rejects an unbound `(kind, gene_id, version)` even when its digest exists under another identity; bound-digest mismatch rejection unchanged; content sharing valid only with explicit `put()` bindings per identity. Tests: forged identity B → A's digest rejected as unbound (registry-level, loader-level, `check_ref`) |
