@@ -13,6 +13,7 @@ somatic memory).
 
 from __future__ import annotations
 
+import copy
 import re
 
 from genome.validation.errors import GenomeValidationError, RecordConsistencyError
@@ -22,7 +23,14 @@ _SEED_IN_ID = re.compile(r"/S(\d+)")
 
 
 class CigRecordStore:
-    """In-memory store of aggregate + child CIG records with consistency checks."""
+    """In-memory store of aggregate + child CIG records with consistency checks.
+
+    Records are deep-copied on insertion and accessors return deep copies:
+    stored evidence is immutable from the caller's side (append-only,
+    externally unmutable). White-box corruption of ``_children`` /
+    ``_aggregates`` remains possible deliberately for ``verify()``
+    defense-in-depth tests.
+    """
 
     def __init__(self):
         self._aggregates: dict[str, dict] = {}
@@ -33,7 +41,7 @@ class CigRecordStore:
         cig_id = record["cig_id"]
         if cig_id in self._aggregates:
             raise RecordConsistencyError(f"aggregate CIG record {cig_id!r} already exists")
-        self._aggregates[cig_id] = record
+        self._aggregates[cig_id] = copy.deepcopy(record)
 
     def add_child(self, record: dict) -> None:
         load_cig(record)
@@ -52,7 +60,7 @@ class CigRecordStore:
             raise RecordConsistencyError(issue)
         if cig_id in self._children:
             raise RecordConsistencyError(f"child CIG record {cig_id!r} already exists (append-only)")
-        self._children[cig_id] = record
+        self._children[cig_id] = copy.deepcopy(record)
 
     @staticmethod
     def _seed_issue(record: dict) -> str | None:
@@ -103,15 +111,20 @@ class CigRecordStore:
 
     @property
     def aggregates(self) -> dict[str, dict]:
-        return dict(self._aggregates)
+        return copy.deepcopy(self._aggregates)
 
     @property
     def children(self) -> dict[str, dict]:
-        return dict(self._children)
+        return copy.deepcopy(self._children)
 
 
 class SomaticStore:
-    """Lifecycle store for somatic candidate traits (SPEC sections 5, 9-10)."""
+    """Lifecycle store for somatic candidate traits (SPEC sections 5, 9-10).
+
+    Envelopes are deep-copied on insertion and ``all()`` returns deep
+    copies: candidate state and terminal decisions are immutable from the
+    caller's side.
+    """
 
     TERMINAL_STATES = ("validated", "rejected")
 
@@ -129,11 +142,11 @@ class SomaticStore:
                 raise RecordConsistencyError(
                     f"somatic candidate {gene_id!r} already reached terminal state "
                     f"{existing['validation']['state']!r}; decisions are immutable")
-        self._envelopes[gene_id] = envelope
+        self._envelopes[gene_id] = copy.deepcopy(envelope)
 
     def state(self, gene_id: str) -> str | None:
         envelope = self._envelopes.get(gene_id)
         return envelope["validation"]["state"] if envelope else None
 
     def all(self) -> dict[str, dict]:
-        return dict(self._envelopes)
+        return copy.deepcopy(self._envelopes)

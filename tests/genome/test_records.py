@@ -166,6 +166,63 @@ def test_seed_mismatch_detected_by_verify():
     assert any("seed" in i for i in store.verify())
 
 
+def test_mutating_input_after_add_does_not_change_stored_aggregate():
+    store = CigRecordStore()
+    agg = aggregate_record(children=("CIG-0042/S11",))
+    store.add_aggregate(agg)
+    agg["verdict"] = "reject"
+    agg["child_records"].append("CIG-0042/S99")
+    agg["stages"]["replay"]["pass"] = False
+    stored = store.aggregates["CIG-0042"]
+    assert stored["verdict"] == "promote"
+    assert stored["child_records"] == ["CIG-0042/S11"]
+    assert stored["stages"]["replay"]["pass"] is True
+
+
+def test_mutating_input_after_add_does_not_change_stored_child():
+    store = CigRecordStore()
+    store.add_aggregate(aggregate_record(children=("CIG-0042/S11",)))
+    child = child_record(cig_id="CIG-0042/S11", seed=11)
+    store.add_child(child)
+    child["measurements"]["successes_with"] = 999
+    child["seed"] = 41
+    assert store.children["CIG-0042/S11"]["measurements"]["successes_with"] == 3
+    assert store.children["CIG-0042/S11"]["seed"] == 11
+
+
+def test_accessor_mutation_does_not_change_stored_state():
+    store = full_store()
+    leaked = store.aggregates["CIG-0042"]
+    leaked["verdict"] = "reject"
+    leaked["child_records"].append("CIG-0042/S00")
+    leaked["stages"]["replay"]["pass"] = False
+    leaked_child = store.children["CIG-0042/S11"]
+    leaked_child["measurements"]["successes_with"] = 999
+    assert store.aggregates["CIG-0042"]["verdict"] == "promote"
+    assert store.aggregates["CIG-0042"]["child_records"] == child_ids()
+    assert store.aggregates["CIG-0042"]["stages"]["replay"]["pass"] is True
+    assert store.children["CIG-0042/S11"]["measurements"]["successes_with"] == 3
+    assert store.verify() == []  # stored evidence untouched
+
+
+def test_mutating_input_after_add_does_not_change_stored_envelope():
+    store = SomaticStore()
+    envelope = somatic_envelope(state="candidate")
+    store.add(envelope)
+    envelope["validation"]["state"] = "validated"
+    envelope["validation"]["gate_reports"] = ["CIG-fake"]
+    assert store.state("look_before_heat_v1") == "candidate"
+    assert store.all()["look_before_heat_v1"]["validation"] == {"state": "candidate"}
+
+
+def test_somatic_accessor_mutation_does_not_change_stored_state():
+    store = SomaticStore()
+    store.add(somatic_envelope(state="validated", gate_reports=["CIG-0042"]))
+    leaked = store.all()
+    leaked["look_before_heat_v1"]["validation"]["state"] = "rejected"
+    assert store.state("look_before_heat_v1") == "validated"
+
+
 def test_somatic_lifecycle_candidate_to_validated():
     store = SomaticStore()
     store.add(somatic_envelope(state="candidate"))

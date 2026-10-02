@@ -5,7 +5,9 @@ import hashlib
 import pytest
 
 from genome.validation.errors import GenomeValidationError, RegistryIntegrityError
+from genome.validation.loader import load_genome
 from genome.validation.registry import canonical_bytes, parse_uri
+from tests.conftest import fake_uri, registered_genome
 
 
 def test_put_resolve_roundtrip(registry):
@@ -72,8 +74,38 @@ def test_verify_binding_catches_forged_uri(registry):
     other_uri = registry.put("policy", "q_v1", 1, {"v": 2})
     other_digest = parse_uri(other_uri)["digest"]
     forged = f"registry://policies/p_v1@1/sha256:{other_digest}"
-    with pytest.raises(RegistryIntegrityError, match="bound"):
+    with pytest.raises(RegistryIntegrityError, match="is bound to"):
         registry.verify_binding(forged)
+
+
+def test_unbound_identity_rejected_even_if_digest_file_exists(registry):
+    # identity A's content is on disk; a forged URI for a never-stored
+    # identity B pointing at that digest must be rejected as unbound
+    uri_a = registry.put("policy", "p_v1", 1, {"v": 1})
+    digest_a = parse_uri(uri_a)["digest"]
+    forged = f"registry://policies/z_v9@1/sha256:{digest_a}"
+    registry.resolve(forged)  # content-addressed lookup alone still works
+    with pytest.raises(RegistryIntegrityError, match="not bound"):
+        registry.verify_binding(forged)
+
+
+def test_loader_rejects_unbound_identity(registry):
+    genome = registered_genome(registry)
+    planner_digest = genome["genes"]["cognition"]["planner"]["artifact"].split("sha256:")[1]
+    ref = genome["genes"]["execution"]["retry_policy"]
+    ref["gene_id"] = "brand_new_v1"  # identity never stored via put()
+    ref["artifact"] = fake_uri("policies", "brand_new_v1", 1, digest=planner_digest)
+    with pytest.raises(RegistryIntegrityError, match="not bound"):
+        load_genome(genome, registry)
+
+
+def test_binding_check_ref_catches_unbound(registry):
+    uri_a = registry.put("policy", "p_v1", 1, {"v": 1})
+    digest_a = parse_uri(uri_a)["digest"]
+    forged_ref = {"gene_id": "z_v9", "version": 1, "type": "policy",
+                  "artifact": f"registry://policies/z_v9@1/sha256:{digest_a}"}
+    with pytest.raises(RegistryIntegrityError, match="not bound"):
+        registry.check_ref(forged_ref)
 
 
 def test_digest_collision_detected(registry):

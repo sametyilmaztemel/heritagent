@@ -262,3 +262,8 @@ Three integrity gaps found in code review were closed (details in PR #21 and iss
 3. **CIG evidence integrity:** `child_records` are `uniqueItems`; children must be declared in the aggregate (undeclared children rejected at insert; orphans flagged by `verify()`); child ids `/S<seed>...` must agree with the record's `seed` field (enforced at insert and re-checked in `verify()`).
 
 Non-blocking follow-ups: deeper payload-shape validation lands with #7/#9; canonical `genome_id` hashing is tracked separately in issue #22 (blocks #13, not #4).
+
+### Final hardening (PR #21 re-review, 2026-10-02)
+
+1. **Record immutability:** `CigRecordStore` and `SomaticStore` deep-copy records/envelopes on insertion and return deep copies from `aggregates` / `children` / `all()` — stored evidence and terminal decisions cannot be mutated through the caller's original input or through accessor results. White-box corruption of private internals remains possible deliberately for `verify()` defense-in-depth tests.
+2. **Monotonic identity binding:** `verify_binding()` rejects an **unbound** `(kind, gene_id, version)` — referencing an identity that was never stored via `put()` fails even when its digest file exists under another identity. Content sharing across identities stays valid only when every identity was explicitly registered. This makes identity/version validity monotonic and auditable: a genome that validates against a registry cannot be invalidated later by binding a new identity to reused content.

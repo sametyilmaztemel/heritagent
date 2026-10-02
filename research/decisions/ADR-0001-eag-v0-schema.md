@@ -51,3 +51,10 @@ Code-review blocking fixes applied to the implementation and schema artifacts (s
 | 3 | CIG evidence integrity | `child_records` `uniqueItems`; `add_child` rejects children not declared in the aggregate; `verify()` flags orphan/undeclared children and child-id/seed incoherence (`/S<seed>` digits must match the `seed` field, enforced at insert and in verify) |
 
 Non-blocking follow-ups recorded: deeper payload-shape validation with #7/#9; canonical `genome_id` hashing tracked in issue #22 (blocks #13, not #4).
+
+## Final hardening (PR #21 re-review, 2026-10-02)
+
+| # | Requirement | Resolution |
+|---|---|---|
+| 1 | Record stores must not retain/return externally mutable shared dict references | `CigRecordStore.add_aggregate/add_child` and `SomaticStore.add` deep-copy on insertion; `aggregates` / `children` / `all()` return deep copies. Tests: input mutation after add leaves stored state unchanged; accessor mutation leaves stored state unchanged |
+| 2 | Registry-attached validation must reject unbound identity/version URIs | `verify_binding()` rejects an unbound `(kind, gene_id, version)` even when its digest exists under another identity; bound-digest mismatch rejection unchanged; content sharing valid only with explicit `put()` bindings per identity. Tests: forged identity B → A's digest rejected as unbound (registry-level, loader-level, `check_ref`) |

@@ -120,12 +120,23 @@ class TraitRegistry:
         return data
 
     def verify_binding(self, uri: str) -> None:
-        """Verify the URI digest agrees with the identity binding (defense in depth
-        against hand-crafted URIs that point a known identity at other content)."""
+        """Verify the URI's identity/version binding (monotonic identity semantics).
+
+        An identity MUST have been bound explicitly via ``put()``: an
+        unbound ``(kind, gene_id, version)`` is rejected even when its
+        digest file exists (it may belong to another identity), and a bound
+        identity whose digest disagrees with the URI is rejected. Content
+        sharing across identities stays valid only when every identity was
+        explicitly registered.
+        """
         parts = parse_uri(uri)
         binding = f"{parts['kind']}/{parts['name']}@{parts['version']}"
         bound = self._index().get(binding)
-        if bound is not None and bound != parts["digest"]:
+        if bound is None:
+            raise RegistryIntegrityError(
+                f"{binding} is not bound in this registry; reference only identities "
+                f"explicitly stored via put() (content sharing requires an explicit binding per identity)")
+        if bound != parts["digest"]:
             raise RegistryIntegrityError(
                 f"{binding} is bound to sha256:{bound}; URI claims sha256:{parts['digest']} "
                 f"(ADR-0001 D6: artifact changes require a version increment)")
