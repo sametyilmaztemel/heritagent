@@ -1,0 +1,118 @@
+# EXP-0001 — Minimal Causal Inheritance Gate experiment (design, pre-registration)
+
+**Status: REVISED after critic round 1 (2026-10-02) — re-review requested.** Originally designed and locked 2026-10-02; revised same day per Research/Critic review on PR #2 / issue #5 (see §9). Machine-readable manifest: `EXP-0001-minimal-cig.yaml`. Decision record: `research/decisions/ADR-0002-exp-0001-design.md`. Expected-result fields must still be filled in before the run starts (SPEC §33).
+
+This is Milestone 0 (SPEC §29): one model, one domain, one agent, two generations. It exists to test the load-bearing hypothesis H2 before anything else is built (SPEC §27).
+
+## 1. Hypotheses under test
+
+- **Primary — H2 (Causal Gate):** CIG-gated inheritance produces better held-out performance and lower regression than unrestricted skill inheritance.
+- **Secondary — H1 (Assimilation, directional):** assimilated traits improve descendant zero-shot performance vs no inheritance.
+- **Observational — H5 (partial):** genome size/bloat comparison between gated and unrestricted arms.
+
+## 2. Environment and model
+
+- **Environment: ALFWorld** (text-based embodied tool use; same family as SkillRL's setup for future comparability). Deterministic simulator; LLM is the only stochastic component. Eval temperature 0.
+- **Model:** Qwen2.5-7B-Instruct, local (vLLM), via ModelAdapter. Rationale: matches SkillRL's base model; local → reproducible, cheap CIG replay loops; supports later H4 backbone swap.
+- **Split discipline — four disjoint splits, task-family-stratified.** Contamination between gate data and final evaluation would invalidate H2, so all train-side splits are drawn with **task-family-stratified quotas** across ALFWorld's ~6 task families (proportional to family availability with a minimum of ~8 tasks per family in `T_mine` and ~4 per family in `T_gate`; target sizes are approximate). Stratification prevents a family-composition confound between the arm-identical G0 phase and the gate phase:
+  - `T_mine` (~60 tasks, ALFWorld train split, stratified): G0's lifetime; trajectories → Trait Miner.
+  - `T_gate` (~114 tasks, train split, stratified, disjoint instances from T_mine), organized as:
+    - *ablation pool* (20, stratified): stage-2 contribution estimation;
+    - *interaction pool* (10): pairwise co-expression checks;
+    - *`replay_bank[family]`* — **family-indexed** bank, disjoint, **≥ 4 valid unseen instances per family** (stage-1 replay variants are drawn from the source task's family bank);
+    - *`generalization_bank[family]`* — **family-indexed** bank, disjoint, **≥ 10 valid unseen instances per family** (stage-3 in-/out-of-scope sampling per trait family). **Feasibility fallback:** if ALFWorld availability prevents ≥ 10 (or ≥ 4) for some family, a **family-specific pre-registered maximum** is recorded in the split manifest before run start — never improvised mid-run.
+  Banks exist to guarantee per-family feasibility for single-family specialist traits; **bank construction adds no LLM calls** — only per-trait evaluations on bank instances drive compute.
+  - `T_eval` (134 tasks, official ALFWorld unseen eval split): **final evaluation only** — never visible to miner, gate, or threshold tuning. Untouched by stratification decisions.
+  - `T_reg` (40 tasks, subset of T_mine that G0 solved): regression suite (arm-internal, run at G1 evaluation time).
+  - Splits are content-hashed and committed with the manifest; any change = new experiment id.
+
+## 3. Arms (identical G0, identical seeds, identical eval budget)
+
+| Arm | Inheritance policy | G1 genome |
+|---|---|---|
+| A — no inheritance | none | G0 genome unchanged (skills empty) |
+| B — unrestricted | all mined candidate traits injected as skill genes | G0 ∪ all candidates |
+| C — CIG-gated | only candidates passing all four gate stages | G0 ∪ validated candidates |
+
+Arm B operationalizes the SkillRL-style persistence policy (library growth + always-available skills) without weight training — the spec's §17 "most critical comparison". Note: arm B will have larger prompts; prompt overhead is part of the treatment being tested (bloat is an outcome, per H5), not a confound to normalize away. Equal **evaluation budget** (max steps per task) is enforced across arms.
+
+**Candidate-set freeze (applies to both arms):** after mining, candidates are ranked (primary: miner-reported estimated generality; tie-break: earliest discovery order), the top **K = 10** are selected, and this **frozen set — with its ranking — is committed as an artifact before any arm branches**. Arms B and C start from the exact same frozen candidates; B injects all of them, C gates the same set. At extraction each candidate also declares machine-readable scope — **`applicability.task_families[]`** (frozen with the candidate set; used **only** for stage-3 sampling and audit). **Runtime input hygiene — all arms:** `applicability.task_families[]` and every other evaluation-only metadata field is **stripped from all runtime model inputs in every arm** (A, B, and C — not only the strict SkillRL projection), so no arm — and arm C in particular — can ever receive evaluation-only oracle metadata at runtime. Runtime prompt assembly consumes only the projected payload (`name`, `principle`, `when_to_apply`, `procedure`); the assembly function takes the stripped projection as its input and tests assert the absence of evaluation-only fields (checklist for issues #4/#7). A sensitivity analysis over `K ∈ {5, 10, 20}` is planned as a follow-up (EXP-0005, secondary — see §5).
+
+## 4. Pipeline
+
+**G0 lifetime:** G0 (seed genome: ReAct-style planner + retry policy, no skills) runs T_mine; trajectories recorded (full functional phenotype per SPEC §7). Trait Miner v0: LLM differential distillation over success/failure pairs (SkillRL-adapted, cited) → candidate skill genes (`{name, principle, when_to_apply, procedure}` + somatic envelope). Cap: ≤ 10 candidates per run (keeps CIG budget bounded; cap itself recorded).
+
+**CIG stages (arm C only), initial thresholds (SPEC §10 allows adaptive thresholds later; v0 fixed):**
+
+1. **Replay validation** — source task + 4 **valid same-family resampled variants**: unseen instances drawn from `replay_bank[family-of-source-task]` (≥ 4 guaranteed per family; disjoint from all other pools). No synthetic object/room substitution in M0 — substitutions are only admissible later if proven to preserve valid ALFWorld state semantics. **One deterministic execution per (task instance, condition)** — with vs without trait, eval temp 0 (see determinism policy below). **Pass:** success-with ≥ 0.6 of the 5 instances AND net Δsuccess ≥ +0.4 across the replay cluster (i.e. ≥ 3/5 and +2/5 instance-level outcomes); trait must fire in every successful with-trait episode (expression check, not just presence).
+2. **Controlled ablation / contribution** — 20 tasks from the stratified ablation pool, **one deterministic execution per (task, condition)** with vs without. Contribution = Δsuccess over instances; **pass:** cluster-bootstrap 95% CI lower bound (over the 20 task instances) > 0 AND point estimate ≥ +0.05 (τ_c). Instance-to-instance variance — not backend nondeterminism — is the uncertainty source.
+3. **Generalization — split by scope** (a specialist trait must not be required to improve unrelated task types):
+   - **In-scope:** 10 unseen instances from `generalization_bank[f]` for families `f` matching the trait's frozen `applicability.task_families[]` (≥ 10 per family guaranteed, or the pre-registered family-specific maximum). **Pass:** Δsuccess ≥ 0 — the trait retains non-negative value on unseen instances where it claims to apply.
+   - **Out-of-scope:** 10 instances from families *outside* the declared applicability. **Pass:** Δsuccess ≥ −0.05 — no harmful spillover where the trait should not apply.
+   - **Sampling reuse semantics:** no replacement *within* a trait's evaluation set; **reuse across different candidate traits is allowed and logged** (per-trait allocations recorded in each CIG record). Cross-trait reuse is the intended paired design — gate outcomes are then comparable on shared instances — and the family-indexed banks are shared across traits by design. Both banks follow the same semantics. Scope declarations are immutable once the gate starts (see threat §6.6).
+
+**Determinism / stochastic-source policy (M0):** eval temperature is 0 and ALFWorld is deterministic, so every gate stage runs **exactly one execution per (task instance, condition)**. Duplicate deterministic executions are never treated as independent evidence. Uncertainty comes from (a) distinct task instances and (b) independent mining seeds. If repeated stochastic runs are scientifically desired in a later experiment, the stochastic source (e.g., a pre-registered temperature grid or seed set) must be introduced and pre-registered explicitly — backend nondeterminism is never relied upon.
+4. **Interaction + regression** — re-run T_reg (40 tasks) with genome ∪ trait; **pass:** regression ≤ 3pp (τ_r). Interaction check: if ≥ 2 validated skills, pairwise co-expression on 10 T_gate tasks; harmful pairs (Δ < −5pp together) → keep the higher-contribution trait only. Expression overhead τ_k ≤ 512 tokens/trait.
+
+Gate outputs are CIG records (schema `cig/0.1`); rejected candidates stay in somatic memory (SPEC §9 fail path).
+
+**G1 evaluation:** each arm's G1 runs T_eval (across 3 independent mining seeds — uncertainty sources are task instances and mining seeds, not backend nondeterminism) + T_reg. Metrics: T_eval success (primary), regression rate on T_reg (primary), genome size (genes, expression tokens), descendant adaptation cost on a 20-task T_gate transfer subset (tokens/actions to first success — H3 preview).
+
+## 5. Statistics (locked)
+
+- Report per-task success with bootstrap 95% CIs (cluster bootstrap over tasks, 10k resamples) for all pairwise arm contrasts on T_eval.
+- Stage-level gate statistics (stage-2 contribution CI, replay cluster Δ) are computed over **distinct task instances only** — one deterministic execution per (instance, condition); no repeated-run pseudo-replication.
+- Seed-level consistency requirement: direction of C−B must hold in ≥ 2/3 mining seeds.
+- H2 supported iff: (C − B) ≥ +5pp on T_eval with CI excluding 0 AND regression rate(C) < regression rate(B) with CI excluding 0 on the difference.
+- H1 supported iff (C − A) CI excludes 0 (positive).
+- No p-hacking escape hatch: secondary metrics are reported regardless of outcome; all gate thresholds and this plan are committed before the run.
+
+**Secondary sensitivity analyses (pre-planned now, reported as clearly secondary; primary conclusions above remain the pre-locked ones and are never retuned):**
+- *Threshold sensitivity:* recompute gate decisions on T_gate stage data only, varying τ_c ∈ {0.03, 0.05, 0.08} and τ_r ∈ {0.02, 0.03, 0.05}. Report how arm-C composition and T_eval outcomes would change under each — as analysis, not as a new primary result. `T_eval` is never used for threshold selection.
+- *Candidate-cap sensitivity (follow-up, EXP-0005):* re-run the B/C arm construction with K ∈ {5, 10, 20} from the same frozen ranked candidate list.
+
+## 6. Threats to validity (to monitor in post-run review)
+
+1. Trait Miner quality variance → same miner, same prompts across arms; miner log committed.
+2. Gate overfitting to T_gate → mitigated by disjoint T_eval and family stratification; check trait generality across families via the out-of-scope stage.
+3. Regulated traits misvalued under unconditional ablation (SkillShapley lesson) → ablation evaluates skills under their `express_when` conditions.
+4. Determinism: ALFWorld is deterministic and eval LLM temperature is 0 ⇒ exactly one execution per (task, condition) everywhere in gating; mining-phase temp 0.7 variance is covered by 3 independent mining seeds. Backend nondeterminism (batching, floating point) is never counted as evidence; any future stochastic repeats require an explicitly pre-registered stochastic source.
+5. Baseline strength: if arm B ≈ arm C because few candidates are harmful, that is a *finding* (gate unnecessary in this regime), not a failed experiment — record as such.
+6. **Scope-declaration gaming:** a trait could declare narrow applicability to face an easy in-scope check while arm B suffers its cost everywhere. Mitigations: (a) scope declared at extraction, frozen before gate stages, recorded in the CIG record; (b) out-of-scope harmlessness is still required; (c) trait utility in arm C is conditional on scope, but T_eval success is unconditional — misdeclared scope shows up as lost T_eval performance for arm C relative to arm B.
+
+## 7. Budget estimate (order-of-magnitude, for planning)
+
+Mining: 3 seeds × 60 tasks = 180 episodes. CIG per seed: 10 candidates × [replay 5×2 + ablation 20×2 + generalization 20×2 + regression 40] = 1,300 episodes → 3,900 across seeds (single deterministic run per (task, condition); ~130 episodes per candidate vs ~350 under the earlier repeated-run design). Final evaluation: 3 arms × (134 + 40 + 20) × 3 mining seeds ≈ 1.75k episodes. The interaction stage adds ≤ ~900 in the worst case (all pairs of 10 validated skills). Total ≈ 5.8–6.7k episodes × ~30 LLM calls ≈ 180–200k local-7B calls — feasible on one GPU node over a few days. **Bank construction (`replay_bank`, `generalization_bank`; ~84 instances) adds no LLM calls** — only per-trait evaluations on bank instances are billed, and per-trait counts are unchanged by the family-indexed layout.
+
+## 8. Pre-registration fields to fill BEFORE run start
+
+- [ ] Expected result, H2 (direction + rough magnitude): ______
+- [ ] Expected result, H1: ______
+- [ ] Expected number of candidates passing each gate stage: ______
+- [ ] Compute allocation and wall-clock cap: ______
+
+## 9. Review resolution (critic round 1, 2026-10-02)
+
+All five requested changes from PR #2 / issue #5 applied; decisions recorded in ADR-0002:
+
+1. Generalization stage split into **in-scope** (Δ ≥ 0 on unseen instances matching declared applicability) and **out-of-scope** (Δ ≥ −0.05 on non-matching families) — specialist traits are no longer penalized for not improving unrelated types (§4 stage 3).
+2. Raw 60/40 allocation replaced with **task-family-stratified quotas** (§2); `T_eval` remains the untouched official unseen split.
+3. Replay now uses **valid same-family resampling** from a disjoint reserve; synthetic object/room substitution dropped for M0 unless later proven semantics-preserving (§4 stage 1).
+4. **Candidate-set freeze** before arm branching: ranked list, top K=10, same frozen set for arms B and C, committed artifact; K-sensitivity {5,10,20} planned as EXP-0005 (§3, §5).
+5. **Post-primary threshold-sensitivity plan** added (τ_c, τ_r grids on T_gate data only, clearly secondary, no T_eval retuning) (§5).
+
+## 10. Review resolution (critic round 2, 2026-10-02)
+
+All three requested changes from PR #2 / issue #5 applied; decisions recorded in ADR-0002:
+
+1. **Pseudo-replication removed:** every gate stage runs exactly one deterministic execution per (task instance, condition) at eval temp 0; duplicate deterministic runs are never treated as independent evidence. Uncertainty sources are distinct task instances (cluster bootstrap) and independent mining seeds. A determinism/stochastic-source policy was added: any future repeated stochastic runs require an explicitly pre-registered stochastic source. Stage thresholds re-expressed over instances (replay: ≥ 3/5 success-with, Δ ≥ +2/5; ablation CI over the 20 instances). Per-candidate gate cost drops from ~350 to ~130 episodes (§4, §6.4, §7).
+2. **Per-trait sampling reuse semantics defined:** no replacement *within* a trait's evaluation set; cross-trait reuse allowed and logged per trait in the CIG records (intended paired design for comparability); applies to both the generalization reserve and the replay reserve (§2, §4 stage 3).
+3. **Machine-readable, evaluation-only applicability:** `applicability.task_families[]` declared at extraction, frozen with the candidate set, used only for stage-3 sampling/audit — never a runtime regulation predicate or agent-visible oracle. Field definition lives in the EAG schema (PR #1, commit `9ef2f5a`); the SkillRL projection adapter strips it (§3).
+
+## 11. Review resolution (final round, 2026-10-02)
+
+Both remaining blocks from PR #2 / issue #5 applied; decisions recorded in ADR-0002:
+
+1. **Family-indexed evaluation banks replace the small global reserves:** `replay_bank[family]` with ≥ 4 valid unseen instances per family and `generalization_bank[family]` with ≥ 10 per family — disjoint from T_mine, T_reg, ablation pool, interaction pool, each other, and from the untouched `T_eval`. **Feasibility fallback:** where ALFWorld availability prevents the guarantee, a family-specific **pre-registered maximum** is recorded in the split manifest before run start (never improvised mid-run). Stage 1 draws variants from `replay_bank[family-of-source-task]`; stage-3 in-scope draws from `generalization_bank[f]` over the trait's declared families. Reuse semantics unchanged: cross-trait reuse allowed and logged, within-trait no replacement (§2, §4).
+2. **Bank construction adds no LLM calls** — only per-trait evaluations on bank instances drive compute; per-trait counts and the total budget (§7) are unchanged by the family-indexed layout.
+3. **Applicability stripped from all runtime model inputs in every arm:** `applicability.task_families[]` and all evaluation-only metadata are removed from every arm's runtime inputs (A, B, C) — not only the strict SkillRL projection — so arm C cannot accidentally receive oracle metadata. Runtime prompt assembly consumes only the projected payload (`name`, `principle`, `when_to_apply`, `procedure`); assembly takes the stripped projection as input and tests assert absence of evaluation-only fields (checklist for #4/#7) (§3).
