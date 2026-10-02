@@ -38,15 +38,31 @@ genome:
     frozen: with-candidate-set
     evaluation_only: true             # gate sampling / audit ONLY
     runtime_use: forbidden            # never a regulation predicate or agent-visible oracle
+  runtime_input_policy:               # critic final round, R3
+    strip_evaluation_only_metadata: all-arms   # A, B, and C — not only the strict SkillRL projection
+    rationale: "arm C must never receive evaluation-only oracle metadata at runtime"
+    runtime_assembly_input: projected-payload-only   # name, principle, when_to_apply, procedure
+    enforcement: tests-assert-absence   # checklist for issues #4/#7
 
 environment:
   benchmark: ALFWorld
   task_families: ~6                   # stratification dimension
   splits:
     T_mine: {source: train, target_size: 60, stratified: true, per_family_min: 8, hash: commit-at-lock}
-    T_gate: {source: train, target_size: 60, stratified: true, per_family_min: 4, disjoint_from: T_mine, hash: commit-at-lock,
-             sub_pools: {ablation: 20, generalization_reserve: 20, interaction: 10, replay_reserve: 10}}
-    T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}
+    T_gate:
+      source: train
+      stratified: true
+      disjoint_from: T_mine
+      hash: commit-at-lock
+      target_size: "~114 = ablation 20 + interaction 10 + banks ~84"
+      sub_pools: {ablation: 20, interaction: 10}
+      evaluation_banks:                   # critic final round, R1: family-indexed, feasibility-guaranteed
+        replay_bank:          {indexed_by: family, per_family_min: 4, purpose: stage-1 same-family variants}
+        generalization_bank:  {indexed_by: family, per_family_min: 10, purpose: stage-3 in/out-of-scope sampling}
+        feasibility_fallback: pre-registered-family-specific-maximum   # recorded in split manifest before run start if availability prevents the minimum; never improvised mid-run
+        disjoint_from: [T_mine, T_reg, ablation_pool, interaction_pool, T_eval]
+        construction_cost: no-LLM-calls   # only per-trait evaluations on bank instances are billed
+    T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}   # untouched
     T_reg:  {source: subset-of-T_mine-solved-by-G0, size: 40}
   contamination_rule: T_eval never visible to miner, gate, or threshold tuning
 
@@ -92,6 +108,7 @@ evaluation:
 budget:
   episodes_est: 6000
   breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"
+  banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"
   note: "~180-200k local-7B calls; single GPU node, few days"
 
 record:
