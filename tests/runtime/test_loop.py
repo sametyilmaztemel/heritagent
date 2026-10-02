@@ -193,3 +193,89 @@ def test_policy_retry_cap_bounds_plan_retries(g0_config):
     assert result.status == "budget_exhausted"
     assert len(result.events.of_kind("retry_scheduled")) == 3
     assert result.events.of_kind("budget_exhausted")[-1].data["budget"] == "max_total_retries"
+
+
+def test_tool_catalog_reaches_model_request(g0_config):
+    from runtime.model_adapters import ScriptedAdapter, ToolSpec
+    adapter = ScriptedAdapter([react_final("done")])
+    env = ScriptedEnv({}, tools=[ToolSpec(name="heat_object", description="heat things",
+                                          parameters_schema={"type": "object",
+                                                             "required": ["object"],
+                                                             "properties": {"object": {"type": "string"}}})])
+    run_agent(config=g0_config, model=adapter, env=env, task="t",
+              budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64))
+    system = adapter.requests[0].messages[0].content
+    assert "- heat_object: heat things" in system
+    # deterministic sorted-key schema rendering from env.list_tools()
+    assert '"required": ["object"]' in system
+    assert '"type": "string"' in system
+
+
+def test_unknown_tool_rejected_before_env_call(g0_config):
+    from runtime.model_adapters import ScriptedAdapter
+    adapter = ScriptedAdapter([react_action("nonexistent_tool", {"x": 1}),
+                               react_final("recovered")])
+    env = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="unused")]})
+    result = run_agent(config=g0_config, model=adapter, env=env, task="t",
+                       budgets=Budgets(max_steps=2, max_total_retries=0, max_tokens_per_request=64))
+    assert env.calls == []  # environment never reached
+    rejected = result.events.of_kind("tool_rejected")
+    assert len(rejected) == 1
+    assert rejected[0].data["reason"] == "unknown_tool"
+    assert result.counters.failing_tools == 1  # counted as an agent failure
+    assert result.status == "finished"
+
+
+def test_invalid_arguments_rejected_before_env_call(g0_config):
+    from runtime.model_adapters import ScriptedAdapter, ToolSpec
+    adapter = ScriptedAdapter([react_action("heat_object", {"wrong": 1}),
+                               react_final("recovered")])
+    env = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="unused")]},
+                      tools=[ToolSpec(name="heat_object", description="",
+                                      parameters_schema={"type": "object", "required": ["object"],
+                                                          "properties": {"object": {"type": "string"}},
+                                                          "additionalProperties": False})])
+    result = run_agent(config=g0_config, model=adapter, env=env, task="t",
+                       budgets=Budgets(max_steps=2, max_total_retries=0, max_tokens_per_request=64))
+    assert env.calls == []
+    rejected = result.events.of_kind("tool_rejected")
+    assert rejected[0].data["reason"] == "invalid_arguments"
+    assert rejected[0].data["errors"]  # schema violations surfaced
+    assert result.status == "finished"
+
+
+def test_planner_max_plan_steps_changes_phenotype(registry, g0_config):
+    """Only the heritable planner gene's max_plan_steps changes: the runtime
+    phenotype must follow the policy limit, not just the external budget."""
+    from runtime.expression import compile_runtime_config
+    from runtime.model_adapters import ScriptedAdapter
+    from runtime.seed_g0 import build_g0_seed_genome
+
+    def genome_with_planner_steps(max_plan_steps: int) -> dict:
+        genome = build_g0_seed_genome(registry)
+        if max_plan_steps != 8:  # G0 default is 8; v2 binds a tighter policy
+            uri = registry.put("policy", "planner_react_v1", 2,
+                               {"style": "react", "max_plan_steps": max_plan_steps})
+            genome["genes"]["cognition"]["planner"]["version"] = 2
+            genome["genes"]["cognition"]["planner"]["artifact"] = uri
+        return genome
+
+    budgets = Budgets(max_steps=4, max_total_retries=0, max_tokens_per_request=64)
+
+    # baseline G0 (max_plan_steps=8): the external budget (4) ends the run
+    base_config = compile_runtime_config(genome_with_planner_steps(8), registry)
+    adapter = ScriptedAdapter([react_action("heat_object", {"object": "plate"}) for _ in range(4)])
+    env = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="ok")] * 4})
+    base = run_agent(config=base_config, model=adapter, env=env, task="t", budgets=budgets)
+    assert base.status == "budget_exhausted"
+    assert base.steps == 4
+    assert base.events.of_kind("budget_exhausted")[-1].data["budget"] == "max_steps"
+
+    # constrained planner gene (max_plan_steps=1): the POLICY ends the run earlier
+    tight_config = compile_runtime_config(genome_with_planner_steps(1), registry)
+    adapter2 = ScriptedAdapter([react_action("heat_object", {"object": "plate"}) for _ in range(4)])
+    env2 = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="ok")] * 4})
+    tight = run_agent(config=tight_config, model=adapter2, env=env2, task="t", budgets=budgets)
+    assert tight.status == "budget_exhausted"
+    assert tight.steps == 1
+    assert tight.events.of_kind("budget_exhausted")[-1].data["budget"] == "planner_max_plan_steps"

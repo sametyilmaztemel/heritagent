@@ -1,22 +1,33 @@
 """Optional vLLM backend (Qwen2.5-7B-Instruct) behind the ModelAdapter contract.
 
-Dependency strategy (issue #7 criterion 2): vLLM is imported lazily inside
-`_engine()` so the core test suite never requires vLLM or a GPU. When the
-dependency is missing, AdapterError/BackendUnavailableError is raised with a
-clear message — never a bare ImportError. The served model identity is
-surfaced through metadata(); the weights hash for EXP-0001 reproducibility
-is pinned and recorded at run time (#13).
+Dependency strategy (issue #7 criterion 2; API surface per critic review):
+vLLM is imported lazily inside `_engine()` so the core test suite never
+requires vLLM or a GPU. When the dependency is missing, BackendUnavailableError
+is raised with a clear message — never a bare ImportError.
 
-NOTE: the engine-call paths are written against the vLLM offline LLM API
-(`vllm.LLM`, `SamplingParams`, guided decoding, tool chat). They are covered
-by contract/failure-path tests only in this PR; parameter names may need a
-small adjustment pass when first run against a real engine (#13).
+The backend targets the CURRENT official offline API only:
+- structured outputs via `vllm.sampling_params.StructuredOutputsParams`
+  passed as `SamplingParams(structured_outputs=...)`;
+- offline `LLM.chat(messages, sampling_params, ...)` — `tool_choice` is NOT
+  a parameter of the offline chat API and is never sent;
+- offline `tool_call()` is implemented provider-neutrally: a constrained
+  JSON schema (oneOf over the offered tools, each with its own argument
+  schema) drives structured generation, and the returned call is validated
+  against the selected tool's parameters_schema. Native tool-choice
+  semantics belong to a future server/OpenAI-compatible adapter.
+
+An installed vLLM that lacks `StructuredOutputsParams` fails closed with
+UnsupportedFeatureError for structured features. The served model identity
+is surfaced through metadata(); the weights hash for EXP-0001
+reproducibility is pinned and recorded at run time (#13).
 """
 
 from __future__ import annotations
 
 import importlib
 from typing import Any
+
+from jsonschema import Draft202012Validator
 
 from runtime.model_adapters.base import (
     GenerationResult,
@@ -29,10 +40,23 @@ from runtime.model_adapters.base import (
 )
 from runtime.model_adapters.errors import (
     BackendUnavailableError,
+    ModelResponseError,
     UnsupportedFeatureError,
 )
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+
+
+def _import_vllm() -> Any:
+    try:
+        vllm_module = importlib.import_module("vllm")
+    except ImportError as exc:
+        raise BackendUnavailableError(
+            f"vLLM is not installed; install the optional runtime extra "
+            f"(pip install vllm) — original error: {exc}") from None
+    if vllm_module is None:  # sentinel-injected absence (deterministic tests)
+        raise BackendUnavailableError("vLLM is not installed (module unavailable)")
+    return vllm_module
 
 
 class VLLMAdapter(ModelAdapter):
@@ -49,15 +73,7 @@ class VLLMAdapter(ModelAdapter):
     # -- engine lifecycle ---------------------------------------------------
     def _engine(self) -> Any:
         if self._llm is None:
-            try:
-                vllm_module = importlib.import_module("vllm")  # lazy: heavy, GPU-bound
-                if vllm_module is None:  # sentinel-injected absence (deterministic tests)
-                    raise ImportError("vllm is not installed (module unavailable)")
-                llm_cls = vllm_module.LLM
-            except ImportError as exc:
-                raise BackendUnavailableError(
-                    f"vLLM is not installed; install the optional runtime extra "
-                    f"(pip install vllm) to use {self._model!r} — original error: {exc}") from None
+            llm_cls = _import_vllm().LLM  # raises BackendUnavailableError when absent
             kwargs: dict[str, Any] = {
                 "model": self._model,
                 "gpu_memory_utilization": self._gpu_memory_utilization,
@@ -68,19 +84,39 @@ class VLLMAdapter(ModelAdapter):
             self._llm = llm_cls(**kwargs)
         return self._llm
 
+    def _structured_outputs_params_cls(self) -> Any:
+        """Current-API probe: structured outputs require
+        `vllm.sampling_params.StructuredOutputsParams`; older installations
+        (GuidedDecodingParams era) fail closed here."""
+        try:
+            module = importlib.import_module("vllm.sampling_params")
+            if module is None:
+                raise ImportError("vllm.sampling_params is unavailable")
+            params_cls = getattr(module, "StructuredOutputsParams", None)
+        except ImportError as exc:
+            raise UnsupportedFeatureError(
+                f"installed vLLM does not expose vllm.sampling_params: {exc}") from None
+        if params_cls is None:
+            raise UnsupportedFeatureError(
+                "installed vLLM lacks StructuredOutputsParams (current structured-outputs "
+                "interface); update vLLM to use structured_generate/tool_call")
+        return params_cls
+
     # -- request translation -------------------------------------------------
     @staticmethod
     def _prompts(messages: list[ModelMessage]) -> list[dict]:
         return [{"role": m.role, "content": m.content} for m in messages]
 
-    def _sampling(self, settings: GenerationSettings) -> Any:
-        # engine creation precedes any _sampling call, so vLLM is importable here
-        vllm_module = importlib.import_module("vllm")
+    @staticmethod
+    def _sampling(settings: GenerationSettings, vllm_module: Any,
+                  structured_outputs: Any | None = None) -> Any:
         kwargs: dict[str, Any] = {"temperature": settings.temperature, "max_tokens": settings.max_tokens}
         if settings.seed is not None:
             kwargs["seed"] = settings.seed
         if settings.stop:
             kwargs["stop"] = list(settings.stop)
+        if structured_outputs is not None:
+            kwargs["structured_outputs"] = structured_outputs
         return vllm_module.SamplingParams(**kwargs)
 
     @staticmethod
@@ -96,46 +132,63 @@ class VLLMAdapter(ModelAdapter):
 
     # -- ModelAdapter ---------------------------------------------------------
     def generate(self, messages: list[ModelMessage], settings: GenerationSettings) -> GenerationResult:
+        vllm_module = _import_vllm()
         engine = self._engine()  # raises BackendUnavailableError when vLLM is missing
-        result = engine.chat(self._prompts(messages), self._sampling(settings))
+        result = engine.chat(self._prompts(messages), self._sampling(settings, vllm_module))
         return self._extract(result[0] if isinstance(result, list) else result)
 
     def structured_generate(self, messages: list[ModelMessage], settings: GenerationSettings,
                             schema: dict) -> GenerationResult:
-        try:
-            guided_module = importlib.import_module("vllm.sampling_params")
-            if guided_module is None:
-                raise ImportError("vllm.sampling_params is unavailable")
-            guided_cls = guided_module.GuidedDecodingParams
-        except ImportError as exc:
-            raise UnsupportedFeatureError(
-                f"vLLM guided decoding is unavailable in this installation: {exc}") from None
+        vllm_module = _import_vllm()
+        params_cls = self._structured_outputs_params_cls()
         engine = self._engine()
-        params = self._sampling(settings)
-        params.guided_decoding = guided_cls(json=schema)
-        result = engine.chat(self._prompts(messages), params)
+        structured_outputs = params_cls(json=schema)
+        result = engine.chat(self._prompts(messages),
+                             self._sampling(settings, vllm_module, structured_outputs))
         extracted = self._extract(result[0] if isinstance(result, list) else result)
         self._validate_structured(extracted.text, schema)
         return extracted
 
     def tool_call(self, messages: list[ModelMessage], settings: GenerationSettings,
                   tools: list[ToolSpec]) -> ToolCallRequest:
+        """Provider-neutral offline tool calling: a constrained JSON schema
+        (oneOf over the offered tools, each carrying its own argument schema)
+        drives structured generation; the returned call is validated against
+        the selected tool's parameters_schema. The offline chat API has no
+        `tool_choice` parameter and none is ever sent."""
+        if not tools:
+            raise ModelResponseError("tool_call requires at least one offered tool")
+        vllm_module = _import_vllm()
+        params_cls = self._structured_outputs_params_cls()
         engine = self._engine()
-        chat_tools = [{"type": "function",
-                       "function": {"name": t.name, "description": t.description,
-                                    "parameters": t.parameters_schema}} for t in tools]
-        result = engine.chat(self._prompts(messages), self._sampling(settings),
-                             tools=chat_tools, tool_choice="required")
-        output = (result[0] if isinstance(result, list) else result).outputs[0]
-        calls = getattr(output, "tool_calls", None) or []
-        if not calls:
-            raise UnsupportedFeatureError("vLLM returned no tool call despite tool_choice=required")
-        call = calls[0]
-        function = getattr(call, "function", call)
-        arguments = function.arguments if isinstance(function.arguments, dict) \
-            else __import__("json").loads(function.arguments)
-        return ToolCallRequest(name=function.name, arguments=arguments,
-                               raw_text=getattr(output, "text", "") or "")
+
+        schema = {"oneOf": [
+            {"type": "object",
+             "required": ["name", "arguments"],
+             "properties": {"name": {"const": tool.name},
+                            "arguments": tool.parameters_schema},
+             "additionalProperties": False}
+            for tool in tools
+        ]}
+        structured_outputs = params_cls(json=schema)
+        result = engine.chat(self._prompts(messages),
+                             self._sampling(settings, vllm_module, structured_outputs))
+        extracted = self._extract(result[0] if isinstance(result, list) else result)
+        payload = self._validate_structured(extracted.text, {"type": "object"})
+        name = payload.get("name")
+        selected = next((t for t in tools if t.name == name), None)
+        if selected is None:
+            raise ModelResponseError(f"tool-call names unknown tool {name!r}; offered: "
+                                     f"{[t.name for t in tools]}")
+        arguments = payload.get("arguments")
+        if not isinstance(arguments, dict):
+            raise ModelResponseError(f"tool-call arguments for {name!r} must be a JSON object")
+        arg_errors = [e.message for e in
+                      Draft202012Validator(selected.parameters_schema).iter_errors(arguments)]
+        if arg_errors:
+            raise ModelResponseError(f"tool-call arguments violate {name!r} parameters_schema: "
+                                     f"{sorted(arg_errors)}")
+        return ToolCallRequest(name=selected.name, arguments=arguments, raw_text=extracted.text)
 
     def estimate_tokens(self, text: str) -> int:
         # budgeting estimate only; the engine's own tokenizer is authoritative
@@ -143,12 +196,18 @@ class VLLMAdapter(ModelAdapter):
 
     def metadata(self) -> ModelMetadata:
         backend_version = None
+        structured_supported = False
         try:
-            import vllm  # noqa: PLC0415 — cheap version probe; vLLM may be absent
-            backend_version = getattr(vllm, "__version__", None)
+            module = _import_vllm()
+            backend_version = getattr(module, "__version__", None)
+            sampling_params = importlib.import_module("vllm.sampling_params")
+            if sampling_params is not None:
+                structured_supported = hasattr(sampling_params, "StructuredOutputsParams")
         except ImportError:
-            backend_version = None
+            pass  # absent installation: defaults stand
         return ModelMetadata(model_id=self._model, revision=self._revision, backend="vllm",
                              backend_version=backend_version,
-                             capabilities={"generate": True, "structured": True, "tools": True,
+                             capabilities={"generate": True,
+                                           "structured": structured_supported,
+                                           "offline_constrained_tool_call": structured_supported,
                                            "engine_created": self._llm is not None})
