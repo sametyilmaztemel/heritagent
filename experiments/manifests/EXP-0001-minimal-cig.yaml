@@ -1,15 +1,16 @@
-# EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC §24 format)
-# Design locked 2026-10-02. Status: DESIGN (not yet run). See EXP-0001-design.md.
+# EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC section 24 format)
+# Design locked 2026-10-02; REVISED after critic round 1 (2026-10-02, PR #2 / issue #5).
+# Status: design-revised, re-review requested. See EXP-0001-design.md (sections 2-5, 9).
 
 experiment:
   id: EXP-0001
   name: minimal-causal-inheritance-gate
   hypothesis: [H2, H1, H5-partial]
   milestone: 0
-  status: design-locked
+  status: design-revised-re-review-requested
   preregistration:
     locked: true
-    expected_results_filled: false   # must be true before run starts (SPEC §33)
+    expected_results_filled: false   # must be true before run starts (SPEC section 33)
 
 model:
   name: Qwen2.5-7B-Instruct
@@ -21,29 +22,40 @@ model:
 genome:
   initial: G0-seed-react              # planner_react_v1 + retry_backoff_v1, no skills
   schema: eag/0.1
-  max_candidate_traits: 10
+  candidate_set:
+    cap: 10                           # K
+    freeze: before-arm-branching      # same frozen ranked set feeds arms B and C
+    ranking: [miner-estimated-generality, discovery-order]   # primary, tie-break
+    frozen_artifact: commit-at-run-time
 
 environment:
   benchmark: ALFWorld
+  task_families: ~6                   # stratification dimension
   splits:
-    T_mine: {source: train, size: 60, hash: commit-at-lock}
-    T_gate: {source: train, size: 40, disjoint_from: T_mine, hash: commit-at-lock}
+    T_mine: {source: train, target_size: 60, stratified: true, per_family_min: 8, hash: commit-at-lock}
+    T_gate: {source: train, target_size: 60, stratified: true, per_family_min: 4, disjoint_from: T_mine, hash: commit-at-lock,
+             sub_pools: {ablation: 20, generalization_reserve: 20, interaction: 10, replay_reserve: 10}}
     T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}
     T_reg:  {source: subset-of-T_mine-solved-by-G0, size: 40}
   contamination_rule: T_eval never visible to miner, gate, or threshold tuning
 
 arms:
   A-no-inheritance:   {g1_genome: "G0"}
-  B-unrestricted:     {g1_genome: "G0 + all mined candidates as skill genes"}
+  B-unrestricted:     {g1_genome: "G0 + all frozen candidates as skill genes"}
   C-cig-gated:        {g1_genome: "G0 + validated candidates only"}
-  shared: [identical-G0, identical-seeds, identical-eval-budget]
+  shared: [identical-G0, identical-frozen-candidate-set, identical-seeds, identical-eval-budget]
 
 inheritance:
   causal_gate: true
   stages:
-    replay:          {variants: 4, runs: 5, pass: "success_with>=0.6 and delta>=0.4", expression_check: true}
-    ablation:        {tasks: 20, runs: 3, pass: "bootstrap95_lb>0 and delta>=0.05 (tau_c)"}
-    generalization:  {tasks: 20, cross_task_type: true, pass: "delta>=0 (tau_g)"}
+    replay:          {variants: 4, variant_source: same-family-valid-resampling,   # no synthetic substitution in M0
+                      substitution_note: "admissible later only if proven semantics-preserving",
+                      runs: 5, pass: "success_with>=0.6 and delta>=0.4", expression_check: true}
+    ablation:        {pool: stratified-ablation, tasks: 20, runs: 3, pass: "bootstrap95_lb>0 and delta>=0.05 (tau_c)"}
+    generalization:
+      in_scope:      {tasks: 10, source: families-matching-declared-applicability, pass: "delta>=0"}
+      out_of_scope:  {tasks: 10, source: families-outside-declared-applicability, pass: "delta>=-0.05"}
+      scope_declaration: {declared_by: trait-miner-at-extraction, frozen_before: gate-stage-1, recorded_in: cig-record}
     regression:      {tasks: 40, pass: "drop<=0.03 (tau_r)"}
     interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, harmful_pair_threshold: -0.05}
   expression_overhead_cap_tokens: 512   # tau_k
@@ -56,10 +68,13 @@ evaluation:
     h2_supported_if: "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
     h1_supported_if: "C-A > 0, CI excl. 0"
     seed_consistency: "direction holds in >= 2/3 seeds"
+  sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval
+    thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}
+    candidate_cap: {k_grid: [5, 10, 20], followup_experiment: EXP-0005}
 
 budget:
-  episodes_est: 5500
+  episodes_est: 6000
   note: "~150-200k local-7B calls; single GPU node, few days"
 
 record:
-  required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, gate-thresholds, run-log]
+  required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]
