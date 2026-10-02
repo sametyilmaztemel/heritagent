@@ -89,7 +89,7 @@ inheritance:
   sampling_reuse:                     # critic round 2, R2
     within_trait_evaluation_set: no-replacement
     across_traits: allowed-and-logged # paired comparability; per-trait allocations recorded in CIG records
-    applies_to: [generalization_reserve, replay_reserve]
+    applies_to: [generalization_bank, replay_bank]
   expression_overhead_cap_tokens: 512   # tau_k
 
 evaluation:
