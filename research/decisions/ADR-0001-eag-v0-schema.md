@@ -26,3 +26,10 @@ All four requested changes applied; schema artifact updated in the same revision
 | R2 | Two-level CIG evidence: aggregate verdict + immutable per-seed child records | Adopted in `cig/0.1`: `CIG-0042` → `CIG-0042/S11`, `/S23`, `/S41`; children append-only; aggregate references children (§4 of the artifact) |
 | R3 | Remove `backbone_tested` from genome manifest; separate BackboneEvaluationRegistry keyed `(genome_id, model_hash, benchmark, seed)` | Property removed from the JSON Schema; registry specified in D7 |
 | R4 | SkillRL-compatible superset payload with stable `procedure[]` step IDs + projection adapter | Adopted in D1: `name`, `principle`, `when_to_apply` (SkillRL names) + stable step IDs; M0 scores whole skills; projection adapter emits strict SkillRL skills for the baseline arm |
+
+## Review resolution — critic round 2 (2026-10-02, PR #1 / issue #3)
+
+| # | Critic requirement | Resolution |
+|---|---|---|
+| R1 | Enforce design invariants in JSON Schema: `artifact` + `provenance` required; assimilation requires source trajectory + CIG record + born generation | `geneRef.required` = [gene_id, version, type, **artifact**, origin, **provenance**]; `provenance.required` = [**born_generation**] for all origins (lineage auditability); `if origin == "assimilation"` → require `source_trajectory` + `cig_record` (draft 2020-12 `if/then`). Example instance updated and validates against the tightened schema. Implementation issue #4 must reject violations via validator tests |
+| R2 | Frozen machine-readable applicability for gate sampling, oracle-free at runtime (coordinated with PR #2 round 2) | `applicability.task_families[]` added to the skill payload frontmatter (D1): produced at extraction, frozen before gate stage 1, **evaluation-only** (gate sampling/audit); never a runtime regulation predicate or agent-visible oracle; agent-facing scope remains free-form `when_to_apply`; stripped by the SkillRL projection adapter |
