@@ -1,0 +1,65 @@
+# EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC §24 format)
+# Design locked 2026-10-02. Status: DESIGN (not yet run). See EXP-0001-design.md.
+
+experiment:
+  id: EXP-0001
+  name: minimal-causal-inheritance-gate
+  hypothesis: [H2, H1, H5-partial]
+  milestone: 0
+  status: design-locked
+  preregistration:
+    locked: true
+    expected_results_filled: false   # must be true before run starts (SPEC §33)
+
+model:
+  name: Qwen2.5-7B-Instruct
+  serving: vllm-local
+  revision: pin-at-run-time          # record weights hash at run start
+  eval_temperature: 0.0
+  mining_temperature: 0.7
+
+genome:
+  initial: G0-seed-react              # planner_react_v1 + retry_backoff_v1, no skills
+  schema: eag/0.1
+  max_candidate_traits: 10
+
+environment:
+  benchmark: ALFWorld
+  splits:
+    T_mine: {source: train, size: 60, hash: commit-at-lock}
+    T_gate: {source: train, size: 40, disjoint_from: T_mine, hash: commit-at-lock}
+    T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}
+    T_reg:  {source: subset-of-T_mine-solved-by-G0, size: 40}
+  contamination_rule: T_eval never visible to miner, gate, or threshold tuning
+
+arms:
+  A-no-inheritance:   {g1_genome: "G0"}
+  B-unrestricted:     {g1_genome: "G0 + all mined candidates as skill genes"}
+  C-cig-gated:        {g1_genome: "G0 + validated candidates only"}
+  shared: [identical-G0, identical-seeds, identical-eval-budget]
+
+inheritance:
+  causal_gate: true
+  stages:
+    replay:          {variants: 4, runs: 5, pass: "success_with>=0.6 and delta>=0.4", expression_check: true}
+    ablation:        {tasks: 20, runs: 3, pass: "bootstrap95_lb>0 and delta>=0.05 (tau_c)"}
+    generalization:  {tasks: 20, cross_task_type: true, pass: "delta>=0 (tau_g)"}
+    regression:      {tasks: 40, pass: "drop<=0.03 (tau_r)"}
+    interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, harmful_pair_threshold: -0.05}
+  expression_overhead_cap_tokens: 512   # tau_k
+
+evaluation:
+  metrics: [heldout_success, regression_rate, genome_size_genes, genome_size_tokens, descendant_adaptation_cost]
+  seeds: [11, 23, 41]
+  statistics:
+    primary: "cluster bootstrap 95% CI over tasks, 10k resamples"
+    h2_supported_if: "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
+    h1_supported_if: "C-A > 0, CI excl. 0"
+    seed_consistency: "direction holds in >= 2/3 seeds"
+
+budget:
+  episodes_est: 5500
+  note: "~150-200k local-7B calls; single GPU node, few days"
+
+record:
+  required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, gate-thresholds, run-log]
