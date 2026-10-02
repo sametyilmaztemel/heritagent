@@ -1,12 +1,12 @@
 # ADR-0002 — Adopt EXP-0001 design (Milestone 0: minimal CIG experiment)
 
-Date: 2026-10-02 · Status: PROPOSED (awaiting cross-review per SPEC §32) · Artifacts: `experiments/manifests/EXP-0001-design.md`, `EXP-0001-minimal-cig.yaml`
+Date: 2026-10-02 · Status: REVISED — critic round 1 applied, re-review requested (SPEC §32) · Artifacts: `experiments/manifests/EXP-0001-design.md`, `EXP-0001-minimal-cig.yaml`
 
 **Problem.** H2 (gated inheritance beats unrestricted inheritance) is the project's load-bearing hypothesis (SPEC §17); it must be tested at minimum cost before any population/evolution machinery is built (SPEC §27–29).
 
 **Current design.** None — no experiment has been run.
 
-**Proposed change.** Lock EXP-0001 as a 3-arm, 4-split, single-domain experiment: ALFWorld + Qwen2.5-7B-Instruct (local); arms A (no inheritance) / B (unrestricted = SkillRL-style skill persistence, frozen weights) / C (CIG-gated); four disjoint splits (T_mine/T_gate/T_eval/T_reg) with the contamination rule "T_eval never visible to miner, gate, or threshold tuning"; fixed v0 gate thresholds (τ_c = 5pp contribution with bootstrap LB > 0; τ_g = non-negative cross-type generalization; τ_r = 3pp regression; τ_k = 512 tokens); cluster-bootstrap statistics with pre-locked support conditions.
+**Proposed change.** Lock EXP-0001 as a 3-arm, 4-split, single-domain experiment: ALFWorld + Qwen2.5-7B-Instruct (local); arms A (no inheritance) / B (unrestricted = SkillRL-style skill persistence, frozen weights) / C (CIG-gated); **task-family-stratified** splits (T_mine/T_gate with sub-pools/T_eval/T_reg) with the contamination rule "T_eval never visible to miner, gate, or threshold tuning"; **frozen ranked candidate set** (K=10) shared by arms B and C before branching; gate stages with **in-scope/out-of-scope generalization** and same-family-valid-resampling replay; fixed v0 gate thresholds (τ_c = 5pp contribution with bootstrap LB > 0; in-scope Δ ≥ 0, out-of-scope Δ ≥ −5pp; τ_r = 3pp regression; τ_k = 512 tokens); cluster-bootstrap statistics with pre-locked support conditions plus pre-planned **secondary** threshold- and cap-sensitivity analyses (no T_eval retuning).
 
 **Reason.** (a) ALFWorld/Qwen2.5-7B matches SkillRL's setup, making arm B a faithful frozen-weights reconstruction of the strongest adjacent baseline and enabling future direct comparison; (b) the four-split rule is the only way H2's held-out claim survives reviewer scrutiny — gate data and eval data must be disjoint; (c) local model makes the ~5–6k-episode CIG replay/ablation loop affordable and reproducible; (d) pre-locked thresholds and success conditions pre-empt confirmation bias (SPEC §33).
 
@@ -16,4 +16,14 @@ Date: 2026-10-02 · Status: PROPOSED (awaiting cross-review per SPEC §32) · Ar
 
 **Compatibility impact.** Requires: EAG v0 schema (ADR-0001) implemented for genome/manifest + somatic envelope; ModelAdapter (vLLM); trajectory recorder; Trait Miner v0 (SkillRL-adapted distillation — cited, not claimed); CIG stages 1–4 with record emission. No population manager, no mutation, no recombination, no lineage graph beyond parent pointers.
 
-**Cross-review asks:** (1) adequacy of 60/40/20/20 task allocations given ALFWorld's ~6 task types; (2) whether replay "perturbed variants" (object/room substitution) are implementable cleanly in ALFWorld or should fall back to same-type resampling; (3) whether the ≤10-candidate cap biases against arm B's best case.
+**Cross-review asks:** all five points from the critic round are resolved below; no unresolved questions remain from the builder side.
+
+## Review resolution — critic round 1 (2026-10-02, PR #2 / issue #5)
+
+| # | Critic requirement | Resolution |
+|---|---|---|
+| R1 | Split generalization into in-scope (help where applicable) and out-of-scope (harmless where not applicable) — do not penalize specialist traits | Stage 3 split: in-scope Δ ≥ 0 on unseen instances matching the trait's declared applicability; out-of-scope Δ ≥ −0.05 on non-matching families. Scope declared by the miner at extraction, frozen before gate stage 1, recorded in the CIG record (design §4) |
+| R2 | Replace raw 60/40 allocation with task-family-stratified quotas; T_eval untouched | Stratified quotas with per-family minimums; T_gate (~60) organized into sub-pools (ablation 20 / generalization reserve 20 / interaction 10 / replay reserve 10); T_eval = official unseen split, untouched (design §2) |
+| R3 | Prefer valid same-family resampling over synthetic object/room substitution unless proven semantics-preserving | Replay variants = 4 unseen same-family instances from the disjoint replay reserve; synthetic substitution dropped for M0 with an explicit re-admission condition (design §4 stage 1) |
+| R4 | Freeze the candidate set before arm branching; same candidates for B and C; record ranking and cap logic; plan K={5,10,20} sensitivity | Frozen ranked list (miner-estimated generality, discovery-order tie-break), top K=10, committed artifact before branching; K-sensitivity planned as EXP-0005 (design §3, §5) |
+| R5 | Add a post-primary threshold-sensitivity plan (secondary, no retuning on T_eval) | Pre-planned secondary analysis: τ_c ∈ {0.03, 0.05, 0.08}, τ_r ∈ {0.02, 0.03, 0.05} grids computed on T_gate stage data only; primary conclusions immutable (design §5, manifest `sensitivity_secondary`) |
