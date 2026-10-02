@@ -1,6 +1,6 @@
 # EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC section 24 format)
-# Design locked 2026-10-02; REVISED after critic round 1 (2026-10-02, PR #2 / issue #5).
-# Status: design-revised, re-review requested. See EXP-0001-design.md (sections 2-5, 9).
+# Design locked 2026-10-02; REVISED after critic round 1 and round 2 (2026-10-02, PR #2 / issue #5).
+# Status: design-revised, re-review requested. See EXP-0001-design.md (sections 2-5, 9-10).
 
 experiment:
   id: EXP-0001
@@ -18,6 +18,11 @@ model:
   revision: pin-at-run-time          # record weights hash at run start
   eval_temperature: 0.0
   mining_temperature: 0.7
+  determinism_policy:                # critic round 2, R1
+    executions_per_task_condition: 1 # exactly one run per (task instance, condition) in all gate stages
+    no_pseudo_replication: true      # duplicate deterministic runs are never independent evidence
+    uncertainty_sources: [distinct-task-instances, independent-mining-seeds]
+    future_stochastic_repeats: require-explicit-pre-registered-stochastic-source
 
 genome:
   initial: G0-seed-react              # planner_react_v1 + retry_backoff_v1, no skills
@@ -27,6 +32,12 @@ genome:
     freeze: before-arm-branching      # same frozen ranked set feeds arms B and C
     ranking: [miner-estimated-generality, discovery-order]   # primary, tie-break
     frozen_artifact: commit-at-run-time
+  applicability:                      # critic round 2, R3 (field defined in EAG schema, PR #1)
+    field: applicability.task_families[]
+    produced_at: extraction
+    frozen: with-candidate-set
+    evaluation_only: true             # gate sampling / audit ONLY
+    runtime_use: forbidden            # never a regulation predicate or agent-visible oracle
 
 environment:
   benchmark: ALFWorld
@@ -43,38 +54,45 @@ arms:
   A-no-inheritance:   {g1_genome: "G0"}
   B-unrestricted:     {g1_genome: "G0 + all frozen candidates as skill genes"}
   C-cig-gated:        {g1_genome: "G0 + validated candidates only"}
-  shared: [identical-G0, identical-frozen-candidate-set, identical-seeds, identical-eval-budget]
+  shared: [identical-G0, identical-frozen-candidate-set, identical-mining-seeds, identical-eval-budget]
 
 inheritance:
   causal_gate: true
   stages:
     replay:          {variants: 4, variant_source: same-family-valid-resampling,   # no synthetic substitution in M0
                       substitution_note: "admissible later only if proven semantics-preserving",
-                      runs: 5, pass: "success_with>=0.6 and delta>=0.4", expression_check: true}
-    ablation:        {pool: stratified-ablation, tasks: 20, runs: 3, pass: "bootstrap95_lb>0 and delta>=0.05 (tau_c)"}
+                      runs_per_condition: 1, pass: "success_with>=0.6-of-5-instances and delta>=+0.4", expression_check: true}
+    ablation:        {pool: stratified-ablation, tasks: 20, runs_per_condition: 1,
+                      pass: "cluster-bootstrap95-over-instances_lb>0 and delta>=0.05 (tau_c)"}
     generalization:
-      in_scope:      {tasks: 10, source: families-matching-declared-applicability, pass: "delta>=0"}
-      out_of_scope:  {tasks: 10, source: families-outside-declared-applicability, pass: "delta>=-0.05"}
+      in_scope:      {tasks: 10, source: families-matching-frozen-applicability, runs_per_condition: 1, pass: "delta>=0"}
+      out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05"}
       scope_declaration: {declared_by: trait-miner-at-extraction, frozen_before: gate-stage-1, recorded_in: cig-record}
-    regression:      {tasks: 40, pass: "drop<=0.03 (tau_r)"}
-    interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, harmful_pair_threshold: -0.05}
+    regression:      {tasks: 40, runs_per_condition: 1, pass: "drop<=0.03 (tau_r)"}
+    interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, runs_per_condition: 1, harmful_pair_threshold: -0.05}
+  sampling_reuse:                     # critic round 2, R2
+    within_trait_evaluation_set: no-replacement
+    across_traits: allowed-and-logged # paired comparability; per-trait allocations recorded in CIG records
+    applies_to: [generalization_reserve, replay_reserve]
   expression_overhead_cap_tokens: 512   # tau_k
 
 evaluation:
   metrics: [heldout_success, regression_rate, genome_size_genes, genome_size_tokens, descendant_adaptation_cost]
-  seeds: [11, 23, 41]
+  mining_seeds: [11, 23, 41]
   statistics:
     primary: "cluster bootstrap 95% CI over tasks, 10k resamples"
     h2_supported_if: "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
     h1_supported_if: "C-A > 0, CI excl. 0"
-    seed_consistency: "direction holds in >= 2/3 seeds"
+    seed_consistency: "direction holds in >= 2/3 mining seeds"
+    gate_statistics: "over distinct task instances only; one deterministic execution per (instance, condition)"
   sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval
     thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}
     candidate_cap: {k_grid: [5, 10, 20], followup_experiment: EXP-0005}
 
 budget:
   episodes_est: 6000
-  note: "~150-200k local-7B calls; single GPU node, few days"
+  breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"
+  note: "~180-200k local-7B calls; single GPU node, few days"
 
 record:
   required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]
