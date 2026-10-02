@@ -1,0 +1,115 @@
+# EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC section 24 format)
+# Design locked 2026-10-02; REVISED after critic round 1 and round 2 (2026-10-02, PR #2 / issue #5).
+# Status: design-revised, re-review requested. See EXP-0001-design.md (sections 2-5, 9-10).
+
+experiment:
+  id: EXP-0001
+  name: minimal-causal-inheritance-gate
+  hypothesis: [H2, H1, H5-partial]
+  milestone: 0
+  status: design-revised-re-review-requested
+  preregistration:
+    locked: true
+    expected_results_filled: false   # must be true before run starts (SPEC section 33)
+
+model:
+  name: Qwen2.5-7B-Instruct
+  serving: vllm-local
+  revision: pin-at-run-time          # record weights hash at run start
+  eval_temperature: 0.0
+  mining_temperature: 0.7
+  determinism_policy:                # critic round 2, R1
+    executions_per_task_condition: 1 # exactly one run per (task instance, condition) in all gate stages
+    no_pseudo_replication: true      # duplicate deterministic runs are never independent evidence
+    uncertainty_sources: [distinct-task-instances, independent-mining-seeds]
+    future_stochastic_repeats: require-explicit-pre-registered-stochastic-source
+
+genome:
+  initial: G0-seed-react              # planner_react_v1 + retry_backoff_v1, no skills
+  schema: eag/0.1
+  candidate_set:
+    cap: 10                           # K
+    freeze: before-arm-branching      # same frozen ranked set feeds arms B and C
+    ranking: [miner-estimated-generality, discovery-order]   # primary, tie-break
+    frozen_artifact: commit-at-run-time
+  applicability:                      # critic round 2, R3 (field defined in EAG schema, PR #1)
+    field: applicability.task_families[]
+    produced_at: extraction
+    frozen: with-candidate-set
+    evaluation_only: true             # gate sampling / audit ONLY
+    runtime_use: forbidden            # never a regulation predicate or agent-visible oracle
+  runtime_input_policy:               # critic final round, R3
+    strip_evaluation_only_metadata: all-arms   # A, B, and C — not only the strict SkillRL projection
+    rationale: "arm C must never receive evaluation-only oracle metadata at runtime"
+    runtime_assembly_input: projected-payload-only   # name, principle, when_to_apply, procedure
+    enforcement: tests-assert-absence   # checklist for issues #4/#7
+
+environment:
+  benchmark: ALFWorld
+  task_families: ~6                   # stratification dimension
+  splits:
+    T_mine: {source: train, target_size: 60, stratified: true, per_family_min: 8, hash: commit-at-lock}
+    T_gate:
+      source: train
+      stratified: true
+      disjoint_from: T_mine
+      hash: commit-at-lock
+      target_size: "~114 = ablation 20 + interaction 10 + banks ~84"
+      sub_pools: {ablation: 20, interaction: 10}
+      evaluation_banks:                   # critic final round, R1: family-indexed, feasibility-guaranteed
+        replay_bank:          {indexed_by: family, per_family_min: 4, purpose: stage-1 same-family variants}
+        generalization_bank:  {indexed_by: family, per_family_min: 10, purpose: stage-3 in/out-of-scope sampling}
+        feasibility_fallback: pre-registered-family-specific-maximum   # recorded in split manifest before run start if availability prevents the minimum; never improvised mid-run
+        disjoint_from: [T_mine, T_reg, ablation_pool, interaction_pool, T_eval]
+        construction_cost: no-LLM-calls   # only per-trait evaluations on bank instances are billed
+    T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}   # untouched
+    T_reg:  {source: subset-of-T_mine-solved-by-G0, size: 40}
+  contamination_rule: T_eval never visible to miner, gate, or threshold tuning
+
+arms:
+  A-no-inheritance:   {g1_genome: "G0"}
+  B-unrestricted:     {g1_genome: "G0 + all frozen candidates as skill genes"}
+  C-cig-gated:        {g1_genome: "G0 + validated candidates only"}
+  shared: [identical-G0, identical-frozen-candidate-set, identical-mining-seeds, identical-eval-budget]
+
+inheritance:
+  causal_gate: true
+  stages:
+    replay:          {variants: 4, variant_source: same-family-valid-resampling,   # no synthetic substitution in M0
+                      substitution_note: "admissible later only if proven semantics-preserving",
+                      runs_per_condition: 1, pass: "success_with>=0.6-of-5-instances and delta>=+0.4", expression_check: true}
+    ablation:        {pool: stratified-ablation, tasks: 20, runs_per_condition: 1,
+                      pass: "cluster-bootstrap95-over-instances_lb>0 and delta>=0.05 (tau_c)"}
+    generalization:
+      in_scope:      {tasks: 10, source: families-matching-frozen-applicability, runs_per_condition: 1, pass: "delta>=0"}
+      out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05"}
+      scope_declaration: {declared_by: trait-miner-at-extraction, frozen_before: gate-stage-1, recorded_in: cig-record}
+    regression:      {tasks: 40, runs_per_condition: 1, pass: "drop<=0.03 (tau_r)"}
+    interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, runs_per_condition: 1, harmful_pair_threshold: -0.05}
+  sampling_reuse:                     # critic round 2, R2
+    within_trait_evaluation_set: no-replacement
+    across_traits: allowed-and-logged # paired comparability; per-trait allocations recorded in CIG records
+    applies_to: [generalization_reserve, replay_reserve]
+  expression_overhead_cap_tokens: 512   # tau_k
+
+evaluation:
+  metrics: [heldout_success, regression_rate, genome_size_genes, genome_size_tokens, descendant_adaptation_cost]
+  mining_seeds: [11, 23, 41]
+  statistics:
+    primary: "cluster bootstrap 95% CI over tasks, 10k resamples"
+    h2_supported_if: "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
+    h1_supported_if: "C-A > 0, CI excl. 0"
+    seed_consistency: "direction holds in >= 2/3 mining seeds"
+    gate_statistics: "over distinct task instances only; one deterministic execution per (instance, condition)"
+  sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval
+    thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}
+    candidate_cap: {k_grid: [5, 10, 20], followup_experiment: EXP-0005}
+
+budget:
+  episodes_est: 6000
+  breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"
+  banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"
+  note: "~180-200k local-7B calls; single GPU node, few days"
+
+record:
+  required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]
