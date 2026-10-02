@@ -17,30 +17,30 @@
         "cognition": {
           "type": "object",
           "properties": {
-            "planner":    {"$ref": "#/$defs/geneRef"},
-            "verifier":   {"$ref": "#/$defs/geneRef"},
-            "reflection": {"$ref": "#/$defs/geneRef"}
+            "planner":    {"$ref": "#/$defs/policyRef"},
+            "verifier":   {"$ref": "#/$defs/policyRef"},
+            "reflection": {"$ref": "#/$defs/policyRef"}
           },
           "additionalProperties": false
         },
         "memory": {
           "type": "object",
           "properties": {
-            "retrieval":   {"$ref": "#/$defs/geneRef"},
-            "compression": {"$ref": "#/$defs/geneRef"}
+            "retrieval":   {"$ref": "#/$defs/policyRef"},
+            "compression": {"$ref": "#/$defs/policyRef"}
           },
           "additionalProperties": false
         },
         "execution": {
           "type": "object",
           "properties": {
-            "tool_selector":   {"$ref": "#/$defs/geneRef"},
-            "retry_policy":    {"$ref": "#/$defs/geneRef"},
-            "error_recovery":  {"$ref": "#/$defs/geneRef"}
+            "tool_selector":   {"$ref": "#/$defs/policyRef"},
+            "retry_policy":    {"$ref": "#/$defs/policyRef"},
+            "error_recovery":  {"$ref": "#/$defs/policyRef"}
           },
           "additionalProperties": false
         },
-        "skills": {"type": "array", "items": {"$ref": "#/$defs/geneRef"}}
+        "skills": {"type": "array", "items": {"$ref": "#/$defs/skillRef"}}
       },
       "additionalProperties": false
     },
@@ -87,6 +87,20 @@
           }
         }
       }
+    },
+    "policyRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geneRef"},
+        {"properties": {"type": {"const": "policy"}},
+         "description": "cognition/memory/execution slots carry policy genes only"}
+      ]
+    },
+    "skillRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geneRef"},
+        {"properties": {"type": {"const": "skill"}},
+         "description": "skills[] carries skill genes only"}
+      ]
     },
     "condition": {
       "type": "object",

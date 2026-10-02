@@ -50,30 +50,30 @@ Design goals:
         "cognition": {
           "type": "object",
           "properties": {
-            "planner":    {"$ref": "#/$defs/geneRef"},
-            "verifier":   {"$ref": "#/$defs/geneRef"},
-            "reflection": {"$ref": "#/$defs/geneRef"}
+            "planner":    {"$ref": "#/$defs/policyRef"},
+            "verifier":   {"$ref": "#/$defs/policyRef"},
+            "reflection": {"$ref": "#/$defs/policyRef"}
           },
           "additionalProperties": false
         },
         "memory": {
           "type": "object",
           "properties": {
-            "retrieval":   {"$ref": "#/$defs/geneRef"},
-            "compression": {"$ref": "#/$defs/geneRef"}
+            "retrieval":   {"$ref": "#/$defs/policyRef"},
+            "compression": {"$ref": "#/$defs/policyRef"}
           },
           "additionalProperties": false
         },
         "execution": {
           "type": "object",
           "properties": {
-            "tool_selector":   {"$ref": "#/$defs/geneRef"},
-            "retry_policy":    {"$ref": "#/$defs/geneRef"},
-            "error_recovery":  {"$ref": "#/$defs/geneRef"}
+            "tool_selector":   {"$ref": "#/$defs/policyRef"},
+            "retry_policy":    {"$ref": "#/$defs/policyRef"},
+            "error_recovery":  {"$ref": "#/$defs/policyRef"}
           },
           "additionalProperties": false
         },
-        "skills": {"type": "array", "items": {"$ref": "#/$defs/geneRef"}}
+        "skills": {"type": "array", "items": {"$ref": "#/$defs/skillRef"}}
       },
       "additionalProperties": false
     },
@@ -120,6 +120,20 @@ Design goals:
           }
         }
       }
+    },
+    "policyRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geneRef"},
+        {"properties": {"type": {"const": "policy"}},
+         "description": "cognition/memory/execution slots carry policy genes only"}
+      ]
+    },
+    "skillRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geneRef"},
+        {"properties": {"type": {"const": "skill"}},
+         "description": "skills[] carries skill genes only"}
+      ]
     },
     "condition": {
       "type": "object",
@@ -238,3 +252,13 @@ All four cross-review questions from PR #1 / issue #3 are resolved as follows; d
 ### Final round (2026-10-02)
 
 1. **Content-addressed artifact URI grammar enforced:** canonical v0 form `registry://<kind>/<gene_id>@<version>/sha256:<64-hex>` with `kind ∈ {policies, skills, regulators}`; enforced in JSON Schema via `pattern` (kind, name syntax, integer version, full 64-hex digest). We deliberately did NOT weaken the prose claim to "artifact-addressed" — content addressing is central to EAG provenance/reproducibility. Example instance now carries genuine 64-hex SHA-256 digests. Validator tests must check name↔gene_id and digest↔artifact equality (D8).
+
+### Implementation review (PR #21, 2026-10-02)
+
+Three integrity gaps found in code review were closed (details in PR #21 and issue #4):
+
+1. **Typed slot semantics:** cognition/memory/execution slots now use `policyRef` (type const `policy`) and `skills[]` uses `skillRef` (type const `skill`) — a skill cannot validate into a policy slot or vice versa. `project_for_runtime()` validates its own input at the boundary (`load_genome` including registry digest/binding checks), never trusting a pre-validated caller.
+2. **Gene identity/version immutability:** the registry keeps a binding index `(kind, gene_id, version) -> digest`; rebinding an identity to different content raises an integrity error (D6: changes require a version increment). `diff_genomes()` compares artifact URIs for inheritance: same id/version with a different artifact is classified as a `rebinds` mutation, never as inheritance.
+3. **CIG evidence integrity:** `child_records` are `uniqueItems`; children must be declared in the aggregate (undeclared children rejected at insert; orphans flagged by `verify()`); child ids `/S<seed>...` must agree with the record's `seed` field (enforced at insert and re-checked in `verify()`).
+
+Non-blocking follow-ups: deeper payload-shape validation lands with #7/#9; canonical `genome_id` hashing is tracked separately in issue #22 (blocks #13, not #4).

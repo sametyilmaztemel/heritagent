@@ -2,16 +2,23 @@
 
 CIG evidence is two-level (ADR-0001 section 4): one aggregate record per
 candidate carrying the verdict, plus immutable per-seed/per-run child
-records. ``CigRecordStore`` enforces aggregate<->child consistency.
-``SomaticStore`` enforces the candidate -> validated/rejected lifecycle with
-immutable terminal decisions (SPEC section 9 fail path keeps rejected traits
-as somatic memory).
+records. ``CigRecordStore`` enforces aggregate<->child consistency:
+children must be declared in the aggregate's ``child_records`` (no
+undeclared/orphan evidence), child ids must carry the seed they claim, and
+``verify()`` flags missing, orphan, and incoherent records. ``SomaticStore``
+enforces the candidate -> validated/rejected lifecycle with immutable
+terminal decisions (SPEC section 9 fail path keeps rejected traits as
+somatic memory).
 """
 
 from __future__ import annotations
 
+import re
+
 from genome.validation.errors import GenomeValidationError, RecordConsistencyError
 from genome.validation.loader import load_cig, load_somatic
+
+_SEED_IN_ID = re.compile(r"/S(\d+)")
 
 
 class CigRecordStore:
@@ -36,12 +43,37 @@ class CigRecordStore:
         if not cig_id.startswith(parent_id + "/S"):
             raise RecordConsistencyError(
                 f"child record id {cig_id!r} is not a child of {parent_id!r} (expected prefix {parent_id + '/S'!r})")
+        parent = self._aggregates[parent_id]
+        if cig_id not in parent["child_records"]:
+            raise RecordConsistencyError(
+                f"child record {cig_id!r} is not declared in aggregate {parent_id!r} child_records")
+        issue = self._seed_issue(record)
+        if issue:
+            raise RecordConsistencyError(issue)
         if cig_id in self._children:
             raise RecordConsistencyError(f"child CIG record {cig_id!r} already exists (append-only)")
         self._children[cig_id] = record
 
+    @staticmethod
+    def _seed_issue(record: dict) -> str | None:
+        """Child id `/S<seed>...` must agree with the record's ``seed`` field."""
+        match = _SEED_IN_ID.search(record["cig_id"])
+        if match is None:
+            return f"child record {record['cig_id']!r} carries no seed digits after /S"
+        seed_in_id = int(match.group(1))
+        seed = record["seed"]
+        if seed != seed_in_id and str(seed) != str(seed_in_id):
+            return (f"child record {record['cig_id']!r} encodes seed {seed_in_id} "
+                    f"but declares seed {seed!r}")
+        return None
+
     def verify(self) -> list[str]:
-        """Return consistency issues; empty list means the store is consistent."""
+        """Return consistency issues; empty list means the store is consistent.
+
+        Detects: declared-but-missing children, children pointing at the
+        wrong aggregate, child stages absent from the aggregate, orphan /
+        undeclared children, and child-id/seed incoherence.
+        """
         issues = []
         for cig_id, aggregate in self._aggregates.items():
             for ref in aggregate["child_records"]:
@@ -54,6 +86,14 @@ class CigRecordStore:
                 if child["stage"] not in aggregate["stages"]:
                     issues.append(f"child record {ref!r} has stage {child['stage']!r} "
                                   f"not present in aggregate {cig_id!r} stages")
+        declared = {ref for agg in self._aggregates.values() for ref in agg["child_records"]}
+        for child_id, child in self._children.items():
+            if child_id not in declared:
+                issues.append(f"orphan child record {child_id!r}: not declared by its aggregate "
+                              f"{child['parent_cig_id']!r}")
+            issue = self._seed_issue(child)
+            if issue:
+                issues.append(issue)
         return issues
 
     def require_consistent(self) -> None:
