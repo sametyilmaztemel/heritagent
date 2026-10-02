@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/eag/0.1/genome.json",
+  "title": "Executable Agent Genome v0.1",
+  "type": "object",
+  "required": ["genome_id", "schema_version", "generation", "lineage_id", "parent", "genes"],
+  "properties": {
+    "genome_id":         {"type": "string", "pattern": "^G-[a-z0-9]{8,}$"},
+    "schema_version":    {"const": "0.1"},
+    "generation":        {"type": "integer", "minimum": 0},
+    "lineage_id":        {"type": "string"},
+    "parent":            {"type": ["string", "null"],
+                          "description": "parent genome_id; null for founders"},
+    "genes": {
+      "type": "object",
+      "properties": {
+        "cognition": {
+          "type": "object",
+          "properties": {
+            "planner":    {"$ref": "#/$defs/policyRef"},
+            "verifier":   {"$ref": "#/$defs/policyRef"},
+            "reflection": {"$ref": "#/$defs/policyRef"}
+          },
+          "additionalProperties": false
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "retrieval":   {"$ref": "#/$defs/policyRef"},
+            "compression": {"$ref": "#/$defs/policyRef"}
+          },
+          "additionalProperties": false
+        },
+        "execution": {
+          "type": "object",
+          "properties": {
+            "tool_selector":   {"$ref": "#/$defs/policyRef"},
+            "retry_policy":    {"$ref": "#/$defs/policyRef"},
+            "error_recovery":  {"$ref": "#/$defs/policyRef"}
+          },
+          "additionalProperties": false
+        },
+        "skills": {"type": "array", "items": {"$ref": "#/$defs/skillRef"}}
+      },
+      "additionalProperties": false
+    },
+    "regulation": {
+      "type": "object",
+      "description": "gene_id -> activation condition; genes absent from this map are constitutively expressed",
+      "additionalProperties": {"$ref": "#/$defs/condition"}
+    }
+  },
+  "additionalProperties": false,
+
+  "$defs": {
+    "geneRef": {
+      "type": "object",
+      "required": ["gene_id", "version", "type", "artifact", "origin", "provenance"],
+      "properties": {
+        "gene_id":  {"type": "string", "pattern": "^[a-z0-9_]+(_v[0-9]+)?$"},
+        "version":  {"type": "integer", "minimum": 1},
+        "type":     {"enum": ["policy", "skill", "regulatory"]},
+        "artifact": {"type": "string",
+                     "pattern": "^registry://(policies|skills|regulators)/[a-z0-9_]+(_v[0-9]+)?@[1-9][0-9]*/sha256:[0-9a-f]{64}$",
+                     "description": "content-addressed URI into the trait registry: registry://<kind>/<gene_id>@<version>/sha256:<64-hex>; the name segment must equal gene_id (checked by validator tests)"},
+        "origin":   {"enum": ["seed", "mutation", "recombination", "assimilation"]},
+        "provenance": {
+          "type": "object",
+          "required": ["born_generation"],
+          "properties": {
+            "source_trajectory":   {"type": "string"},
+            "cig_record":          {"type": "string", "description": "aggregate CIG record id; required iff origin=assimilation"},
+            "born_generation":     {"type": "integer", "minimum": 0,
+                                    "description": "required for all origins (lineage auditability)"},
+            "notes":               {"type": "string"}
+          }
+        }
+      },
+      "if": {
+        "properties": {"origin": {"const": "assimilation"}},
+        "required": ["origin"]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "required": ["born_generation", "source_trajectory", "cig_record"]
+          }
+        }
+      }
+    },
+    "policyRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geneRef"},
+        {"properties": {"type": {"const": "policy"}},
+         "description": "cognition/memory/execution slots carry policy genes only"}
+      ]
+    },
+    "skillRef": {
+      "allOf": [
+        {"$ref": "#/$defs/geneRef"},
+        {"properties": {"type": {"const": "skill"}},
+         "description": "skills[] carries skill genes only"}
+      ]
+    },
+    "condition": {
+      "type": "object",
+      "properties": {
+        "express_when": {
+          "type": "object",
+          "properties": {
+            "all_of": {"type": "array", "items": {"$ref": "#/$defs/predicate"}, "minItems": 1},
+            "any_of": {"type": "array", "items": {"$ref": "#/$defs/predicate"}, "minItems": 1}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "predicate": {
+      "type": "object",
+      "required": ["metric", "op", "value"],
+      "properties": {
+        "metric": {"enum": ["consecutive_failures", "failing_tools", "repeated_tool_error",
+                            "steps_without_progress"],
+                   "description": "agent-observable runtime counters only; environment labels (task_type etc.) are excluded by design"},
+        "op":     {"enum": [">=", ">", "==", "<", "<="]},
+        "value":  {"type": "number"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
