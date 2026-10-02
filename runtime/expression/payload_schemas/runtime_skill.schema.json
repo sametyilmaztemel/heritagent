@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/runtime/0.1/runtime-skill.json",
+  "title": "Runtime skill projection shape (post-projection)",
+  "description": "Shape consumed by the runtime at decision points. This validates the PROJECTED payload (evaluation-only fields already stripped by the #4 projection layer); the strict SkillRL baseline projection additionally drops procedure[].",
+  "type": "object",
+  "required": ["name", "principle", "when_to_apply"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "principle": {"type": "string", "minLength": 1},
+    "when_to_apply": {"type": "string", "minLength": 1},
+    "procedure": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^S[0-9]+([-.][A-Za-z0-9_-]+)*$"},
+          "text": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
