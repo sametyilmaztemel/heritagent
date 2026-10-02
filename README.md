@@ -37,6 +37,15 @@ heritagent/
 
 The full code skeleton (SPEC §23: genome/, runtime/, trajectory/, traits/, inheritance/, evolution/, lineage/, evaluation/) is created when implementation starts — deliberately not before (SPEC §27).
 
+## GitHub workflow
+
+Repo: https://github.com/sametyilmaztemel/heritagent (public). Tracking:
+
+- **PRs** are the cross-review mechanism (SPEC §32): ADR/design artifacts land via PR and merge only after review questions are resolved and answers recorded in the ADR.
+- **Milestones** map to SPEC §29 + §28: `M0: Minimal HeritAgent` (schema → runtime → recorder → miner → somatic store → evaluators → CIG → single-lineage inheritance → EXP-0001), `M1: Population Evolution`, `M2: Cross-Backbone & Paper`.
+- **Issues** carry the SPEC §28 development sequence in order; dependencies are stated in issue bodies. Labels: `research` / `engineering` / `review-needed` / `documentation` / `infra`.
+- Experiment runs must record model weights hash, split hashes, and code commit (SPEC §24) — enforced by checklist in the EXP-0001 execution issue.
+
 ## Suggested next step
 
-`git init` this directory, then research-role review of ADR-0001/ADR-0002 open questions, then begin the SPEC §28 sequence.
+Research/critic review of the two open PRs (ADR-0001, ADR-0002); in parallel, #4 (EAG schema module) can start once ADR-0001 questions are resolved.
