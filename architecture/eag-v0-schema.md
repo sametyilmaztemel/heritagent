@@ -18,10 +18,10 @@ Design goals:
 
 - **D1 — Two-layer design.** `Genome` (this schema) references `Gene` artifacts stored in a trait registry keyed by content hash. Gene payload formats per type:
   - `policy`: JSON config (e.g. planner params, retry budget, retrieval top-k) + optional prompt-template file reference.
-  - `skill`: markdown skill doc with structured frontmatter that is a **SkillRL-compatible superset**: `name`, `principle`, `when_to_apply` (SkillRL field names, so baselines consume them unchanged) plus a `procedure[]` list whose entries carry **stable step IDs** (e.g. `S1`, `S2`). M0 gates and scores the skill as a whole; stable step IDs are reserved so future SkillShapley-style step attribution needs no re-extraction. A projection adapter strips `procedure[]` (and maps fields 1:1) to yield a strict SkillRL skill for the baseline arm.
+  - `skill`: markdown skill doc with structured frontmatter that is a **SkillRL-compatible superset**: `name`, `principle`, `when_to_apply` (SkillRL field names, so baselines consume them unchanged), `applicability.task_families[]` — a frozen, **evaluation-only** structured scope field produced at extraction and used solely by gate sampling/audit (never a runtime regulation predicate or agent-visible oracle; the agent-facing scope remains the free-form `when_to_apply` text) — plus a `procedure[]` list whose entries carry **stable step IDs** (e.g. `S1`, `S2`). M0 gates and scores the skill as a whole; stable step IDs are reserved so future SkillShapley-style step attribution needs no re-extraction. A projection adapter strips `procedure[]` and `applicability` (mapping remaining fields 1:1) to yield a strict SkillRL skill for the baseline arm.
   - `regulatory`: a named predicate (v0: counter-based; see D5).
 - **D2 — Gene slots.** v0 slots: `cognition.planner`, `cognition.verifier`, `cognition.reflection`, `memory.retrieval`, `memory.compression`, `execution.tool_selector`, `execution.retry_policy`, `execution.error_recovery`, plus `skills[]` (open list). Each slot is optional; absence = framework default (explicitly recorded, not implicit).
-- **D3 — Provenance is mandatory** (`origin`: seed | mutation | recombination | assimilation; `source_trajectory`; `cig_record` for assimilated genes; `born_generation`). This is what makes the Lineage Graph (SPEC §13) derivable rather than separately maintained.
+- **D3 — Provenance is mandatory** (`origin`: seed | mutation | recombination | assimilation; `source_trajectory`; `cig_record` for assimilated genes; `born_generation`). This is what makes the Lineage Graph (SPEC §13) derivable rather than separately maintained. **The JSON Schema enforces these invariants mechanically** (§3): `artifact` and `provenance` are required on every gene reference, `born_generation` is required in all provenance, and assimilation additionally requires `source_trajectory` + `cig_record`.
 - **D4 — Somatic envelope.** Somatic candidates: same geneRef + `validation: {state: candidate|rejected|validated, gate_reports: [...]}`. Each gate report references the **aggregate CIG record** for the candidate; per-seed/per-run raw measurements live in that record's immutable children (see §4).
 - **D5 — Regulation v0**: `express_when` map from gene_id → predicate over **agent-observable runtime counters only** (`consecutive_failures`, `failing_tools`, `repeated_tool_error`, `steps_without_progress`). Environment-label predicates (e.g. `task_type`) are excluded from the runtime regulation vocabulary: they would leak oracle task labels into gene expression. Trait specialization is expressed as applicability metadata in the trait itself (`when_to_apply` in skill payloads), which is evaluated evidence-side, not as a genotype-level environment predicate. Ablation tooling MUST evaluate regulated genes under their conditions (SkillShapley lesson: unconditional ablation misvalues conditionally-expressed genes).
 - **D6 — Versioning.** `schema_version` for the manifest format; `gene.version` integer, monotonically increased on artifact change; `genome_id` = `G-<content-hash-prefix>`; lineage edges store genome-id pairs + typed diffs (SPEC §13 JSON).
@@ -87,7 +87,7 @@ Design goals:
   "$defs": {
     "geneRef": {
       "type": "object",
-      "required": ["gene_id", "version", "type", "origin"],
+      "required": ["gene_id", "version", "type", "artifact", "origin", "provenance"],
       "properties": {
         "gene_id":  {"type": "string", "pattern": "^[a-z0-9_]+(_v[0-9]+)?$"},
         "version":  {"type": "integer", "minimum": 1},
@@ -97,11 +97,24 @@ Design goals:
         "origin":   {"enum": ["seed", "mutation", "recombination", "assimilation"]},
         "provenance": {
           "type": "object",
+          "required": ["born_generation"],
           "properties": {
             "source_trajectory":   {"type": "string"},
-            "cig_record":          {"type": "string", "description": "CIG record id; required iff origin=assimilation"},
-            "born_generation":     {"type": "integer", "minimum": 0},
+            "cig_record":          {"type": "string", "description": "aggregate CIG record id; required iff origin=assimilation"},
+            "born_generation":     {"type": "integer", "minimum": 0,
+                                    "description": "required for all origins (lineage auditability)"},
             "notes":               {"type": "string"}
+          }
+        }
+      },
+      "if": {
+        "properties": {"origin": {"const": "assimilation"}},
+        "required": ["origin"]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "required": ["born_generation", "source_trajectory", "cig_record"]
           }
         }
       }
@@ -137,6 +150,8 @@ Design goals:
 ```
 
 ## 4. Companion schemas (same package, stubs)
+
+**Schema-enforced invariants (draft 2020-12):** every gene reference must be content-addressed (`artifact` required) and carry provenance (`provenance` required, with `born_generation` mandatory for **all** origins — lineage auditability); `origin: "assimilation"` additionally requires `provenance.source_trajectory` and `provenance.cig_record` (via `if/then`). These turn ADR-0001's prose invariants into machine-checkable constraints; validators (issue #4) must reject violations.
 
 **Somatic trait envelope** (`somatic/0.1`): `{"candidate": <geneRef>, "validation": {"state": "candidate|rejected|validated", "gate_reports": [<CIGRecordId>]}}`.
 
@@ -174,14 +189,19 @@ Written before thresholds are re-tuned (SPEC §33 pre-registration applies at th
   "parent": "G-0f1e2d3c",
   "genes": {
     "cognition": {
-      "planner": {"gene_id": "planner_react_v1", "version": 1, "type": "policy", "origin": "seed"}
+      "planner": {"gene_id": "planner_react_v1", "version": 1, "type": "policy", "origin": "seed",
+                  "artifact": "registry://policies/planner_react_v1@1/sha256:9f2c81aa",
+                  "provenance": {"born_generation": 0}}
     },
     "execution": {
-      "retry_policy": {"gene_id": "retry_backoff_v1", "version": 1, "type": "policy", "origin": "seed"}
+      "retry_policy": {"gene_id": "retry_backoff_v1", "version": 1, "type": "policy", "origin": "seed",
+                       "artifact": "registry://policies/retry_backoff_v1@1/sha256:41ab77d2",
+                       "provenance": {"born_generation": 0}}
     },
     "skills": [
       {"gene_id": "look_before_heat_v1", "version": 1, "type": "skill",
        "origin": "assimilation",
+       "artifact": "registry://skills/look_before_heat_v1@1/sha256:c7d03e5f",
        "provenance": {"source_trajectory": "T-00184", "cig_record": "CIG-0007", "born_generation": 1}}
     ]
   },
@@ -207,3 +227,8 @@ All four cross-review questions from PR #1 / issue #3 are resolved as follows; d
 2. **CIG evidence granularity:** two-level records adopted — aggregate candidate verdict + immutable per-seed/per-run children (`CIG-0042/S11`, ...) referenced by the aggregate (§4). Genome stays free of evaluation detail; per-seed noise analysis remains first-class.
 3. **backbone_tested:** removed from the heritable genome manifest. Backbone evidence lives in a separate BackboneEvaluationRegistry keyed `(genome_id, model_hash, benchmark, seed)` (D7) — evaluation metadata, not genotype, and no implied claims inside the genome.
 4. **Skill payload format:** SkillRL-compatible superset — `name`, `principle`, `when_to_apply` (SkillRL names) + stable `procedure[]` step IDs. M0 scores whole skills; step IDs reserve SkillShapley-style attribution without re-extraction; a projection adapter emits strict SkillRL skills for the baseline arm (D1).
+
+### Round 2 (2026-10-02)
+
+1. **Invariants enforced in the JSON Schema:** `geneRef.required` now includes `artifact` and `provenance`; `provenance.required` includes `born_generation` for all origins; an `if/then` clause requires `source_trajectory` + `cig_record` whenever `origin == "assimilation"`. The example instance was updated and validates against the tightened schema (§3, §4 note).
+2. **Machine-readable applicability (coordinated with PR #2 round 2, definition lives in this artifact):** skill payloads gain `applicability.task_families[]` — produced at extraction, frozen before gate stage 1, **evaluation-only** (gate sampling/audit); never a runtime regulation predicate or agent-visible oracle. The projection adapter strips it along with `procedure[]` (D1).
