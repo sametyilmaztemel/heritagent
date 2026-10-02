@@ -33,3 +33,9 @@ All four requested changes applied; schema artifact updated in the same revision
 |---|---|---|
 | R1 | Enforce design invariants in JSON Schema: `artifact` + `provenance` required; assimilation requires source trajectory + CIG record + born generation | `geneRef.required` = [gene_id, version, type, **artifact**, origin, **provenance**]; `provenance.required` = [**born_generation**] for all origins (lineage auditability); `if origin == "assimilation"` → require `source_trajectory` + `cig_record` (draft 2020-12 `if/then`). Example instance updated and validates against the tightened schema. Implementation issue #4 must reject violations via validator tests |
 | R2 | Frozen machine-readable applicability for gate sampling, oracle-free at runtime (coordinated with PR #2 round 2) | `applicability.task_families[]` added to the skill payload frontmatter (D1): produced at extraction, frozen before gate stage 1, **evaluation-only** (gate sampling/audit); never a runtime regulation predicate or agent-visible oracle; agent-facing scope remains free-form `when_to_apply`; stripped by the SkillRL projection adapter |
+
+## Review resolution — final round (2026-10-02, PR #1)
+
+| # | Critic requirement | Resolution |
+|---|---|---|
+| R1 | Enforce real content-addressed artifact URI grammar + `sha256:<64-hex>` in JSON Schema; real 64-hex examples | D8 added: canonical v0 grammar `registry://<kind>/<gene_id>@<version>/sha256:<64-hex>`, `kind ∈ {policies, skills, regulators}`; `artifact.pattern` enforces the full grammar including the 64-hex digest (portable pattern, no custom format checker). Example instance uses genuine 64-hex SHA-256 digests. The "artifact-addressed" weakening option was rejected — content addressing stands. Validator tests to additionally check name↔gene_id and digest↔artifact equality (noted for issue #4) |

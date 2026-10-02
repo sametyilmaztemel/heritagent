@@ -22,6 +22,7 @@ Design goals:
   - `regulatory`: a named predicate (v0: counter-based; see D5).
 - **D2 — Gene slots.** v0 slots: `cognition.planner`, `cognition.verifier`, `cognition.reflection`, `memory.retrieval`, `memory.compression`, `execution.tool_selector`, `execution.retry_policy`, `execution.error_recovery`, plus `skills[]` (open list). Each slot is optional; absence = framework default (explicitly recorded, not implicit).
 - **D3 — Provenance is mandatory** (`origin`: seed | mutation | recombination | assimilation; `source_trajectory`; `cig_record` for assimilated genes; `born_generation`). This is what makes the Lineage Graph (SPEC §13) derivable rather than separately maintained. **The JSON Schema enforces these invariants mechanically** (§3): `artifact` and `provenance` are required on every gene reference, `born_generation` is required in all provenance, and assimilation additionally requires `source_trajectory` + `cig_record`.
+- **D8 — Artifact URIs are content-addressed by grammar.** The canonical v0 registry URI is `registry://<kind>/<gene_id>@<version>/sha256:<64-hex>` with `kind ∈ {policies, skills, regulators}`; the `<name>` segment must equal the gene's `gene_id`. The JSON Schema enforces the full grammar — including the `sha256:<64-hex>` digest — via `pattern` (portable validation, no custom `format` checker needed); validator tests additionally check name↔gene_id equality and that the digest matches the registry artifact's actual SHA-256.
 - **D4 — Somatic envelope.** Somatic candidates: same geneRef + `validation: {state: candidate|rejected|validated, gate_reports: [...]}`. Each gate report references the **aggregate CIG record** for the candidate; per-seed/per-run raw measurements live in that record's immutable children (see §4).
 - **D5 — Regulation v0**: `express_when` map from gene_id → predicate over **agent-observable runtime counters only** (`consecutive_failures`, `failing_tools`, `repeated_tool_error`, `steps_without_progress`). Environment-label predicates (e.g. `task_type`) are excluded from the runtime regulation vocabulary: they would leak oracle task labels into gene expression. Trait specialization is expressed as applicability metadata in the trait itself (`when_to_apply` in skill payloads), which is evaluated evidence-side, not as a genotype-level environment predicate. Ablation tooling MUST evaluate regulated genes under their conditions (SkillShapley lesson: unconditional ablation misvalues conditionally-expressed genes).
 - **D6 — Versioning.** `schema_version` for the manifest format; `gene.version` integer, monotonically increased on artifact change; `genome_id` = `G-<content-hash-prefix>`; lineage edges store genome-id pairs + typed diffs (SPEC §13 JSON).
@@ -93,7 +94,8 @@ Design goals:
         "version":  {"type": "integer", "minimum": 1},
         "type":     {"enum": ["policy", "skill", "regulatory"]},
         "artifact": {"type": "string",
-                     "description": "content-addressed URI into the trait registry, e.g. registry://traits/sha256:..."},
+                     "pattern": "^registry://(policies|skills|regulators)/[a-z0-9_]+(_v[0-9]+)?@[1-9][0-9]*/sha256:[0-9a-f]{64}$",
+                     "description": "content-addressed URI into the trait registry: registry://<kind>/<gene_id>@<version>/sha256:<64-hex>; the name segment must equal gene_id (checked by validator tests)"},
         "origin":   {"enum": ["seed", "mutation", "recombination", "assimilation"]},
         "provenance": {
           "type": "object",
@@ -151,7 +153,7 @@ Design goals:
 
 ## 4. Companion schemas (same package, stubs)
 
-**Schema-enforced invariants (draft 2020-12):** every gene reference must be content-addressed (`artifact` required) and carry provenance (`provenance` required, with `born_generation` mandatory for **all** origins — lineage auditability); `origin: "assimilation"` additionally requires `provenance.source_trajectory` and `provenance.cig_record` (via `if/then`). These turn ADR-0001's prose invariants into machine-checkable constraints; validators (issue #4) must reject violations.
+**Schema-enforced invariants (draft 2020-12):** every gene reference must be content-addressed (`artifact` required, and its value must match the canonical grammar `registry://<kind>/<gene_id>@<version>/sha256:<64-hex>` — the `pattern` enforces kind, name syntax, integer version and the full 64-hex SHA-256 digest) and carry provenance (`provenance` required, with `born_generation` mandatory for **all** origins — lineage auditability); `origin: "assimilation"` additionally requires `provenance.source_trajectory` and `provenance.cig_record` (via `if/then`). Validator tests (issue #4) must additionally check name↔`gene_id` equality and digest↔registry-artifact equality. These turn ADR-0001's prose invariants into machine-checkable constraints.
 
 **Somatic trait envelope** (`somatic/0.1`): `{"candidate": <geneRef>, "validation": {"state": "candidate|rejected|validated", "gate_reports": [<CIGRecordId>]}}`.
 
@@ -190,18 +192,18 @@ Written before thresholds are re-tuned (SPEC §33 pre-registration applies at th
   "genes": {
     "cognition": {
       "planner": {"gene_id": "planner_react_v1", "version": 1, "type": "policy", "origin": "seed",
-                  "artifact": "registry://policies/planner_react_v1@1/sha256:9f2c81aa",
+                  "artifact": "registry://policies/planner_react_v1@1/sha256:9c8363e4858983918625160403fc56654dfbb71bb8b0ba58ab72dcbc83c8e425",
                   "provenance": {"born_generation": 0}}
     },
     "execution": {
       "retry_policy": {"gene_id": "retry_backoff_v1", "version": 1, "type": "policy", "origin": "seed",
-                       "artifact": "registry://policies/retry_backoff_v1@1/sha256:41ab77d2",
+                       "artifact": "registry://policies/retry_backoff_v1@1/sha256:5bdf4a1161528a77725d3dce5917a4949fe4eb3289c428905387d2871e05c2fc",
                        "provenance": {"born_generation": 0}}
     },
     "skills": [
       {"gene_id": "look_before_heat_v1", "version": 1, "type": "skill",
        "origin": "assimilation",
-       "artifact": "registry://skills/look_before_heat_v1@1/sha256:c7d03e5f",
+       "artifact": "registry://skills/look_before_heat_v1@1/sha256:3ecb2895318445ae8b4f12e1a74bdf38cdd0c92821a10d10b9665fc6e6f7e8b1",
        "provenance": {"source_trajectory": "T-00184", "cig_record": "CIG-0007", "born_generation": 1}}
     ]
   },
@@ -232,3 +234,7 @@ All four cross-review questions from PR #1 / issue #3 are resolved as follows; d
 
 1. **Invariants enforced in the JSON Schema:** `geneRef.required` now includes `artifact` and `provenance`; `provenance.required` includes `born_generation` for all origins; an `if/then` clause requires `source_trajectory` + `cig_record` whenever `origin == "assimilation"`. The example instance was updated and validates against the tightened schema (§3, §4 note).
 2. **Machine-readable applicability (coordinated with PR #2 round 2, definition lives in this artifact):** skill payloads gain `applicability.task_families[]` — produced at extraction, frozen before gate stage 1, **evaluation-only** (gate sampling/audit); never a runtime regulation predicate or agent-visible oracle. The projection adapter strips it along with `procedure[]` (D1).
+
+### Final round (2026-10-02)
+
+1. **Content-addressed artifact URI grammar enforced:** canonical v0 form `registry://<kind>/<gene_id>@<version>/sha256:<64-hex>` with `kind ∈ {policies, skills, regulators}`; enforced in JSON Schema via `pattern` (kind, name syntax, integer version, full 64-hex digest). We deliberately did NOT weaken the prose claim to "artifact-addressed" — content addressing is central to EAG provenance/reproducibility. Example instance now carries genuine 64-hex SHA-256 digests. Validator tests must check name↔gene_id and digest↔artifact equality (D8).
