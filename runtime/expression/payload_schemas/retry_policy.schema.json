@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/runtime/0.1/retry-policy.json",
+  "title": "Retry/backoff policy payload (G0 seed)",
+  "type": "object",
+  "required": ["max_retries", "backoff"],
+  "properties": {
+    "max_retries": {"type": "integer", "minimum": 0, "maximum": 10},
+    "backoff": {"enum": ["constant", "linear", "exponential"]},
+    "base_delay_s": {"type": "number", "minimum": 0, "default": 1.0}
+  },
+  "additionalProperties": false
+}
