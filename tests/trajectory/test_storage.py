@@ -1,0 +1,147 @@
+"""JSONL storage tests: append-only persistence, reload, integrity digests,
+incomplete/crash recovery (issue #8 criteria 5, 6, 11)."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from trajectory.recorder.errors import (
+    MalformedTrajectoryError,
+    TrajectoryIntegrityError,
+)
+from trajectory.storage.canonical import canonical_json
+from trajectory.storage.jsonl import load_trajectory
+from tests.runtime.conftest import ToolObservation, react_action, react_final
+from tests.trajectory.conftest import SteppedClock, run_captured
+
+GOLDEN_ENV = {"heat_object": [ToolObservation(ok=True, content="The plate is now heated.")]}
+GOLDEN_SCRIPT = [react_action("heat_object", {"object": "plate"}),
+                 react_final("The plate is heated.")]
+
+
+def golden_capture(tmp_path, registry, context, name="golden"):
+    _, recorder, path, _, _ = run_captured(tmp_path / name, registry, context, name=name,
+                                            script=GOLDEN_SCRIPT, env_results=GOLDEN_ENV,
+                                            clock=SteppedClock())
+    recorder.finalize()
+    return path
+
+
+def test_jsonl_round_trip(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    loaded = load_trajectory(path)
+    assert loaded.status == "finished"
+    assert loaded.complete is True
+    assert loaded.trajectory_id == "T-" + loaded.content_sha256[:12]
+    assert loaded.context.genome_id == "G-0f1e2d3c"
+    assert loaded.context.model.model_id == "scripted-test-model"
+    assert loaded.context.budget.max_steps == 4
+    assert loaded.events[0]["kind"] == "run_started"
+    assert loaded.events[-1]["kind"] == "finished"
+    loaded2 = load_trajectory(path)
+    assert loaded2.document == loaded.document  # reload twice: identical evidence
+
+
+def test_jsonl_lines_are_canonical(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    for line in path.read_text().splitlines():
+        record = json.loads(line)
+        assert line == canonical_json(record)  # UTF-8, sorted keys, compact separators
+
+
+def test_digest_verification_detects_event_tampering(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    for record in records:
+        if record.get("record") == "event" and record["kind"] == "tool_result":
+            record["data"]["content"] = "TAMPERED RESULT"
+    path.write_text("\n".join(canonical_json(r) for r in records) + "\n")
+    with pytest.raises(TrajectoryIntegrityError, match="integrity digest mismatch"):
+        load_trajectory(path)
+
+
+def test_digest_verification_detects_context_tampering(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    header = json.loads(lines[0])
+    header["context"]["seed"] = 999
+    lines[0] = canonical_json(header)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(TrajectoryIntegrityError):
+        load_trajectory(path)
+
+
+def test_digest_verification_detects_outcome_tampering(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    finalization = json.loads(lines[-1])
+    finalization["outcome"] = {"success": True, "reward": 100.0}
+    lines[-1] = canonical_json(finalization)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(TrajectoryIntegrityError):
+        load_trajectory(path)
+
+
+def test_digest_verification_detects_event_order_swap(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    lines[1], lines[2] = lines[2], lines[1]  # swap two event records
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(TrajectoryIntegrityError):
+        load_trajectory(path)
+
+
+def test_crashed_run_without_finalization_is_incomplete(tmp_path, registry, context):
+    _, recorder, path, _, _ = run_captured(tmp_path / "crash", registry, context, name="crash",
+                                            script=[react_action("heat_object",
+                                                                  {"object": "plate"}),
+                                                    react_final("never captured")],
+                                            env_results={"heat_object": [ToolObservation(
+                                                ok=True, content="ok")]})
+    # simulate a crash mid-run: keep header + captured events, drop the
+    # finalization record AND the terminal event (neither was persisted yet)
+    lines = path.read_text().splitlines()
+    crashed = Path(str(path) + ".crash.jsonl")
+    records = [json.loads(line) for line in lines]
+    first_result = next(i for i, r in enumerate(records)
+                        if r.get("kind") == "tool_result")
+    keep = records[: first_result + 1]  # crash right after the first tool result
+    crashed.write_text("\n".join(canonical_json(r) for r in keep) + "\n")
+
+    with pytest.raises(MalformedTrajectoryError, match="no finalization record"):
+        load_trajectory(crashed)  # strict path refuses
+
+    recovered = load_trajectory(crashed, allow_incomplete=True)  # explicit recovery
+    assert recovered.status == "incomplete"
+    assert recovered.complete is False
+    assert recovered.document["finalization"]["incomplete_reason"] == \
+        "no finalization record (crashed run)"
+    assert [e["kind"] for e in recovered.events][-1] == "tool_result"  # prefix preserved
+
+
+def test_truncated_trailing_line_requires_explicit_recovery(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    keep = [r for r in records if r.get("record") == "header"
+            or (r.get("record") == "event" and r.get("seq", 0) <= 2)]
+    broken = Path(str(path) + ".broken.jsonl")
+    broken.write_text("\n".join(canonical_json(r) for r in keep)
+                       + '\n{"record":"finalization","status":"incomp')  # partial line
+
+    with pytest.raises(MalformedTrajectoryError, match="malformed JSONL"):
+        load_trajectory(broken)
+    recovered = load_trajectory(broken, allow_incomplete=True)  # explicit recovery path
+    assert recovered.status == "incomplete"
+    assert recovered.document["events"][-1]["kind"] == "step_started"
+    assert recovered.document["events"][-1]["kind"] == "step_started"
+
+
+def test_unknown_record_type_rejected(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    lines.insert(1, canonical_json({"record": "mystery", "payload": {"x": 1}}))
+    altered = Path(str(path) + ".mystery.jsonl")
+    altered.write_text("\n".join(lines) + "\n")
+    with pytest.raises(MalformedTrajectoryError, match="unknown record types"):
+        load_trajectory(altered, allow_incomplete=True)
