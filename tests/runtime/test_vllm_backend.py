@@ -25,20 +25,31 @@ class FakeSamplingParams:
 
 
 class FakeOutput:
-    def __init__(self, text="fake-output", finish_reason="stop", tool_calls=None):
+    """Mirrors the current CompletionOutput surface (token_ids present)."""
+
+    def __init__(self, text="fake-output", finish_reason="stop", tool_calls=None,
+                 token_ids=(101, 102, 103, 104, 105, 106, 107)):
         self.text = text
         self.finish_reason = finish_reason
         self.tool_calls = tool_calls
+        self.token_ids = list(token_ids)
 
 
 class FakeUsage:
-    prompt_tokens = 11
-    completion_tokens = 7
+    """Compatibility fallback only — deliberately different from the exact
+    token_ids counts so tests can prove the exact surface wins."""
+
+    prompt_tokens = 99
+    completion_tokens = 98
 
 
 class FakeResult:
-    def __init__(self, output):
+    """Mirrors the current RequestOutput surface (prompt_token_ids present)."""
+
+    def __init__(self, output, prompt_token_ids=(201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211)):
         self.outputs = [output]
+        # None models an older backend that omits the field (usage fallback)
+        self.prompt_token_ids = list(prompt_token_ids) if prompt_token_ids is not None else None
         self.usage = FakeUsage()
 
 
@@ -92,13 +103,35 @@ def test_generate_translates_settings_and_records_revision(fake_vllm):
     result = adapter.generate([ModelMessage("system", "s"), ModelMessage("user", "u")],
                               GenerationSettings(temperature=0.4, max_tokens=77, seed=5))
     assert result.text == "fake-output"
-    assert result.completion_tokens == 7
+    # exact offline accounting: primary = token_ids lengths, NOT usage.*
+    assert result.prompt_tokens == 11   # len(result.prompt_token_ids); FakeUsage says 99
+    assert result.completion_tokens == 7  # len(outputs[0].token_ids); FakeUsage says 98
     assert FakeLLM.last_kwargs["model"] == "Qwen/Qwen2.5-7B-Instruct"
     assert FakeLLM.last_kwargs["revision"] == "rev-123"
     params = FakeLLM.last_call[1]
     assert (params.temperature, params.max_tokens, params.seed) == (0.4, 77, 5)
     assert [m["role"] for m in FakeLLM.last_call[0]] == ["system", "user"]
     assert FakeLLM.last_call[2] == {}  # no tool_choice / no extra kwargs on offline chat
+
+
+def test_usage_fields_are_fallback_only(fake_vllm):
+    # when the id lists are absent (older surface), usage.* is the fallback
+    class LegacyOutput(FakeOutput):
+        def __init__(self):
+            super().__init__()
+            self.token_ids = None
+
+    class LegacyResult(FakeResult):
+        def __init__(self):
+            super().__init__(LegacyOutput(), prompt_token_ids=None)
+
+    def chat(self, messages, params, **kwargs):
+        return [LegacyResult()]
+
+    FakeLLM.chat = chat
+    adapter = VLLMAdapter()
+    result = adapter.generate([ModelMessage("user", "hi")], GenerationSettings())
+    assert result.prompt_tokens == 99 and result.completion_tokens == 98
 
 
 def test_structured_generate_uses_structured_outputs_params(fake_vllm, monkeypatch):
@@ -164,7 +197,9 @@ def test_tool_call_uses_constrained_schema_without_tool_choice(fake_vllm, monkey
     assert FakeLLM.last_call[2] == {}  # offline chat received NO tool_choice kwarg
 
 
-def test_tool_call_rejects_unknown_tool_and_invalid_arguments(fake_vllm, monkeypatch):
+def test_tool_call_rejects_invalid_output_via_full_constrained_schema(fake_vllm, monkeypatch):
+    """Post-validation runs against the FULL generated oneOf schema: unknown
+    tool names and argument violations are both caught by it."""
     sampling_params = types.ModuleType("vllm.sampling_params")
 
     class StructuredOutputsParams:
@@ -186,7 +221,18 @@ def test_tool_call_rejects_unknown_tool_and_invalid_arguments(fake_vllm, monkeyp
     tools = [ToolSpec(name="heat_object", description="",
                       parameters_schema={"type": "object", "required": ["object"],
                                           "properties": {"object": {"type": "string"}}})]
-    with pytest.raises(ModelResponseError, match="unknown tool"):
-        adapter.tool_call([ModelMessage("user", "hi")], GenerationSettings(), tools)
-    with pytest.raises(ModelResponseError, match="parameters_schema"):
-        adapter.tool_call([ModelMessage("user", "hi")], GenerationSettings(), tools)
+    for _ in responses:
+        with pytest.raises(ModelResponseError):  # full constrained schema rejects both
+            adapter.tool_call([ModelMessage("user", "hi")], GenerationSettings(), tools)
+    assert queue == []  # both scripted outputs consumed and rejected
+
+
+def test_metadata_never_fails_without_vllm(monkeypatch):
+    """Absent optional dependency: metadata must not raise; defaults stand."""
+    monkeypatch.setitem(sys.modules, "vllm", None)
+    metadata = VLLMAdapter(revision="rev-9").metadata()
+    assert metadata.backend == "vllm"
+    assert metadata.revision == "rev-9"
+    assert metadata.backend_version is None
+    assert metadata.capabilities["structured"] is False
+    assert metadata.capabilities["engine_created"] is False

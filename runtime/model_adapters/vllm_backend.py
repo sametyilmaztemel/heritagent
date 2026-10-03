@@ -121,13 +121,23 @@ class VLLMAdapter(ModelAdapter):
 
     @staticmethod
     def _extract(result: Any) -> GenerationResult:
+        """Exact offline token accounting (current RequestOutput surface):
+        primary counts come from `len(result.prompt_token_ids)` and
+        `len(result.outputs[0].token_ids)`; `usage.*` is only a fallback
+        for backends that omit the id lists."""
         output = result.outputs[0]
         usage = getattr(result, "usage", None)
+        prompt_ids = getattr(result, "prompt_token_ids", None)
+        completion_ids = getattr(output, "token_ids", None)
+        prompt_tokens = len(prompt_ids) if prompt_ids is not None \
+            else getattr(usage, "prompt_tokens", None)
+        completion_tokens = len(completion_ids) if completion_ids is not None \
+            else getattr(usage, "completion_tokens", None)
         return GenerationResult(
             text=output.text,
             finish_reason=getattr(output, "finish_reason", "stop") or "stop",
-            prompt_tokens=getattr(usage, "prompt_tokens", None),
-            completion_tokens=getattr(usage, "completion_tokens", None),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     # -- ModelAdapter ---------------------------------------------------------
@@ -174,7 +184,7 @@ class VLLMAdapter(ModelAdapter):
         result = engine.chat(self._prompts(messages),
                              self._sampling(settings, vllm_module, structured_outputs))
         extracted = self._extract(result[0] if isinstance(result, list) else result)
-        payload = self._validate_structured(extracted.text, {"type": "object"})
+        payload = self._validate_structured(extracted.text, schema)  # full constrained schema
         name = payload.get("name")
         selected = next((t for t in tools if t.name == name), None)
         if selected is None:
@@ -195,6 +205,8 @@ class VLLMAdapter(ModelAdapter):
         return max(1, (len(text) + 3) // 4)
 
     def metadata(self) -> ModelMetadata:
+        """Must never fail for an absent optional dependency: absent vLLM →
+        backend_version=None, structured capability false, no engine."""
         backend_version = None
         structured_supported = False
         try:
@@ -203,8 +215,8 @@ class VLLMAdapter(ModelAdapter):
             sampling_params = importlib.import_module("vllm.sampling_params")
             if sampling_params is not None:
                 structured_supported = hasattr(sampling_params, "StructuredOutputsParams")
-        except ImportError:
-            pass  # absent installation: defaults stand
+        except (BackendUnavailableError, ImportError, AttributeError):
+            pass  # absent/broken optional installation: defaults stand
         return ModelMetadata(model_id=self._model, revision=self._revision, backend="vllm",
                              backend_version=backend_version,
                              capabilities={"generate": True,
