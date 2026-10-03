@@ -7,7 +7,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from runtime.events import RuntimeEvent
-from trajectory.recorder.context import OutcomeAnnotation
+from trajectory.recorder.context import ModelProvenance, OutcomeAnnotation
 from trajectory.recorder.errors import (
     RecorderError,
     StreamInvariantError,
@@ -78,7 +78,7 @@ def test_two_independent_runs_get_distinct_ids(tmp_path, registry, context):
 
 
 def test_outcome_change_changes_digest_but_not_identity(tmp_path, registry, context):
-    from trajectory.recorder.context import OutcomeAnnotation
+    from trajectory.recorder.context import ModelProvenance, OutcomeAnnotation
     from tests.runtime.conftest import ToolObservation
     _, recorder, path, _, _ = run_captured(
         tmp_path, registry, context, script=golden_script(),
@@ -170,6 +170,9 @@ def test_finalize_incomplete_refuses_completed_stream(tmp_path, registry, contex
                                                                                       content="heated")]})
     with pytest.raises(RecorderError, match="terminal event"):
         recorder.finalize_incomplete("crash")  # terminal already captured: use finalize()
+    # the non-recovery path released the handle: further capture is rejected
+    with pytest.raises(RecorderError, match="recorder is closed"):
+        recorder(RuntimeEvent(seq=99, kind="step_started", step=1, monotonic_s=9.0, data={}))
 
 
 
@@ -286,3 +289,71 @@ def test_non_finite_payload_rejected_at_capture(context, tmp_path):
                          data={"task": "t", "score": float("nan")})
     with pytest.raises(RecorderError, match="not strict JSON"):
         recorder(event)
+
+
+def test_context_snapshot_survives_caller_mutation(tmp_path, registry):
+    """Creation-time deep snapshot: mutating the caller's context.tags /
+    metadata AFTER recorder creation cannot change stored evidence, and the
+    file still passes reload integrity verification."""
+    from tests.runtime.conftest import ToolObservation
+    context = TrajectoryContext(
+        genome_id="G-0f1e2d3c", run_id="R-snap", seed=11,
+        model=ModelProvenance(model_id="scripted-test-model"),
+        tags={"phase": "creation"}, metadata={"owner": "builder"})
+    _, recorder, path, _, _ = run_captured(
+        tmp_path, registry, context, name="snap", script=golden_script(),
+        env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
+        trajectory_id="T-aaaaaaaaaaaa")
+    # caller mutates the nested dicts AFTER creation
+    context.tags["phase"] = "tampered"
+    context.metadata["injected"] = True
+    finalized = recorder.finalize()
+    assert finalized.document["context"]["tags"] == {"phase": "creation"}
+    assert "injected" not in finalized.document["context"]["metadata"]
+    loaded = load_trajectory(path)  # integrity verification passes
+    assert loaded.document == finalized.document
+
+
+def test_outcome_metadata_snapshot_at_attach(tmp_path, registry, context):
+    from trajectory.recorder.context import ModelProvenance, OutcomeAnnotation
+    from tests.runtime.conftest import ToolObservation
+    _, recorder, path, _, _ = run_captured(
+        tmp_path, registry, context, name="outcome-snap", script=golden_script(),
+        env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
+        trajectory_id="T-bbbbbbbbbbbb")
+    outcome = OutcomeAnnotation(success=True, reward=1.0,
+                                 metadata={"notes": "attach-time"})
+    recorder.attach_outcome(outcome)
+    outcome.metadata["notes"] = "tampered"  # caller mutates AFTER attach
+    finalized = recorder.finalize()
+    assert finalized.outcome["metadata"] == {"notes": "attach-time"}
+
+
+def test_close_is_idempotent_and_blocks(tmp_path, registry, context):
+    recorder = TrajectoryRecorder(context, tmp_path / "closed.jsonl",
+                                   trajectory_id="T-cccccccccccc")
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                          data={"task": "t"}))
+    recorder.close()
+    recorder.close()  # idempotent
+    with pytest.raises(RecorderError, match="recorder is closed"):
+        recorder(RuntimeEvent(seq=2, kind="step_started", step=1, monotonic_s=0.5, data={}))
+    with pytest.raises(RecorderError, match="recorder is closed"):
+        recorder.finalize()
+    with pytest.raises(RecorderError, match="recorder is closed"):
+        recorder.attach_outcome(OutcomeAnnotation(success=True))
+
+
+def test_abort_blocks_recorder(tmp_path, registry, context):
+    recorder = TrajectoryRecorder(context, tmp_path / "aborted.jsonl",
+                                   trajectory_id="T-dddddddddddd")
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                          data={"task": "t"}))
+    recorder.abort()
+    recorder.abort()  # idempotent
+    with pytest.raises(RecorderError, match="recorder is closed"):
+        recorder(RuntimeEvent(seq=2, kind="step_started", step=1, monotonic_s=0.5, data={}))
+    # the captured prefix stays recoverable evidence
+    loaded = load_trajectory(tmp_path / "aborted.jsonl", allow_incomplete=True)
+    assert loaded.status == "incomplete"
+    assert loaded.trajectory_id == "T-dddddddddddd"

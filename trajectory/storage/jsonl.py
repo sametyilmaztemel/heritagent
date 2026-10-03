@@ -82,24 +82,32 @@ def _reject_non_finite_constant(name: str):
 
 def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
     """Parse JSONL records strictly; a malformed TRAILING line is tolerated
-    only on the explicit recovery path (treated as a crash artifact).
-    Non-standard JSON constants (NaN/Infinity/-Infinity) are rejected."""
+    on the explicit recovery path ONLY while the parsed prefix contains no
+    finalization record (i.e. the stream is genuinely unfinished). Trailing
+    corruption after an already-finalized trajectory is ALWAYS an error —
+    recovery must not hide post-finalization tampering. Non-standard JSON
+    constants (NaN/Infinity/-Infinity) are rejected unconditionally."""
     records: list[dict] = []
+    has_finalization = False
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if not line.strip():
             continue
         try:
-            records.append(json.loads(line, parse_constant=_reject_non_finite_constant))
+            parsed = json.loads(line, parse_constant=_reject_non_finite_constant)
         except json.JSONDecodeError as exc:
             is_trailing = index == len(lines) - 1
-            if allow_incomplete and is_trailing:
-                break  # truncated crash artifact: keep the valid prefix
+            if allow_incomplete and is_trailing and not has_finalization:
+                break  # unfinished prefix: tolerate the truncated crash artifact
+            suffix = " (appended after a finalized trajectory)" if has_finalization else ""
             raise MalformedTrajectoryError(
-                f"{path}: malformed JSONL at line {index + 1}: {exc}") from None
+                f"{path}: malformed JSONL at line {index + 1}: {exc}{suffix}") from None
         except ValueError as exc:
             raise MalformedTrajectoryError(
                 f"{path}: non-standard JSON at line {index + 1}: {exc}") from None
+        records.append(parsed)
+        if parsed.get("record") == "finalization":
+            has_finalization = True
     return records
 
 
