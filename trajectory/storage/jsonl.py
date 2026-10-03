@@ -1,9 +1,12 @@
-"""Append-only JSONL storage + reload (issue #8 criterion 5).
+"""Append-only JSONL storage + reload (issue #8 criterion 5; hardened per
+critic review).
 
 One JSON line per record, canonical JSON (sorted keys, compact separators,
-UTF-8). The writer appends and flushes immediately: a recorder crash can
-never rewrite previously persisted valid lines. The reader parses strict
-JSON per line — no pickle, no code deserialization — and supports an
+UTF-8, `allow_nan=False`). The writer refuses to start on an existing
+non-empty file (exclusive create, fail closed — no overwrite, no truncate)
+and flushes on every record: a crash can never rewrite previously persisted
+valid lines. The reader parses strict JSON per line — no pickle, no code
+deserialization, no non-standard NaN/Infinity constants — and supports an
 explicit `allow_incomplete=True` recovery path for a truncated trailing
 line.
 """
@@ -18,26 +21,39 @@ from pathlib import Path
 from trajectory.recorder.context import BudgetSnapshot, ModelProvenance, TrajectoryContext
 from trajectory.recorder.errors import (
     MalformedTrajectoryError,
+    RecorderError,
     TrajectoryIntegrityError,
 )
-from trajectory.storage.canonical import canonical_json, trajectory_id_from_digest
+from trajectory.storage.canonical import canonical_json
 from trajectory.verification import build_document, verify_document
 
 
 class JsonlWriter:
-    """Append-only canonical-JSONL writer; flushes on every record."""
+    """Append-only canonical-JSONL writer; flushes on every record.
+
+    Fail-closed exclusive create: refuses to open a path that already
+    contains data (evidence is never overwritten, truncated, or appended
+    onto). Closes cleanly on finalization."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        if self.path.exists() and self.path.stat().st_size > 0:
+            raise RecorderError(
+                f"refusing to append: {str(self.path)!r} already contains trajectory data")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._handle = open(self.path, "a", encoding="utf-8")
+        self._closed = False
 
     def append(self, record: dict) -> None:
+        if self._closed:
+            raise RecorderError("writer is closed")
         self._handle.write(canonical_json(record) + "\n")
         self._handle.flush()
 
     def close(self) -> None:
-        self._handle.close()
+        if not self._closed:
+            self._handle.close()
+            self._closed = True
 
 
 @dataclass(frozen=True)
@@ -56,22 +72,30 @@ class LoadedTrajectory:
     source_path: Path
 
 
+def _reject_non_finite_constant(name: str):
+    raise ValueError(f"non-finite JSON constant {name!r} is not allowed in evidence files")
+
+
 def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
     """Parse JSONL records strictly; a malformed TRAILING line is tolerated
-    only on the explicit recovery path (treated as a crash artifact)."""
+    only on the explicit recovery path (treated as a crash artifact).
+    Non-standard JSON constants (NaN/Infinity/-Infinity) are rejected."""
     records: list[dict] = []
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if not line.strip():
             continue
         try:
-            records.append(json.loads(line))
+            records.append(json.loads(line, parse_constant=_reject_non_finite_constant))
         except json.JSONDecodeError as exc:
             is_trailing = index == len(lines) - 1
             if allow_incomplete and is_trailing:
                 break  # truncated crash artifact: keep the valid prefix
             raise MalformedTrajectoryError(
                 f"{path}: malformed JSONL at line {index + 1}: {exc}") from None
+        except ValueError as exc:
+            raise MalformedTrajectoryError(
+                f"{path}: non-standard JSON at line {index + 1}: {exc}") from None
     return records
 
 
@@ -81,6 +105,12 @@ def _split_records(records: list[dict], path: Path) -> tuple[dict, list[dict], d
     header = records[0]
     if header.get("record") != "header":
         raise MalformedTrajectoryError(f"{path}: first record must be the header")
+    if header.get("schema_version") != "0.1":
+        raise MalformedTrajectoryError(
+            f"{path}: unsupported header schema_version {header.get('schema_version')!r}; "
+            f"this loader speaks 0.1 only")
+    if not header.get("trajectory_id"):
+        raise MalformedTrajectoryError(f"{path}: header carries no trajectory_id")
     if any(r.get("record") == "header" for r in records[1:]):
         raise MalformedTrajectoryError(f"{path}: multiple header records")
     finalization = next((r for r in records if r.get("record") == "finalization"), None)
@@ -95,11 +125,14 @@ def _split_records(records: list[dict], path: Path) -> tuple[dict, list[dict], d
 
 
 def load_trajectory(path: Path, *, allow_incomplete: bool = False) -> LoadedTrajectory:
-    """Reload a trajectory file: strict JSONL parse, structural invariants,
-    terminal/status agreement, and integrity-digest verification."""
+    """Reload a trajectory file: strict JSONL parse, header/version checks,
+    structural invariants, envelope coherence, and integrity-digest
+    verification — through the same shared verification path used at
+    finalization."""
     path = Path(path)
     records = read_records(path, allow_incomplete=allow_incomplete)
     header, events, finalization = _split_records(records, path)
+    trajectory_id = header["trajectory_id"]
 
     status = (finalization or {}).get("status")
     if finalization is None:
@@ -107,23 +140,20 @@ def load_trajectory(path: Path, *, allow_incomplete: bool = False) -> LoadedTraj
             raise MalformedTrajectoryError(
                 f"{path}: no finalization record (crashed run?); "
                 f"reload with allow_incomplete=True to recover the prefix")
-        status = "incomplete"
         # crashed run: no recorded digest exists — rebuild verifiable evidence
-        # for exactly the prefix that survived
-        document = build_document(header.get("context") or {}, events, status=status,
-                                  outcome=None,
-                                  incomplete_reason="no finalization record (crashed run)")
+        # for exactly the prefix that survived, under the SAME trajectory id
+        document = build_document(trajectory_id, header.get("context") or {}, events,
+                                   status="incomplete", outcome=None,
+                                   incomplete_reason="no finalization record (crashed run)")
     else:
-        document = {"trajectory_id": None, "schema_version": "0.1",
+        document = {"trajectory_id": trajectory_id, "schema_version": "0.1",
                     "status": status,
                     "complete": finalization.get("complete", status != "incomplete"),
                     "context": header.get("context"), "events": events,
-                    # digest domain: status + outcome + incomplete_reason only
                     "finalization": {k: v for k, v in finalization.items()
-                                      if k not in ("content_sha256", "complete")},
+                                      if k not in ("record", "content_sha256", "complete")},
                     }
         document["finalization"]["content_sha256"] = finalization["content_sha256"]
-        document["trajectory_id"] = trajectory_id_from_digest(finalization["content_sha256"])
     try:
         verify_document(document)
     except TrajectoryIntegrityError as exc:
@@ -150,11 +180,3 @@ def load_trajectory(path: Path, *, allow_incomplete: bool = False) -> LoadedTraj
         outcome=document["finalization"].get("outcome"),
         content_sha256=document["finalization"]["content_sha256"],
         document=document, source_path=path)
-
-
-def _rebuild(header: dict, events: list[dict], *, status: str,
-             incomplete_reason: str, outcome: dict | None) -> dict:
-    from trajectory.verification import build_document
-    document = build_document(header["context"], events, status=status,
-                              outcome=outcome, incomplete_reason=incomplete_reason)
-    return document

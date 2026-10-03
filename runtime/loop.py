@@ -176,10 +176,14 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
             result = model.generate(messages, settings)
             model_latency_ms = (clock() - started) * 1000.0
             # exactness provenance (issue #8): counts from the adapter are
-            # exact; a missing count is an ESTIMATE and must be labeled as such
+            # exact; a missing count is an ESTIMATE and must be labeled as
+            # such. Unknown prompt usage is NEVER zero — the estimate is
+            # derived deterministically from the actual messages so budgets
+            # and adaptation-cost metrics cannot silently undercount.
             prompt_exact = result.prompt_tokens is not None
+            per_prompt = result.prompt_tokens if prompt_exact else model.estimate_tokens(
+                "\n".join(f"{m.role}: {m.content}" for m in messages))
             completion_exact = result.completion_tokens is not None
-            per_prompt = result.prompt_tokens if prompt_exact else 0
             per_completion = result.completion_tokens \
                 if completion_exact else model.estimate_tokens(result.text)
             cumulative_prompt_tokens += per_prompt

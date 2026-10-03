@@ -38,7 +38,9 @@ def test_golden_successful_capture_schema_valid(tmp_path, registry, context):
     Draft202012Validator(schema).validate(finalized.document)  # envelope validates
 
     assert finalized.status == "finished"
-    assert finalized.trajectory_id == "T-" + finalized.content_sha256[:12]
+    import re as _re
+    assert _re.match(r"^T-[0-9a-f]{12}$", finalized.trajectory_id)  # opaque, not digest-derived
+    assert finalized.trajectory_id != finalized.content_sha256[:12]
     assert finalized.document["complete"] is True
     assert finalized.document["context"]["genome_id"] == "G-0f1e2d3c"
     kinds = [e["kind"] for e in finalized.document["events"]]
@@ -48,14 +50,69 @@ def test_golden_successful_capture_schema_valid(tmp_path, registry, context):
 
 def test_trajectory_id_and_digest_deterministic(tmp_path, registry, context):
     from tests.runtime.conftest import ToolObservation
-    digests = []
+    digests, ids = [], []
+    for name in ("a", "b"):
+        _, recorder, _, _, _ = run_captured(
+            tmp_path / name, registry, context, script=golden_script(),
+            env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
+            name=name, clock=SteppedClock(), trajectory_id="T-aaaaaaaaaaaa")
+        finalized = recorder.finalize()
+        digests.append(finalized.content_sha256)
+        ids.append(finalized.trajectory_id)
+    assert digests[0] == digests[1]  # identical evidence + id -> identical digest
+    assert ids == ["T-aaaaaaaaaaaa", "T-aaaaaaaaaaaa"]  # caller-supplied id stable
+
+
+def test_two_independent_runs_get_distinct_ids(tmp_path, registry, context):
+    """Default allocation is opaque/random: identical evidence, different ids."""
+    from tests.runtime.conftest import ToolObservation
+    ids = []
     for name in ("a", "b"):
         _, recorder, _, _, _ = run_captured(
             tmp_path / name, registry, context, script=golden_script(),
             env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
             name=name, clock=SteppedClock())
-        digests.append(recorder.finalize().content_sha256)
-    assert digests[0] == digests[1]  # identical evidence -> identical digest
+        ids.append(recorder.finalize().trajectory_id)
+    assert ids[0] != ids[1]
+    assert ids[0].startswith("T-") and ids[1].startswith("T-")
+
+
+def test_outcome_change_changes_digest_but_not_identity(tmp_path, registry, context):
+    from trajectory.recorder.context import OutcomeAnnotation
+    from tests.runtime.conftest import ToolObservation
+    _, recorder, path, _, _ = run_captured(
+        tmp_path, registry, context, script=golden_script(),
+        env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
+        trajectory_id="T-aaaaaaaaaaaa")
+    finalized = recorder.finalize()
+    first_digest = finalized.content_sha256
+    first_id = finalized.trajectory_id
+
+    # a second recorder re-evaluates the same evidence with another outcome
+    _, recorder2, _, _, _ = run_captured(
+        tmp_path / "other", registry, context, script=golden_script(),
+        env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
+        trajectory_id="T-aaaaaaaaaaaa", clock=SteppedClock())
+    recorder2.attach_outcome(OutcomeAnnotation(success=False, reward=0.0))
+    finalized2 = recorder2.finalize()
+    assert finalized2.trajectory_id == first_id         # identity unchanged
+    assert finalized2.content_sha256 != first_digest    # integrity content changed
+
+
+def test_incomplete_recovery_preserves_header_identity(tmp_path, registry, context):
+    """Crash recovery rebuilds under the SAME opaque id from the header:
+    the id survives, the digest is recomputed for the surviving prefix."""
+    recorder = TrajectoryRecorder(context, tmp_path / "prefix.jsonl",
+                                   trajectory_id="T-bbbbbbbbbbbb")
+    # synthetic crashed run: the loop died before any terminal event
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                          data={"task": "t"}))
+    recorder(RuntimeEvent(seq=2, kind="step_started", step=1, monotonic_s=0.5, data={}))
+    recorder.finalize_incomplete("simulated crash")
+    loaded = load_trajectory(tmp_path / "prefix.jsonl")
+    assert loaded.trajectory_id == "T-bbbbbbbbbbbb"  # header identity preserved
+    assert loaded.status == "incomplete"
+    assert loaded.complete is False
 
 
 def test_jsonl_bytes_are_canonical_and_identical(tmp_path, registry, context):
@@ -65,7 +122,7 @@ def test_jsonl_bytes_are_canonical_and_identical(tmp_path, registry, context):
         _, recorder, path, _, _ = run_captured(
             tmp_path / name, registry, context, script=golden_script(),
             env_results={"heat_object": [ToolObservation(ok=True, content="heated")]},
-            name=name, clock=SteppedClock())
+            name=name, clock=SteppedClock(), trajectory_id="T-aaaaaaaaaaaa")
         recorder.finalize()
         files.append(path)
     raw_a = files[0].read_bytes()
@@ -209,3 +266,23 @@ def test_digest_domain_sensitivity(tmp_path, registry, context):
     other = recorder2.finalize()
     assert other.content_sha256 != base
     assert other.trajectory_id != finalized.trajectory_id
+
+
+def test_second_recorder_on_same_path_fails_before_writing(registry, context, tmp_path):
+    from tests.runtime.conftest import ToolObservation
+    _, _, path, _, _ = run_captured(tmp_path, registry, context, name="occupied",
+                                     script=golden_script(),
+                                     env_results={"heat_object": [ToolObservation(
+                                         ok=True, content="heated")]})
+    bytes_before = path.read_bytes()
+    with pytest.raises(RecorderError, match="already contains data"):
+        TrajectoryRecorder(context, path)  # fail closed BEFORE any write
+    assert path.read_bytes() == bytes_before  # original evidence byte-identical
+
+
+def test_non_finite_payload_rejected_at_capture(context, tmp_path):
+    recorder = TrajectoryRecorder(context, tmp_path / "nan.jsonl")
+    event = RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                         data={"task": "t", "score": float("nan")})
+    with pytest.raises(RecorderError, match="not strict JSON"):
+        recorder(event)
