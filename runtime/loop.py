@@ -42,6 +42,12 @@ from runtime.policies.retry_backoff import RetryPolicy
 from runtime.skills import expressed_skills
 
 
+class ToolCatalogError(Exception):
+    """The environment's tool catalog is unusable (duplicate names or an
+    invalid parameters_schema); the run refuses to start (fail closed
+    before any model call or environment interaction)."""
+
+
 class ToolEnvironment(Protocol):
     """Provider-neutral tool boundary; concrete environments (e.g. ALFWorld,
     later) implement this without touching the loop."""
@@ -113,15 +119,33 @@ def _validate_action(action: ToolAction,
     return spec, errors
 
 
+def _canonical_catalog(tools: list[ToolSpec]) -> list[ToolSpec]:
+    """Run-start catalog integrity: duplicate names rejected, every
+    parameters_schema must be a valid JSON Schema (draft 2020-12), and the
+    catalog is canonically sorted by tool name so identical tool sets
+    render identical prompts regardless of environment enumeration order."""
+    names = [t.name for t in tools]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ToolCatalogError(f"duplicate tool names in environment catalog: {duplicates}")
+    for tool in tools:
+        try:
+            Draft202012Validator.check_schema(tool.parameters_schema)
+        except Exception as exc:  # jsonschema raises SchemaError/TypeError variants
+            raise ToolCatalogError(
+                f"tool {tool.name!r} has an invalid parameters_schema: {exc}") from None
+    return sorted(tools, key=lambda t: t.name)
+
+
 def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironment, task: str,
               budgets: Budgets, hooks: tuple[Callable[[RuntimeEvent], None], ...] = (),
               sleep: Callable[[float], None] = time.sleep,
-              clock: Callable[[], float] = time.time) -> RunResult:
+              clock: Callable[[], float] = time.monotonic) -> RunResult:
     planner = ReActPlanner(config.policies["cognition.planner"].config)
     retry = RetryPolicy(config.policies["execution.retry_policy"].config)
-    log = EventLog(hooks)
+    log = EventLog(hooks, clock=clock)
     counters = RuntimeCounters()
-    tools = list(env.list_tools())
+    tools = _canonical_catalog(list(env.list_tools()))
 
     # heritable planner policy limit vs external loop budget (criterion 2):
     effective_max_steps = min(budgets.max_steps, planner.max_plan_steps)
@@ -131,6 +155,9 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
 
     observations: list[str] = [task]
     total_retries = 0
+    cumulative_prompt_tokens = 0
+    cumulative_completion_tokens = 0
+    # max_total_tokens budget semantics (locked): prompt + completion tokens
     total_tokens = 0
 
     for step in range(1, effective_max_steps + 1):
@@ -148,13 +175,18 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
             started = clock()
             result = model.generate(messages, settings)
             model_latency_ms = (clock() - started) * 1000.0
-            completion_tokens = result.completion_tokens \
+            per_prompt = result.prompt_tokens if result.prompt_tokens is not None else 0
+            per_completion = result.completion_tokens \
                 if result.completion_tokens is not None else model.estimate_tokens(result.text)
-            total_tokens += completion_tokens
+            cumulative_prompt_tokens += per_prompt
+            cumulative_completion_tokens += per_completion
+            total_tokens = cumulative_prompt_tokens + cumulative_completion_tokens
             log.emit("model_called", step=step, call_kind="generate",
                      messages=[{"role": m.role, "content": m.content} for m in messages],
                      raw_response=result.text,
-                     prompt_tokens=result.prompt_tokens, completion_tokens=completion_tokens,
+                     prompt_tokens=per_prompt, completion_tokens=per_completion,
+                     cumulative_prompt_tokens=cumulative_prompt_tokens,
+                     cumulative_completion_tokens=cumulative_completion_tokens,
                      total_tokens=total_tokens, latency_ms=model_latency_ms,
                      temperature=settings.temperature, max_tokens=settings.max_tokens)
             if budgets.max_total_tokens is not None and total_tokens > budgets.max_total_tokens:

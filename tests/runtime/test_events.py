@@ -84,8 +84,41 @@ def test_raw_response_and_messages_present_in_events(g0_config):
     assert called["messages"][0]["role"] == "system"
     assert called["messages"][1]["role"] == "user"
     assert called["total_tokens"] > 0
+    # cumulative accounting: prompt + completion tracked separately AND combined
+    assert called["cumulative_prompt_tokens"] + called["cumulative_completion_tokens"] \
+        == called["total_tokens"]
     parse_failed = result.events.of_kind("plan_parse_failed")[0].data
     assert parse_failed["raw_response"] == "this is not valid ReAct output at all"
+
+
+def test_event_timestamps_from_injected_monotonic_clock(g0_config):
+    """Every event carries monotonic_s from the SAME injected clock domain;
+    stamps are strictly increasing and quantized to the fake clock steps."""
+    from runtime.model_adapters import ScriptedAdapter
+
+    class SteppedClock:
+        def __init__(self):
+            self.now = 0.0
+
+        def __call__(self):
+            self.now += 0.25
+            return self.now
+
+    clock = SteppedClock()
+    adapter = ScriptedAdapter([react_action("heat_object", {"object": "plate"}),
+                               react_final("done")])
+    seen = []
+    env = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="ok")]})
+    result = run_agent(config=g0_config, model=adapter, env=env, task="t",
+                       budgets=Budgets(max_steps=2, max_total_retries=2, max_tokens_per_request=64),
+                       hooks=(seen.append,), clock=clock)
+    stamps = [event.monotonic_s for event in seen]
+    assert stamps == sorted(stamps)                      # ordered
+    assert all(b > a for a, b in zip(stamps, stamps[1:]))  # strictly increasing
+    assert all(abs(s / 0.25 - round(s / 0.25)) < 1e-9 for s in stamps)  # same clock domain
+    assert stamps[0] == 0.25                             # first clock read stamps the first event
+    # latency and event timestamps share the domain: model latency is still one step (250 ms)
+    assert result.events.of_kind("model_called")[0].data["latency_ms"] == 250.0
 
 
 def test_latency_fields_present_with_injected_clock(g0_config):

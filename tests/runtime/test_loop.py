@@ -244,6 +244,53 @@ def test_invalid_arguments_rejected_before_env_call(g0_config):
     assert result.status == "finished"
 
 
+def test_tool_catalog_canonicalized_regardless_of_env_order(g0_config):
+    """Identical tool sets must render identical prompts regardless of the
+    environment's enumeration order."""
+    from runtime.model_adapters import ScriptedAdapter, ToolSpec
+
+    def run_with_order(order):
+        tools = [ToolSpec(name=name, description=f"desc {name}",
+                          parameters_schema={"type": "object"})
+                 for name in order]
+        adapter = ScriptedAdapter([react_final("done")])
+        env = ScriptedEnv({}, tools=tools)
+        run_agent(config=g0_config, model=adapter, env=env, task="t",
+                  budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64))
+        return adapter.requests[0].messages[0].content
+
+    assert run_with_order(["zebra_tool", "alpha_tool"]) == run_with_order(["alpha_tool", "zebra_tool"])
+    assert "- alpha_tool: desc alpha_tool" in run_with_order(["zebra_tool", "alpha_tool"])
+
+
+def test_duplicate_tool_names_rejected_before_model_and_env(g0_config):
+    from runtime.model_adapters import ScriptedAdapter, ToolSpec
+    from runtime.loop import ToolCatalogError
+    adapter = ScriptedAdapter([react_final("never used")])
+    env = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="never used")]},
+                      tools=[ToolSpec(name="heat_object", description="a", parameters_schema={}),
+                             ToolSpec(name="heat_object", description="b", parameters_schema={})])
+    with pytest.raises(ToolCatalogError, match="duplicate tool names"):
+        run_agent(config=g0_config, model=adapter, env=env, task="t",
+                  budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64))
+    assert adapter.requests == []  # rejected before any model call
+    assert env.calls == []         # and before any environment interaction
+
+
+def test_invalid_tool_schema_rejected_before_model_and_env(g0_config):
+    from runtime.model_adapters import ScriptedAdapter, ToolSpec
+    from runtime.loop import ToolCatalogError
+    adapter = ScriptedAdapter([react_final("never used")])
+    env = ScriptedEnv({"broken_tool": []},
+                      tools=[ToolSpec(name="broken_tool", description="",
+                                      parameters_schema={"type": "not-a-valid-type"})])
+    with pytest.raises(ToolCatalogError, match="invalid parameters_schema"):
+        run_agent(config=g0_config, model=adapter, env=env, task="t",
+                  budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64))
+    assert adapter.requests == []
+    assert env.calls == []
+
+
 def test_planner_max_plan_steps_changes_phenotype(registry, g0_config):
     """Only the heritable planner gene's max_plan_steps changes: the runtime
     phenotype must follow the policy limit, not just the external budget."""
