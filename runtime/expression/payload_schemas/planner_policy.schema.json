@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/runtime/0.1/planner-policy.json",
+  "title": "ReAct planner policy payload (G0 seed)",
+  "type": "object",
+  "required": ["style", "max_plan_steps"],
+  "properties": {
+    "style": {"const": "react"},
+    "max_plan_steps": {"type": "integer", "minimum": 1, "maximum": 16}
+  },
+  "additionalProperties": false
+}
