@@ -45,7 +45,7 @@ class SteppedClock:
 
 def run_captured(tmp_path, registry, context, *, script, env_results,
                  task="Heat the plate.", budgets=None, name="trajectory",
-                 clock=None, extra_hooks=()):
+                 clock=None, extra_hooks=(), trajectory_id=None):
     """Run one scripted episode with a TrajectoryRecorder attached as a hook."""
     config = g0_runtime_config(registry)
     adapter = ScriptedAdapter([])
@@ -56,7 +56,7 @@ def run_captured(tmp_path, registry, context, *, script, env_results,
             adapter.enqueue_text(item)
     env = ScriptedEnv(env_results)
     path = tmp_path / f"{name}.jsonl"
-    recorder = TrajectoryRecorder(context, path)
+    recorder = TrajectoryRecorder(context, path, trajectory_id=trajectory_id)
     budgets = budgets or Budgets(max_steps=4, max_total_retries=10, max_tokens_per_request=64)
     kwargs = {"clock": clock} if clock is not None else {}
     result = run_agent(config=config, model=adapter, env=env, task=task, budgets=budgets,

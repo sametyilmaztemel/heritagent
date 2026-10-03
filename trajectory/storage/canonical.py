@@ -4,13 +4,20 @@ Digest domain (v0.1, locked):
     content_sha256 = sha256(canonical_json({
         "kind": "heritagent-trajectory",
         "schema_version": "0.1",
+        "trajectory_id": <stable opaque id, allocated at recorder creation>,
         "context": <header context dict>,
         "events": [<ordered event record dicts>],
         "finalization": {"status": ..., "outcome": ..., "incomplete_reason": ...},
     }))
-Any change to the context, any event payload/order, or the finalization
+The trajectory id is INTEGRITY-BOUND (inside the domain) but is NOT derived
+from the digest: it is allocated once at recorder creation, written to the
+header, and survives crash recovery and post-run outcome changes. Any
+change to the id, the context, any event payload/order, or the finalization
 metadata changes the digest. The digest itself is stored in the
 finalization record and therefore is not part of its own input.
+
+Canonical JSON is strict: `allow_nan=False` — non-finite floats
+(NaN/Infinity) are rejected at serialization time.
 """
 
 from __future__ import annotations
@@ -25,8 +32,9 @@ DIGEST_DOMAIN_KIND = "heritagent-trajectory"
 
 def canonical_json(obj: Any) -> str:
     """Deterministic canonical JSON: UTF-8, sorted keys, compact stable
-    separators, non-ASCII preserved (encoded to UTF-8 bytes downstream)."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    separators, non-ASCII preserved, non-finite floats rejected."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False)
 
 
 def canonical_bytes(obj: Any) -> bytes:
@@ -37,20 +45,15 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def content_digest(context: dict, events: list[dict], finalization: dict) -> str:
-    """Deterministic integrity digest over header + ordered events +
+def content_digest(trajectory_id: str, context: dict, events: list[dict],
+                   finalization: dict) -> str:
+    """Deterministic integrity digest over id + header + ordered events +
     finalization metadata (see module docstring for the locked domain)."""
     return sha256_hex(canonical_bytes({
         "kind": DIGEST_DOMAIN_KIND,
         "schema_version": SCHEMA_VERSION,
+        "trajectory_id": trajectory_id,
         "context": context,
         "events": events,
         "finalization": finalization,
     }))
-
-
-def trajectory_id_from_digest(digest: str) -> str:
-    """Stable opaque trajectory id: `T-<first 12 digest hex chars>`. v0.1
-    deliberately does NOT define full canonical trajectory identity beyond
-    this (see handoff criterion 6)."""
-    return f"T-{digest[:12]}"

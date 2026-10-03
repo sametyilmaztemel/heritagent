@@ -159,10 +159,13 @@ def test_estimated_tokens_are_labeled_not_exact(tmp_path, registry, context):
                                             script=script, env_results={})
     recorder.finalize()
     normalized = load_normalized(path)
-    assert normalized.token_cost["completion_exact"] is False
-    assert normalized.token_cost["exact"] is False
+    assert normalized.token_cost["completion_exactness"] == "estimated"
+    assert normalized.token_cost["prompt_exactness"] == "estimated"
+    assert normalized.token_cost["exactness"] == "estimated"
     called = normalized.steps[0].model_calls[0]
     assert called.completion_tokens_exact is False
+    assert called.prompt_tokens_exact is False
+    assert normalized.token_cost["prompt"] > 0  # estimated from actual messages, never zero
 
 
 def test_exact_tokens_labeled_when_adapter_reports(tmp_path, registry, context):
@@ -171,8 +174,11 @@ def test_exact_tokens_labeled_when_adapter_reports(tmp_path, registry, context):
                                             script=script, env_results={})
     recorder.finalize()
     normalized = load_normalized(path)
-    assert normalized.token_cost["completion_exact"] is True
+    assert normalized.token_cost["completion_exactness"] == "exact"
+    assert normalized.token_cost["prompt_exactness"] == "estimated"  # mixed state
+    assert normalized.token_cost["exactness"] == "mixed"
     assert normalized.token_cost["completion"] == 42
+    assert normalized.token_cost["prompt"] > 0
 
 
 def test_expressed_skills_recorded(tmp_path, registry, context):
@@ -215,7 +221,7 @@ def test_normalizer_is_deterministic(tmp_path, registry, context):
     for name in ("a", "b"):
         _, recorder, _, _, _ = run_captured(tmp_path / name, registry, context, name=name,
                                              script=GOLDEN_SCRIPT, env_results=GOLDEN_ENV,
-                                             clock=SteppedClock())
+                                             clock=SteppedClock(), trajectory_id="T-aaaaaaaaaaaa")
         recorder.finalize()
         path = tmp_path / name / f"{name}.jsonl"
         normalized_runs.append(load_normalized(path))

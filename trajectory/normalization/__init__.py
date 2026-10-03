@@ -240,7 +240,23 @@ def normalize_trajectory(*, trajectory_id: str, context: TrajectoryContext | Non
                   "benchmark": context.benchmark if context else None,
                   "split": context.split if context else None}
 
-    token_exact = bool(exact_prompts) and all(exact_prompts) and all(exact_completions)
+    def _exactness(flags: list[bool]) -> str:
+        if not flags:
+            return "no_data"
+        if all(flags):
+            return "exact"
+        if not any(flags):
+            return "estimated"
+        return "mixed"
+
+    prompt_exactness = _exactness(exact_prompts)
+    completion_exactness = _exactness(exact_completions)
+    if prompt_exactness == "exact" and completion_exactness == "exact":
+        exactness = "exact"
+    elif prompt_exactness == "estimated" and completion_exactness == "estimated":
+        exactness = "estimated"
+    else:
+        exactness = "mixed"
     metrics = {
         "steps": len(step_views),
         "model_calls": model_call_count,
@@ -273,9 +289,9 @@ def normalize_trajectory(*, trajectory_id: str, context: TrajectoryContext | Non
         expressed_skill_ids=tuple(expressed_order),
         token_cost={"prompt": total_prompt, "completion": total_completion,
                      "total": total_prompt + total_completion,
-                     "prompt_exact": all(exact_prompts) if exact_prompts else None,
-                     "completion_exact": all(exact_completions) if exact_completions else None,
-                     "exact": token_exact if exact_prompts else None},
+                     "prompt_exactness": prompt_exactness,
+                     "completion_exactness": completion_exactness,
+                     "exactness": exactness},
         latency={"model_total_ms": model_latency_total, "tool_total_ms": tool_latency_total},
         action_cost=action_cost, metrics=metrics, provenance=provenance,
         event_count=len(events))

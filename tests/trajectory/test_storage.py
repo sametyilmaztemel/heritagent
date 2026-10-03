@@ -8,9 +8,12 @@ import pytest
 
 from trajectory.recorder.errors import (
     MalformedTrajectoryError,
+    StreamInvariantError,
     TrajectoryIntegrityError,
 )
 from trajectory.storage.canonical import canonical_json
+from runtime.events import RuntimeEvent
+from trajectory.recorder.recorder import TrajectoryRecorder
 from trajectory.storage.jsonl import load_trajectory
 from tests.runtime.conftest import ToolObservation, react_action, react_final
 from tests.trajectory.conftest import SteppedClock, run_captured
@@ -33,7 +36,8 @@ def test_jsonl_round_trip(tmp_path, registry, context):
     loaded = load_trajectory(path)
     assert loaded.status == "finished"
     assert loaded.complete is True
-    assert loaded.trajectory_id == "T-" + loaded.content_sha256[:12]
+    import re as _re
+    assert _re.match(r"^T-[0-9a-f]{12}$", loaded.trajectory_id)  # opaque id from header
     assert loaded.context.genome_id == "G-0f1e2d3c"
     assert loaded.context.model.model_id == "scripted-test-model"
     assert loaded.context.budget.max_steps == 4
@@ -145,3 +149,60 @@ def test_unknown_record_type_rejected(tmp_path, registry, context):
     altered.write_text("\n".join(lines) + "\n")
     with pytest.raises(MalformedTrajectoryError, match="unknown record types"):
         load_trajectory(altered, allow_incomplete=True)
+
+
+def test_wrong_header_schema_version_rejected(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    header = json.loads(lines[0])
+    header["schema_version"] = "9.9"
+    lines[0] = canonical_json(header)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(MalformedTrajectoryError, match="unsupported header schema_version"):
+        load_trajectory(path)
+
+
+def test_non_finite_json_rejected_by_reader(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    event = json.loads(lines[1])
+    event["data"]["score"] = float("nan")  # re-serialized with Python's NaN extension
+    lines[1] = json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=True)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(MalformedTrajectoryError, match="non-standard JSON"):
+        load_trajectory(path, allow_incomplete=True)
+
+
+def test_inconsistent_complete_flag_rejected(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    document = load_trajectory(path).document
+    document["complete"] = True  # contradictory: status is finished but pretend incomplete
+    document["status"] = "incomplete"
+    document["finalization"]["incomplete_reason"] = "tampered"
+    document["finalization"]["content_sha256"] = "0" * 64
+    from trajectory.verification import verify_document
+    with pytest.raises(TrajectoryIntegrityError, match="inconsistent"):
+        verify_document(document)
+
+
+def test_invalid_event_timestamp_type_rejected(tmp_path, registry, context):
+    recorder = TrajectoryRecorder(context, tmp_path / "ts.jsonl")
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                          data={"task": "t"}))
+    with pytest.raises(StreamInvariantError, match="is not a number"):
+        recorder(RuntimeEvent(seq=2, kind="step_started", step=1,
+                              monotonic_s="not-a-number", data={}))
+
+
+def test_incomplete_recovery_preserves_header_identity(tmp_path, registry, context):
+    """Crash recovery rebuilds the document under the SAME opaque id from
+    the header — the id survives, the digest is recomputed for the prefix."""
+    recorder = TrajectoryRecorder(context, tmp_path / "prefix.jsonl",
+                                   trajectory_id="T-bbbbbbbbbbbb")
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                          data={"task": "t"}))
+    recorder(RuntimeEvent(seq=2, kind="step_started", step=1, monotonic_s=0.5, data={}))
+    recorder.finalize_incomplete("simulated crash")
+    loaded = load_trajectory(tmp_path / "prefix.jsonl")
+    assert loaded.trajectory_id == "T-bbbbbbbbbbbb"  # header identity preserved
+    assert loaded.status == "incomplete"
