@@ -8,6 +8,7 @@ import pytest
 
 from trajectory.recorder.errors import (
     MalformedTrajectoryError,
+    RecorderError,
     StreamInvariantError,
     TrajectoryIntegrityError,
 )
@@ -206,3 +207,77 @@ def test_incomplete_recovery_preserves_header_identity(tmp_path, registry, conte
     loaded = load_trajectory(tmp_path / "prefix.jsonl")
     assert loaded.trajectory_id == "T-bbbbbbbbbbbb"  # header identity preserved
     assert loaded.status == "incomplete"
+
+
+def test_atomic_creation_refuses_existing_empty_file(tmp_path, registry, context):
+    """Even an EMPTY existing file is refused: open("x") is atomic
+    (O_CREAT|O_EXCL) — no check-then-open race, bytes never change."""
+    path = tmp_path / "empty.jsonl"
+    path.write_text("")
+    with pytest.raises(RecorderError, match="path already exists"):
+        TrajectoryRecorder(context, path)
+    assert path.read_text() == ""  # untouched
+
+
+def test_atomic_creation_refuses_existing_nonempty_file(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    bytes_before = path.read_bytes()
+    with pytest.raises(RecorderError, match="path already exists"):
+        TrajectoryRecorder(context, path)
+    assert path.read_bytes() == bytes_before  # evidence byte-identical
+
+
+def test_finalize_verification_failure_writes_no_footer(tmp_path, registry, context):
+    """A stream that passes the incremental checks but violates the document
+    schema (boolean step on a terminal event) cannot be finalized — and no
+    finalization record claiming completion is persisted."""
+    from trajectory.verification import TrajectoryIntegrityError as _TIE
+    path = tmp_path / "bad.jsonl"
+    recorder = TrajectoryRecorder(context, path,
+                                   trajectory_id="T-cccccccccccc")
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.25,
+                          data={"task": "t"}))
+    recorder(RuntimeEvent(seq=2, kind="finished", step=True, monotonic_s=0.5,
+                          data={"answer": "x"}))  # boolean step: incremental passes
+    with pytest.raises(RecorderError):  # TrajectoryIntegrityError before any footer
+        recorder.finalize()
+    lines = path.read_text().splitlines()
+    assert len(lines) == 3  # header + 2 events
+    assert all(json.loads(line).get("record") != "finalization" for line in lines)
+    assert recorder._finalized is False  # white-box: recorder stays open for recovery
+
+
+def test_extra_header_field_rejected(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    header = json.loads(lines[0])
+    header["unexpected"] = "tampered"
+    lines[0] = canonical_json(header)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(MalformedTrajectoryError, match="header envelope fields mismatch"):
+        load_trajectory(path)
+
+
+def test_extra_finalization_field_rejected(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    finalization = json.loads(lines[-1])
+    finalization["unexpected"] = "tampered"
+    lines[-1] = canonical_json(finalization)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(MalformedTrajectoryError, match="finalization envelope fields mismatch"):
+        load_trajectory(path)
+
+
+def test_missing_envelope_field_rejected(tmp_path, registry, context):
+    path = golden_capture(tmp_path, registry, context)
+    lines = path.read_text().splitlines()
+    header = json.loads(lines[0])
+    del header["trajectory_id"]  # required envelope field
+    lines[0] = canonical_json(header)
+    finalization = json.loads(lines[-1])
+    del finalization["complete"]  # required envelope field
+    lines[-1] = canonical_json(finalization)
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(MalformedTrajectoryError, match="envelope fields mismatch"):
+        load_trajectory(path)
