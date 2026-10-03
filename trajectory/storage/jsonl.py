@@ -31,17 +31,21 @@ from trajectory.verification import build_document, verify_document
 class JsonlWriter:
     """Append-only canonical-JSONL writer; flushes on every record.
 
-    Fail-closed exclusive create: refuses to open a path that already
-    contains data (evidence is never overwritten, truncated, or appended
-    onto). Closes cleanly on finalization."""
+    ATOMIC exclusive creation: the file is opened with mode "x"
+    (O_CREAT|O_EXCL) — creation fails closed if the path already exists,
+    even when the existing file is empty. No overwrite, no truncate, no
+    check-then-open race; v0.1 has no resume protocol. Closes cleanly on
+    finalization."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
-        if self.path.exists() and self.path.stat().st_size > 0:
-            raise RecorderError(
-                f"refusing to append: {str(self.path)!r} already contains trajectory data")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = open(self.path, "a", encoding="utf-8")
+        try:
+            self._handle = open(self.path, "x", encoding="utf-8")  # O_CREAT|O_EXCL
+        except FileExistsError as exc:
+            raise RecorderError(
+                f"refusing to create trajectory file {str(self.path)!r}: path already exists "
+                f"(append-only evidence store; no resume protocol in v0.1)") from None
         self._closed = False
 
     def append(self, record: dict) -> None:
@@ -105,6 +109,7 @@ def _split_records(records: list[dict], path: Path) -> tuple[dict, list[dict], d
     header = records[0]
     if header.get("record") != "header":
         raise MalformedTrajectoryError(f"{path}: first record must be the header")
+    _validate_envelope(header, None, path)  # strict header envelope first
     if header.get("schema_version") != "0.1":
         raise MalformedTrajectoryError(
             f"{path}: unsupported header schema_version {header.get('schema_version')!r}; "
@@ -116,12 +121,38 @@ def _split_records(records: list[dict], path: Path) -> tuple[dict, list[dict], d
     finalization = next((r for r in records if r.get("record") == "finalization"), None)
     if finalization is not None and records[-1] is not finalization:
         raise MalformedTrajectoryError(f"{path}: finalization record must be last")
+    _validate_envelope(header, finalization, path)  # strict finalization envelope
     events = [r for r in records[1:] if r.get("record") == "event"]
     unknown = [r.get("record") for r in records[1:]
                if r.get("record") not in ("event", "finalization")]
     if unknown:
         raise MalformedTrajectoryError(f"{path}: unknown record types {sorted(set(unknown))}")
     return header, events, finalization
+
+
+_HEADER_KEYS = {"record", "schema_version", "trajectory_id", "context"}
+_FINALIZATION_KEYS = {"record", "status", "outcome", "incomplete_reason",
+                       "complete", "content_sha256"}
+
+
+def _validate_envelope(header: dict, finalization: dict | None, path: Path) -> None:
+    """Strict storage envelope: the persisted header/finalization records
+    must carry EXACTLY the documented v0.1 fields — unknown keys are
+    rejected rather than silently dropped, missing keys fail closed."""
+    issues: list[str] = []
+    keys = set(header)
+    if keys != _HEADER_KEYS:
+        issues.append(f"header envelope fields mismatch: "
+                      f"unknown={sorted(keys - _HEADER_KEYS)}, "
+                      f"missing={sorted(_HEADER_KEYS - keys)}")
+    if finalization is not None:
+        fkeys = set(finalization)
+        if fkeys != _FINALIZATION_KEYS:
+            issues.append(f"finalization envelope fields mismatch: "
+                          f"unknown={sorted(fkeys - _FINALIZATION_KEYS)}, "
+                          f"missing={sorted(_FINALIZATION_KEYS - fkeys)}")
+    if issues:
+        raise MalformedTrajectoryError(f"{path}: " + "; ".join(issues))
 
 
 def load_trajectory(path: Path, *, allow_incomplete: bool = False) -> LoadedTrajectory:

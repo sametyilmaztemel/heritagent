@@ -275,7 +275,7 @@ def test_second_recorder_on_same_path_fails_before_writing(registry, context, tm
                                      env_results={"heat_object": [ToolObservation(
                                          ok=True, content="heated")]})
     bytes_before = path.read_bytes()
-    with pytest.raises(RecorderError, match="already contains data"):
+    with pytest.raises(RecorderError, match="path already exists"):
         TrajectoryRecorder(context, path)  # fail closed BEFORE any write
     assert path.read_bytes() == bytes_before  # original evidence byte-identical
 

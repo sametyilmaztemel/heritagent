@@ -27,7 +27,8 @@ from trajectory.recorder.context import OutcomeAnnotation, TrajectoryContext
 from trajectory.recorder.errors import RecorderError, StreamInvariantError
 from trajectory.storage.canonical import canonical_json
 from trajectory.storage.jsonl import JsonlWriter
-from trajectory.verification import TERMINAL_KINDS, build_document, validate_event_stream
+from trajectory.verification import (TERMINAL_KINDS, build_document, validate_event_stream,
+                                      verify_document)
 
 _TRAJECTORY_ID_PATTERN = re.compile(r"^T-[0-9a-f]{12}$")
 
@@ -70,13 +71,8 @@ class TrajectoryRecorder:
         self._events: list[dict] = []
         self._finalized = False
         self._outcome: OutcomeAnnotation | None = None
-        # exclusive create: refuse to append onto an existing non-empty
-        # trajectory file (fail closed BEFORE writing any bytes)
-        if self.path.exists() and self.path.stat().st_size > 0:
-            raise RecorderError(
-                f"refusing to start a new trajectory at {str(self.path)!r}: "
-                f"the file already contains data (append-only evidence store; "
-                f"v0.1 has no resume protocol)")
+        # atomic exclusive creation happens inside JsonlWriter (mode "x"):
+        # fail closed BEFORE writing any bytes, no check-then-open race
         self._writer = JsonlWriter(self.path)
         self._writer.append({"record": "header", "schema_version": "0.1",
                              "trajectory_id": self.trajectory_id,
@@ -151,6 +147,10 @@ class TrajectoryRecorder:
         document = build_document(self.trajectory_id, self.context.to_dict(), self._events,
                                    status=status, outcome=outcome_dict,
                                    incomplete_reason=incomplete_reason)
+        # shared validation path: the footer is written ONLY for evidence
+        # that passes the full document verification (schema + invariants +
+        # digest coherence); reload verification remains defense in depth
+        verify_document(document)
         self._writer.append({"record": "finalization",
                              "status": status,
                              "outcome": outcome_dict,
