@@ -244,7 +244,15 @@ def test_finalize_verification_failure_writes_no_footer(tmp_path, registry, cont
     lines = path.read_text().splitlines()
     assert len(lines) == 3  # header + 2 events
     assert all(json.loads(line).get("record") != "finalization" for line in lines)
-    assert recorder._finalized is False  # white-box: recorder stays open for recovery
+    assert recorder._finalized is False
+    # unrecoverable finalization failure released the handle: further
+    # capture is rejected, and the surviving prefix stays recoverable
+    with pytest.raises(RecorderError, match="recorder is closed"):
+        recorder(RuntimeEvent(seq=3, kind="step_started", step=1, monotonic_s=1.0, data={}))
+    # the surviving prefix itself is schema-invalid evidence — recovery must
+    # not launder it into an "incomplete" trajectory either
+    with pytest.raises(TrajectoryIntegrityError, match="schema"):
+        load_trajectory(path, allow_incomplete=True)
 
 
 def test_extra_header_field_rejected(tmp_path, registry, context):
@@ -281,3 +289,20 @@ def test_missing_envelope_field_rejected(tmp_path, registry, context):
     path.write_text("\n".join(lines) + "\n")
     with pytest.raises(MalformedTrajectoryError, match="envelope fields mismatch"):
         load_trajectory(path)
+
+
+def test_finalized_file_with_appended_junk_rejected(tmp_path, registry, context):
+    """allow_incomplete=True recovers an UNFINISHED prefix — it must never
+    hide truncated/junk bytes appended after an already-finalized trajectory."""
+    path = golden_capture(tmp_path, registry, context)  # finalized
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write('{"record":"finalization","sta')  # appended truncated junk
+    with pytest.raises(MalformedTrajectoryError,
+                        match="appended after a finalized trajectory"):
+        load_trajectory(path, allow_incomplete=True)
+
+    junk = Path(str(path) + ".junk.jsonl")
+    junk.write_text(path.read_text() + "this is not json at all\n")
+    with pytest.raises(MalformedTrajectoryError,
+                        match="appended after a finalized trajectory"):
+        load_trajectory(junk, allow_incomplete=True)
