@@ -175,9 +175,17 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
             started = clock()
             result = model.generate(messages, settings)
             model_latency_ms = (clock() - started) * 1000.0
-            per_prompt = result.prompt_tokens if result.prompt_tokens is not None else 0
+            # exactness provenance (issue #8): counts from the adapter are
+            # exact; a missing count is an ESTIMATE and must be labeled as
+            # such. Unknown prompt usage is NEVER zero — the estimate is
+            # derived deterministically from the actual messages so budgets
+            # and adaptation-cost metrics cannot silently undercount.
+            prompt_exact = result.prompt_tokens is not None
+            per_prompt = result.prompt_tokens if prompt_exact else model.estimate_tokens(
+                "\n".join(f"{m.role}: {m.content}" for m in messages))
+            completion_exact = result.completion_tokens is not None
             per_completion = result.completion_tokens \
-                if result.completion_tokens is not None else model.estimate_tokens(result.text)
+                if completion_exact else model.estimate_tokens(result.text)
             cumulative_prompt_tokens += per_prompt
             cumulative_completion_tokens += per_completion
             total_tokens = cumulative_prompt_tokens + cumulative_completion_tokens
@@ -185,6 +193,7 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
                      messages=[{"role": m.role, "content": m.content} for m in messages],
                      raw_response=result.text,
                      prompt_tokens=per_prompt, completion_tokens=per_completion,
+                     prompt_tokens_exact=prompt_exact, completion_tokens_exact=completion_exact,
                      cumulative_prompt_tokens=cumulative_prompt_tokens,
                      cumulative_completion_tokens=cumulative_completion_tokens,
                      total_tokens=total_tokens, latency_ms=model_latency_ms,

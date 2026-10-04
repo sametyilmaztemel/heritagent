@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/trajectory/0.1/trajectory.json",
+  "title": "HeritAgent Trajectory v0.1 (finalized)",
+  "description": "Full functional phenotype of one runtime episode: ordered runtime events with an integrity digest over header + events + finalization. Benchmark-agnostic; typed generic extensions live in context.tags/metadata and finalization.outcome.metadata.",
+  "type": "object",
+  "required": [
+    "trajectory_id",
+    "schema_version",
+    "status",
+    "complete",
+    "context",
+    "events",
+    "finalization"
+  ],
+  "properties": {
+    "trajectory_id": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$"
+    },
+    "schema_version": {
+      "const": "0.1"
+    },
+    "status": {
+      "enum": [
+        "finished",
+        "budget_exhausted",
+        "incomplete"
+      ]
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "context": {
+      "type": "object",
+      "required": [
+        "genome_id"
+      ],
+      "properties": {
+        "genome_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "code_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "benchmark": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "split": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "budget": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "object"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "record",
+          "seq",
+          "kind",
+          "step",
+          "monotonic_s",
+          "data"
+        ],
+        "properties": {
+          "record": {
+            "const": "event"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "type": "string"
+          },
+          "step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "monotonic_s": {
+            "type": "number"
+          },
+          "data": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "finalization": {
+      "type": "object",
+      "required": [
+        "status",
+        "content_sha256"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "finished",
+            "budget_exhausted",
+            "incomplete"
+          ]
+        },
+        "outcome": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "incomplete_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
