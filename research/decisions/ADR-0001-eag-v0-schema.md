@@ -58,3 +58,21 @@ Non-blocking follow-ups recorded: deeper payload-shape validation with #7/#9; ca
 |---|---|---|
 | 1 | Record stores must not retain/return externally mutable shared dict references | `CigRecordStore.add_aggregate/add_child` and `SomaticStore.add` deep-copy on insertion; `aggregates` / `children` / `all()` return deep copies. Tests: input mutation after add leaves stored state unchanged; accessor mutation leaves stored state unchanged |
 | 2 | Registry-attached validation must reject unbound identity/version URIs | `verify_binding()` rejects an unbound `(kind, gene_id, version)` even when its digest exists under another identity; bound-digest mismatch rejection unchanged; content sharing valid only with explicit `put()` bindings per identity. Tests: forged identity B → A's digest rejected as unbound (registry-level, loader-level, `check_ref`) |
+
+## Amendment A1 — somatic-only `origin="acquired"` (2026-10-04, issue #9)
+
+The Trait Miner (#9) emits lifetime-mined skills that are neither evolutionary
+mutations nor already-assimilated genes. Labelling them `mutation` would be
+wrong and would blur the somatic/germline lifecycle.
+
+**Decision.**
+- `somatic/0.1` geneRef gains `origin: "acquired"`;
+- `origin="acquired"` requires `provenance.source_trajectory` + `born_generation`
+  (no `cig_record` — that belongs to assimilation only);
+- an acquired trait may remain somatic through `candidate|rejected|validated`;
+- later VTA/assimilation creates the germline ref with `origin="assimilation"`;
+- the germline `genome/0.1` schema still rejects `acquired`.
+
+**Consequences.** Mined skills are explicitly marked as unvalidated lifetime
+acquisitions end-to-end; a later somatic→germline promotion is visible in
+provenance as `acquired → assimilation` with the CIG record attached.
