@@ -4,48 +4,88 @@
   "title": "Trait Miner v0.1 — structured teacher response",
   "description": "Structured output contract for the differential skill-distillation teacher call (adapted from SkillRL, arXiv:2602.08234). Proposals are UNVALIDATED somatic hypotheses; zero proposals is a valid response.",
   "type": "object",
-  "required": ["proposals"],
+  "required": [
+    "proposals"
+  ],
   "properties": {
     "proposals": {
       "type": "array",
-      "items": {"$ref": "#/$defs/proposal"}
+      "items": {
+        "$ref": "#/$defs/proposal"
+      }
     }
   },
   "additionalProperties": false,
   "$defs": {
     "proposal": {
       "type": "object",
-      "required": ["name", "principle", "when_to_apply", "applicability", "estimated_generality"],
+      "required": [
+        "name",
+        "principle",
+        "when_to_apply",
+        "applicability",
+        "estimated_generality"
+      ],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
-        "principle": {"type": "string", "minLength": 1},
-        "when_to_apply": {"type": "string", "minLength": 1},
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "principle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "when_to_apply": {
+          "type": "string",
+          "minLength": 1
+        },
         "procedure": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id", "text"],
+            "required": [
+              "id",
+              "text"
+            ],
             "properties": {
-              "id": {"type": "string", "pattern": "^S[0-9]+([-.][A-Za-z0-9_-]+)*$"},
-              "text": {"type": "string", "minLength": 1}
+              "id": {
+                "type": "string",
+                "pattern": "^S[0-9]+([-.][A-Za-z0-9_-]+)*$"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
             },
             "additionalProperties": false
           }
         },
         "applicability": {
           "type": "object",
-          "required": ["task_families"],
+          "required": [
+            "task_families"
+          ],
           "properties": {
             "task_families": {
               "type": "array",
               "minItems": 1,
-              "items": {"type": "string", "minLength": 1}
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
             }
           },
           "additionalProperties": false
         },
-        "estimated_generality": {"type": "number", "minimum": 0, "maximum": 1},
-        "evidence_rationale": {"type": "string"}
+        "estimated_generality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "evidence_rationale": {
+          "type": "string"
+        }
       },
       "additionalProperties": false
     }

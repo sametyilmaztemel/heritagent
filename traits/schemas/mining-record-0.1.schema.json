@@ -20,7 +20,8 @@
     "raw_structured_response",
     "accepted_proposals",
     "rejected",
-    "discovery_order"
+    "discovery_order",
+    "raw_teacher_text"
   ],
   "properties": {
     "record": {
@@ -166,6 +167,13 @@
       "items": {
         "type": "string"
       }
+    },
+    "raw_teacher_text": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "exact raw teacher output when the call was malformed (audit); null for valid calls"
     }
   },
   "additionalProperties": false

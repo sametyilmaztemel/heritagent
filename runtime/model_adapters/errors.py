@@ -15,7 +15,12 @@ class UnsupportedFeatureError(AdapterError):
 
 class ModelResponseError(AdapterError):
     """The model's response violated the requested contract (invalid JSON,
-    schema mismatch, malformed tool call)."""
+    schema mismatch, malformed tool call). `raw_text` preserves the exact
+    teacher output for audit when available; never regex-recovered."""
+
+    def __init__(self, message, raw_text: str | None = None):
+        self.raw_text = raw_text
+        super().__init__(message)
 
 
 class ScriptExhaustedError(AdapterError):

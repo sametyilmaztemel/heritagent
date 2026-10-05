@@ -31,12 +31,13 @@ def _require_complete_verified(nt: NormalizedTrajectory, role: str) -> None:
 
 
 def _require_matching_context(pair_members: tuple[NormalizedTrajectory, NormalizedTrajectory]) -> None:
-    """Same relevant environment/benchmark context: generic context fields
-    must agree whenever both members carry them."""
+    """Same relevant environment/benchmark context: benchmark/split/
+    environment must match EXACTLY — one-sided absence cannot be verified
+    and is therefore rejected as well."""
     a, b = pair_members
     for field in ("benchmark", "split", "environment"):
         va, vb = a.provenance.get(field), b.provenance.get(field)
-        if va is not None and vb is not None and va != vb:
+        if va != vb:
             raise MinerInputError(
                 f"pair members disagree on {field}: {va!r} != {vb!r}")
 
@@ -94,6 +95,9 @@ class MiningBatch:
             raise MinerInputError("family universe must be non-empty")
         if len(set(self.family_universe)) != len(self.family_universe):
             raise MinerInputError("family universe contains duplicates")
+        # canonical order: the universe is interpolated into the teacher
+        # prompt, so its order is part of the teacher-call identity
+        object.__setattr__(self, "family_universe", tuple(sorted(self.family_universe)))
         for pair in self.pairs:
             if pair.task_family not in self.family_universe:
                 raise MinerInputError(
