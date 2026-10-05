@@ -9,6 +9,7 @@ import pytest
 from runtime.model_adapters import ScriptedAdapter
 from traits.miner.inputs import MiningBatch
 from trajectory.storage.canonical import sha256_hex
+from trajectory.recorder.errors import RecorderError
 from traits.miner.miner import (
     MiningSettings,
     TraitMiner,
@@ -122,9 +123,13 @@ def test_malformed_output_fails_closed_but_auditable(tmp_path, registry, context
     scripted = scripted_miner(miner, [{"proposals": [], "confidence": 0.9}])
     frozen = miner.mine(batch)
     assert frozen.candidates == ()
-    rejected = frozen.mining_records[0]["rejected"]
+    record = frozen.mining_records[0]
+    rejected = record["rejected"]
     assert rejected[0]["reason"] == "malformed_output"
     assert frozen.mining_records[0]["raw_structured_response"] is None
+    # exact raw teacher output retained for audit (no regex recovery)
+    assert record["raw_teacher_text"] == json.dumps(
+        {"proposals": [], "confidence": 0.9}, sort_keys=True)
 
 
 def test_applicability_outside_family_universe_rejected(tmp_path, registry, context, miner):
@@ -461,3 +466,117 @@ def test_family_universe_canonical_order(tmp_path, registry, context, miner):
     prompt_b = miner._model.requests[0].messages[0].content
     assert prompt_a == prompt_b
     assert "Allowed task families: alpha, heat_and_place, zebra" in prompt_a
+
+
+def test_fail_atomic_persistence_zero_bindings_on_invalid_selected(tmp_path, registry, context, miner, monkeypatch):
+    """One invalid selected envelope (simulated identity-generation bug) in a
+    multi-candidate batch aborts the WHOLE persistence atomically: zero new
+    skill bindings/artifacts in the registry."""
+    proposals = [GOLDEN_PROPOSALS[0], SECOND_PROPOSAL,
+                  dict(GOLDEN_PROPOSALS[0], name="skill_03_alpha")]
+    batch, _ = make_batch(tmp_path, registry)
+    scripted = scripted_miner(miner, [{"proposals": proposals}])
+    original_identity = TraitMiner.__dict__["_gene_identity"]
+    calls = {"n": 0}
+
+    def buggy_identity(payload):
+        result = original_identity.__get__(None, TraitMiner)(payload)
+        calls["n"] += 1
+        if payload["name"] == "skill_03_alpha":
+            return "INVALID GENE ID"  # violates the gene-id pattern
+        return result
+
+    # monkeypatch restores the original staticmethod descriptor automatically
+    monkeypatch.setattr(TraitMiner, "_gene_identity",
+                         staticmethod(buggy_identity))
+    with pytest.raises(RecorderError, match="prevalidation failed"):
+        miner.mine(batch)
+    skills_dir = registry.root / "skills"
+    assert not skills_dir.exists() or list(skills_dir.iterdir()) == []  \
+        if False else True
+    skills_dir = registry.root / "skills"
+    bindings = list(skills_dir.iterdir()) if skills_dir.exists() else []
+    assert bindings == [], f"registry was mutated: {bindings}"
+
+
+def test_rendered_prompt_sha256_recorded_and_in_identity(tmp_path, registry, context, miner):
+    """Same behavioral evidence under different opaque trajectory ids yields
+    the SAME rendered prompt hash; a different family universe changes the
+    rendered prompt hash AND the mining-record id."""
+    batch_a, _ = make_batch(tmp_path / "a", registry,
+                             success_trajectory_id="T-aaaa1111aaaa",
+                             failure_trajectory_id="T-ffff5555ffff")
+    batch_b, _ = make_batch(tmp_path / "b", registry,
+                             success_trajectory_id="T-bbbb2222bbbb",
+                             failure_trajectory_id="T-eeee3333eeee")
+    scripted = scripted_miner(miner, [{"proposals": []}, {"proposals": []}])
+    frozen_a = miner.mine(batch_a)
+    record_a = frozen_a.mining_records[0]
+    frozen_b = miner.mine(batch_b)
+    record_b = frozen_b.mining_records[0]
+
+    # identical behavior -> identical rendered prompt hash
+    assert record_a["rendered_prompt_sha256"] == record_b["rendered_prompt_sha256"]
+    # source trajectory ids remain distinct per record (provenance, not prompt)
+    assert record_a["success_trajectory_ids"] == ["T-aaaa1111aaaa"]
+    assert record_b["success_trajectory_ids"] == ["T-bbbb2222bbbb"]
+    # ids stay distinct: source ids are part of the call identity
+    assert record_a["mining_record_id"] != record_b["mining_record_id"]
+
+    # same pair, different family universe -> different rendered prompt hash
+    # and a different mining-record id
+    batch_c, _ = make_batch(tmp_path / "c", registry,
+                             families=("heat_and_place", "clean_surface"),
+                             success_trajectory_id="T-aaaa1111aaaa",
+                             failure_trajectory_id="T-ffff5555ffff")
+    scripted = scripted_miner(miner, [{"proposals": []}])
+    frozen_c = miner.mine(batch_c)
+    record_c = frozen_c.mining_records[0]
+    assert record_c["rendered_prompt_sha256"] != record_a["rendered_prompt_sha256"]
+    assert record_c["mining_record_id"] != record_a["mining_record_id"]
+    assert record_c["family_universe"] == ["clean_surface", "heat_and_place"]
+
+
+def test_duplicate_policy_first_discovery_owns_score(tmp_path, registry, context, miner):
+    """Locked duplicate policy: first valid discovery owns
+    estimated_generality and discovery_order; a later exact duplicate with a
+    HIGHER score cannot modify it."""
+    duplicate_higher = dict(GOLDEN_PROPOSALS[0], estimated_generality=1.0)
+    batch, _ = make_batch(tmp_path, registry)
+    scripted = scripted_miner(miner, [{"proposals": [GOLDEN_PROPOSALS[0],
+                                                      duplicate_higher]}])
+    frozen = miner.mine(batch)
+    assert len(frozen.candidates) == 1
+    accepted = frozen.mining_records[0]["accepted_proposals"][0]
+    assert accepted["estimated_generality"] == 0.5  # first discovery wins
+    assert accepted["discovery_order"] == 0
+    rejected = frozen.mining_records[0]["rejected"]
+    dup = [r for r in rejected if r["reason"] == "exact_duplicate"][0]
+    assert dup["proposal_index"] == 1
+    assert dup["gene_id"] == frozen.candidates[0]["candidate"]["gene_id"]
+
+
+def test_rejection_entries_machine_addressable(tmp_path, registry, context, miner):
+    batch, _ = make_batch(tmp_path, registry, families=("heat_and_place",))
+    outside = dict(GOLDEN_PROPOSALS[0], name="outside_skill",
+                    applicability={"task_families": ["quantum_chamber"]})
+    scripted = scripted_miner(miner, [{"proposals": [outside]}])
+    frozen = miner.mine(batch)
+    entry = frozen.mining_records[0]["rejected"][0]
+    assert entry["reason"] == "invalid_applicability"
+    assert entry["proposal_index"] == 0
+    assert entry["gene_id"].startswith("outside_skill_")
+    assert "discovery_order" in entry  # explicitly null for pre-cap rejections
+    assert entry["discovery_order"] is None
+
+
+def test_raw_teacher_text_present_for_valid_and_malformed(tmp_path, registry, context, miner):
+    batch, _ = make_batch(tmp_path, registry)
+    valid_text = json.dumps({"proposals": []}, sort_keys=True)
+    scripted = scripted_miner(miner, [{"proposals": []}])
+    frozen = miner.mine(batch)
+    assert frozen.mining_records[0]["raw_teacher_text"] == valid_text
+
+    scripted = scripted_miner(miner, ["total garbage"])
+    frozen = miner.mine(batch)
+    assert frozen.mining_records[0]["raw_teacher_text"] == "total garbage"
