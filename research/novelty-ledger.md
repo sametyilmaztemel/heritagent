@@ -2,7 +2,7 @@
 
 Living document per SPEC §30. Every relevant paper is recorded here with: paper / date / core mechanism / overlap with HeritAgent / what remains different / required architecture changes. Update whenever a new paper appears; adjust the novelty claim if needed.
 
-- **Last updated:** 2026-10-02 (Round 1 — full review of the seven works named in SPEC §40 plus a broad 2023–2026 sweep; see `related-work/` for detailed notes)
+- **Last updated:** 2026-10-04 (Round 1 + issue #9 miner updates: SkillRL NeurIPS 2026 status, SkillForge 2608.24747, Agent Skills Can Be Harmful 2608.11888; see `related-work/` for detailed notes)
 - **Next review:** before any paper submission, and on any new arXiv hit in the sweep categories
 
 ---

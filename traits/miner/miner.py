@@ -1,16 +1,17 @@
 """Trait Miner v0 (issue #9): SkillRL-adapted differential distillation.
 
-Pipeline (deterministic except the single teacher call per pair):
+Two-phase pipeline (deterministic except the teacher calls):
 
-    verified normalized trajectories
-        -> MiningBatch (typed success/failure pairs, frozen family universe)
-        -> canonical differential evidence (+ evidence_sha256)
-        -> structured_generate (temperature 0.7, explicit seed)
-        -> schema-validated proposals (zero proposals is valid)
-        -> deterministic identity / batch-wide exact dedupe
-        -> batch-wide ranking (estimated_generality desc, discovery-order tie-break)
-        -> K cap
-        -> frozen candidate set (somatic envelopes, origin="acquired")
+    Phase 1 (per pair): evidence -> structured teacher call -> validated
+    proposal DESCRIPTORS (schema-checked, applicability-checked, exact-
+    deduped) — nothing is bound to the registry yet.
+
+    Phase 2 (batch-wide): ranking (estimated_generality desc,
+    discovery-order tie-break) -> K cap -> ONLY selected descriptors are
+    registered and validated through the existing somatic boundary
+    (load_somatic) -> mining records reconciled so every proposal is
+    exactly one of accepted or rejected (with `outside_cap` recorded in
+    its SOURCE teacher call's record).
 
 Research positioning: this is ADAPTED PRIOR ART (SkillRL, arXiv:2602.08234),
 not a novelty claim. Mined skills are UNVALIDATED somatic hypotheses — only
@@ -28,7 +29,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from genome.validation.registry import TraitRegistry
-from trajectory.storage.canonical import canonical_json, sha256_hex
 from runtime.model_adapters import (
     GenerationSettings,
     ModelAdapter,
@@ -36,6 +36,8 @@ from runtime.model_adapters import (
     ModelResponseError,
 )
 
+from trajectory.storage.canonical import canonical_json, sha256_hex
+from genome.validation.loader import load_somatic
 from traits.miner.evidence import render_pair_evidence
 from traits.miner.inputs import MiningBatch
 from traits.miner.records import build_mining_record
@@ -76,21 +78,36 @@ class MiningSettings:
 
 @dataclass(frozen=True)
 class FrozenCandidateSet:
-    """Immutable mining output. `candidates` are validated somatic envelopes
-    (origin="acquired", state=candidate) in ranked order; the set is frozen
-    (deep-copied on construction) and identified by `candidate_set_sha256`
-    over the selected ordered set. `rejected` lists every non-selected
-    proposal with a machine-readable reason."""
+    """Immutable mining output. Internal storage is deep-copied; the public
+    accessors return deep copies, so callers can never mutate the frozen
+    candidate set, the mining records, the rejection list, or the digest
+    relationship. `candidates` are validated somatic envelopes
+    (origin="acquired", state=candidate) in ranked order."""
 
-    candidates: tuple[dict, ...]
-    candidate_set_sha256: str
-    mining_records: tuple[dict, ...]
-    rejected: tuple[dict, ...]
+    _candidates: tuple[dict, ...]
+    _candidate_set_sha256: str
+    _mining_records: tuple[dict, ...]
+    _rejected: tuple[dict, ...]
 
     def __post_init__(self):
-        object.__setattr__(self, "candidates", copy.deepcopy(self.candidates))
-        object.__setattr__(self, "mining_records", copy.deepcopy(self.mining_records))
-        object.__setattr__(self, "rejected", copy.deepcopy(self.rejected))
+        for name in ("_candidates", "_mining_records", "_rejected"):
+            object.__setattr__(self, name, copy.deepcopy(getattr(self, name)))
+
+    @property
+    def candidates(self) -> tuple[dict, ...]:
+        return copy.deepcopy(self._candidates)
+
+    @property
+    def candidate_set_sha256(self) -> str:
+        return self._candidate_set_sha256
+
+    @property
+    def mining_records(self) -> tuple[dict, ...]:
+        return copy.deepcopy(self._mining_records)
+
+    @property
+    def rejected(self) -> tuple[dict, ...]:
+        return copy.deepcopy(self._rejected)
 
 
 class TraitMiner:
@@ -104,8 +121,28 @@ class TraitMiner:
         self._born_generation = born_generation
 
     # -- teacher interaction ---------------------------------------------------
+    def _record_identity(self, evidence_sha256: str, model_metadata) -> str:
+        """Audit identity for ONE teacher call: derived from evidence, prompt
+        template, output schema, mining seed/settings and model identity —
+        NOT from the teacher output (malformed calls are audited too)."""
+        identity_input = {
+            "evidence_sha256": evidence_sha256,
+            "prompt_template_sha256": prompt_template_sha256(),
+            "output_schema_sha256": output_schema_sha256(),
+            "mining_seed": self._settings.seed,
+            "generation_settings": {"temperature": self._settings.temperature,
+                                     "max_tokens": self._settings.max_tokens},
+            "model": {"model_id": model_metadata.model_id,
+                       "revision": model_metadata.revision,
+                       "backend": model_metadata.backend},
+        }
+        digest = sha256_hex(canonical_json(identity_input).encode("utf-8"))
+        return f"MR-{digest[:12]}"
+
     def _ask_teacher(self, *, evidence_text: str,
-                     family_universe: tuple[str, ...]) -> dict:
+                     family_universe: tuple[str, ...]) -> tuple[dict, str]:
+        """Call the teacher; returns (parsed_response, raw_text). Raises
+        ModelResponseError (with raw_text) on malformed output."""
         template = prompt_template_text()
         system = (template
                    .replace("<<MAX_PROPOSALS>>", str(self._settings.max_proposals))
@@ -117,7 +154,7 @@ class TraitMiner:
         result = self._model.structured_generate(
             [ModelMessage(role="system", content=system)],
             settings, output_schema())
-        return json.loads(result.text)
+        return json.loads(result.text), result.text
 
     # -- mining pipeline ---------------------------------------------------------
     def mine(self, batch: MiningBatch) -> FrozenCandidateSet:
@@ -127,29 +164,33 @@ class TraitMiner:
         proposals -> applicability validation -> deterministic identity ->
         batch-wide exact dedupe (before the cap) -> batch-wide ranking
         (estimated_generality desc, discovery-order tie-break) -> K cap ->
-        freeze. Every non-selected proposal is recorded with a
-        machine-readable reason."""
-        candidates: list[dict] = []       # discovered entries (pre-cap), in discovery order
+        registry binding + load_somatic validation for SELECTED candidates
+        only -> mining-record reconciliation -> freeze."""
+        descriptors: list[dict] = []       # validated proposals, pre-cap
         seen_payloads: dict[str, str] = {}  # canonical payload -> gene_id
         rejected: list[dict] = []
-        records: list[dict] = []
+        record_drafts: list[dict] = []
         global_discovery_order = 0
+        model_metadata = self._model.metadata()
 
+        # -- phase 1: per-pair teacher calls -> validated descriptors ---------
         for pair in batch.pairs:
             evidence_text, evidence_sha256 = render_pair_evidence(pair)
-            record_id = f"MR-{evidence_sha256[:12]}"
+            record_id = self._record_identity(evidence_sha256, model_metadata)
             raw_response: dict | None = None
+            raw_teacher_text: str | None = None
             pair_rejected: list[dict] = []
-            pair_accepted: list[dict] = []
+            pair_descriptors: list[dict] = []
             pair_discovery_order: list[str] = []
 
             try:
-                raw_response = self._ask_teacher(
+                raw_response, raw_teacher_text = self._ask_teacher(
                     evidence_text=evidence_text, family_universe=batch.family_universe)
                 proposals = list(raw_response.get("proposals") or [])
             except ModelResponseError as exc:
                 # fail closed: the malformed teacher output yields no
-                # proposals but remains fully auditable
+                # proposals but the exact raw output stays auditable
+                raw_teacher_text = exc.raw_text
                 pair_rejected.append({"reason": "malformed_output",
                                        "proposal_name": None, "detail": str(exc)})
                 proposals = []
@@ -168,83 +209,116 @@ class TraitMiner:
                 invalid = [f for f in payload["applicability"]["task_families"]
                            if f not in batch.family_universe]
                 if invalid:
-                    rejected.append({"reason": "invalid_applicability",
-                                      "proposal_name": name,
-                                      "detail": f"families outside frozen universe: "
-                                                 f"{sorted(invalid)}"})
-                    pair_rejected.append(rejected[-1])
+                    entry = {"reason": "invalid_applicability", "proposal_name": name,
+                              "detail": f"families outside frozen universe: {sorted(invalid)}"}
+                    rejected.append(entry)
+                    pair_rejected.append(entry)
                     continue
 
                 if payload_json in seen_payloads:
-                    rejected.append({"reason": "exact_duplicate",
-                                      "proposal_name": name, "detail": None})
-                    pair_rejected.append(rejected[-1])
+                    entry = {"reason": "exact_duplicate", "proposal_name": name,
+                              "detail": None}
+                    rejected.append(entry)
+                    pair_rejected.append(entry)
                     continue
 
                 gene_id = self._gene_identity(payload)
                 seen_payloads[payload_json] = gene_id
-                artifact_payload = dict(payload)
-                artifact_uri = self._registry.put("skill", gene_id, 1, artifact_payload)
-                envelope = {
-                    "candidate": {
-                        "gene_id": gene_id,
-                        "version": 1,
-                        "type": "skill",
-                        "origin": "acquired",
-                        "artifact": artifact_uri,
-                        "provenance": {
-                            "born_generation": self._born_generation,
-                            "source_trajectory": pair.success.trajectory_id,
-                            "notes": record_id,
-                        },
-                    },
-                    "validation": {"state": "candidate"},
-                }
-                entry = {"envelope": envelope,
-                          "estimated_generality": proposal["estimated_generality"],
-                          "discovery_order": global_discovery_order,
-                          "source_trajectory_id": pair.success.trajectory_id}
+                descriptor = {"payload": payload, "payload_json": payload_json,
+                               "gene_id": gene_id,
+                               "estimated_generality": proposal["estimated_generality"],
+                               "discovery_order": global_discovery_order,
+                               "record_index": len(record_drafts),
+                               "record_id": record_id,
+                               "source_trajectory_id": pair.success.trajectory_id,
+                               "proposal_name": name}
                 global_discovery_order += 1
-                candidates.append(entry)
-                pair_accepted.append(entry)
+                descriptors.append(descriptor)
+                pair_descriptors.append(descriptor)
                 pair_discovery_order.append(gene_id)
 
+            record_drafts.append({
+                "record_id": record_id, "pair": pair,
+                "evidence_sha256": evidence_sha256,
+                "raw_response": raw_response, "raw_teacher_text": raw_teacher_text,
+                "pair_rejected": pair_rejected,
+                "pair_descriptors": pair_descriptors,
+                "pair_discovery_order": pair_discovery_order,
+                "outside_cap": [],
+            })
+
+        # -- phase 2: batch-wide ranking, cap, persistence ---------------------
+        ranked = sorted(descriptors, key=lambda d:
+                         (-d["estimated_generality"], d["discovery_order"]))
+        selected: list[dict] = []
+        for descriptor in ranked:
+            if len(selected) < self._settings.max_proposals:
+                selected.append(descriptor)
+            else:
+                entry = {"reason": "outside_cap",
+                          "proposal_name": descriptor["proposal_name"], "detail": None}
+                rejected.append(entry)
+                record_drafts[descriptor["record_index"]]["outside_cap"].append(entry)
+
+        # only SELECTED candidates are bound to the registry and validated
+        # through the existing somatic boundary — in that order, so a
+        # validation failure cannot leave an apparently selected invalid
+        # candidate behind
+        candidate_envelopes: list[dict] = []
+        for descriptor in selected:
+            artifact_uri = self._registry.put("skill", descriptor["gene_id"], 1,
+                                               dict(descriptor["payload"]))
+            envelope = {
+                "candidate": {
+                    "gene_id": descriptor["gene_id"],
+                    "version": 1,
+                    "type": "skill",
+                    "origin": "acquired",
+                    "artifact": artifact_uri,
+                    "provenance": {
+                        "born_generation": self._born_generation,
+                        "source_trajectory": descriptor["source_trajectory_id"],
+                        "notes": descriptor["record_id"],
+                    },
+                },
+                "validation": {"state": "candidate"},
+            }
+            load_somatic(envelope, self._registry)  # existing boundary; no parallel validator
+            candidate_envelopes.append(envelope)
+
+        # -- reconcile mining records with the FINAL selection -----------------
+        records: list[dict] = []
+        for index, draft in enumerate(record_drafts):
+            accepted = [{"gene_id": d["gene_id"], "version": 1,
+                          "discovery_order": d["discovery_order"],
+                          "estimated_generality": d["estimated_generality"],
+                          "source_trajectory_id": d["source_trajectory_id"]}
+                         for d in selected if d["record_index"] == index]
+            rec_rejected = list(draft["pair_rejected"]) + list(draft["outside_cap"])
             records.append(build_mining_record(
-                mining_record_id=record_id,
-                success_trajectory_ids=[pair.success.trajectory_id],
-                failure_trajectory_ids=[pair.failure.trajectory_id],
-                task_families=[pair.task_family],
-                evidence_sha256=evidence_sha256,
+                mining_record_id=draft["record_id"],
+                success_trajectory_ids=[draft["pair"].success.trajectory_id],
+                failure_trajectory_ids=[draft["pair"].failure.trajectory_id],
+                task_families=[draft["pair"].task_family],
+                evidence_sha256=draft["evidence_sha256"],
                 prompt_template_sha256=prompt_template_sha256(),
                 output_schema_sha256=output_schema_sha256(),
                 mining_seed=self._settings.seed,
                 generation_settings={"temperature": self._settings.temperature,
                                       "max_tokens": self._settings.max_tokens,
                                       "seed": self._settings.seed},
-                model_metadata=vars(self._model.metadata()),
-                raw_structured_response=raw_response,
-                accepted_proposals=[{"gene_id": e["envelope"]["candidate"]["gene_id"],
-                                      "version": 1,
-                                      "discovery_order": e["discovery_order"],
-                                      "estimated_generality": e["estimated_generality"],
-                                      "source_trajectory_id": e["source_trajectory_id"]}
-                                     for e in pair_accepted],
-                rejected=pair_rejected,
-                discovery_order=pair_discovery_order,
+                model_metadata={"model_id": model_metadata.model_id,
+                                 "revision": model_metadata.revision,
+                                 "backend": model_metadata.backend,
+                                 "backend_version": model_metadata.backend_version},
+                raw_structured_response=draft["raw_response"],
+                raw_teacher_text=draft["raw_teacher_text"],
+                accepted_proposals=accepted,
+                rejected=rec_rejected,
+                discovery_order=draft["pair_discovery_order"],
             ))
 
-        # batch-wide ranking (locked rule) then K cap
-        ranked = sorted(candidates, key=lambda entry:
-                         (-entry["estimated_generality"], entry["discovery_order"]))
-        selected: list[dict] = []
-        for entry in ranked:
-            if len(selected) < self._settings.max_proposals:
-                selected.append(entry)
-            else:
-                rejected.append({"reason": "outside_cap",
-                                  "proposal_name": entry["envelope"]["candidate"]["gene_id"],
-                                  "detail": None})
-        return self._freeze([entry["envelope"] for entry in selected], records, rejected)
+        return self._freeze(candidate_envelopes, records, rejected)
 
     # -- helpers ------------------------------------------------------------------
     @staticmethod
@@ -262,7 +336,7 @@ class TraitMiner:
                 rejected: list[dict]) -> FrozenCandidateSet:
         selected = copy.deepcopy(envelopes)
         digest = sha256_hex(canonical_json(selected).encode("utf-8"))
-        return FrozenCandidateSet(candidates=tuple(selected),
-                                   candidate_set_sha256=digest,
-                                   mining_records=tuple(records),
-                                   rejected=tuple(rejected))
+        return FrozenCandidateSet(_candidates=tuple(selected),
+                                   _candidate_set_sha256=digest,
+                                   _mining_records=tuple(copy.deepcopy(records)),
+                                   _rejected=tuple(copy.deepcopy(rejected)))

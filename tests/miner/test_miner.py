@@ -309,3 +309,155 @@ def test_runtime_leakage_invariant(tmp_path, registry, context, miner):
             f"{forbidden_key} leaked into runtime"
     # the frozen family oracle label never reaches the runtime either
     assert "heat_and_place" not in runtime_skill
+
+
+def _proposal(index: int, family: str = "heat_and_place",
+              generality: float | None = None) -> dict:
+    return {
+        "name": f"skill_{index:02d}",
+        "principle": f"principle {index}",
+        "when_to_apply": "when applicable",
+        "applicability": {"task_families": [family]},
+        "estimated_generality": generality if generality is not None else 0.5,
+    }
+
+
+def test_cap_multi_pair_registry_records_and_frozen_set_agree(tmp_path, registry, context, miner):
+    """>10 proposals across MULTIPLE teacher calls: only the selected
+    candidates are registry-bound; each mining record reconciles its own
+    proposals (accepted vs outside_cap); the frozen set matches both."""
+    pair_a = make_pair(tmp_path, registry, family="heat_and_place")
+    pair_b = make_pair(tmp_path / "b", registry, family="clean_surface")
+    response_a = {"proposals": [_proposal(i) for i in range(6)]}
+    response_b = {"proposals": [_proposal(10 + i, family="clean_surface")
+                                 for i in range(6)]}
+    miner._model = ScriptedAdapter([])
+    for response in (response_a, response_b):
+        miner._model.enqueue_structured(response)
+    batch = MiningBatch(pairs=(pair_a, pair_b), family_universe=("heat_and_place",
+                                                                  "clean_surface"))
+    frozen = miner.mine(batch)
+
+    assert len(frozen.candidates) == 10  # K cap
+    # registry bindings: exactly the 10 selected artifacts exist
+    skill_artifacts = sorted(p.name for p in (registry.root / "skills").iterdir())
+    bound = {c["candidate"]["artifact"].rsplit("/", 1)[-1].replace("sha256:", "")
+              for c in frozen.candidates}
+    assert skill_artifacts == sorted(bound)
+
+    # records reconcile: 6 proposals each, 4 accepted + 2 outside_cap per call
+    assert len(frozen.mining_records) == 2
+    # equal generality -> discovery-order tie-break: call A's six proposals
+    # fill the cap first, so call B loses its last two to outside_cap
+    record_a, record_b = frozen.mining_records
+    accepted_a = [e["gene_id"] for e in record_a["accepted_proposals"]]
+    outside_a = [r for r in record_a["rejected"] if r["reason"] == "outside_cap"]
+    accepted_b = [e["gene_id"] for e in record_b["accepted_proposals"]]
+    outside_b = [r for r in record_b["rejected"] if r["reason"] == "outside_cap"]
+    assert len(accepted_a) == 6 and len(outside_a) == 0
+    assert len(accepted_b) == 4 and len(outside_b) == 2
+    selected_ids = {c["candidate"]["gene_id"] for c in frozen.candidates}
+    for record in frozen.mining_records:
+        for entry in record["accepted_proposals"]:
+            assert entry["gene_id"] in selected_ids
+
+    # every proposal is exactly accepted OR rejected, never both
+    all_rejected = {r["proposal_name"] for r in frozen.rejected}
+    for candidate in frozen.candidates:
+        gene_id = candidate["candidate"]["gene_id"]
+        assert gene_id not in all_rejected
+
+
+def test_mining_record_identity_differentiates_calls(tmp_path, registry, context, miner):
+    """The record id derives from evidence + prompt + schema + seed/settings
+    + model identity: identical calls reproduce it; changing seed/model
+    changes it."""
+    batch, _ = make_batch(tmp_path, registry)
+
+    def record_id_for(seed: int, model_id: str) -> str:
+        miner._settings = MiningSettings(seed=seed)
+        miner._model = ScriptedAdapter([], model_id=model_id)
+        miner._model.enqueue_structured({"proposals": []})
+        frozen = miner.mine(batch)
+        return frozen.mining_records[0]["mining_record_id"]
+
+    id_s11 = record_id_for(11, "scripted-test-model")
+    id_s11_again = record_id_for(11, "scripted-test-model")
+    id_s23 = record_id_for(23, "scripted-test-model")
+    id_model = record_id_for(11, "other-teacher-model")
+    assert id_s11 == id_s11_again    # identical call -> identical id
+    assert id_s11 != id_s23          # seed changes identity
+    assert id_s11 != id_model        # model changes identity
+
+
+def test_frozen_set_is_immutable_to_nested_mutation(tmp_path, registry, context, miner):
+    batch, _ = make_batch(tmp_path, registry)
+    scripted = scripted_miner(miner, [{"proposals": [GOLDEN_PROPOSALS[0], SECOND_PROPOSAL]}])
+    frozen = miner.mine(batch)
+
+    # nested mutation attempts on returned copies
+    candidates = frozen.candidates
+    candidates[0]["candidate"]["gene_id"] = "tampered"
+    candidates[0]["candidate"]["provenance"]["source_trajectory"] = "T-tampered"
+    records = frozen.mining_records
+    records[0]["accepted_proposals"] = []
+    records[0]["raw_structured_response"] = {"injected": True}
+    rejected = frozen.rejected
+    if rejected:
+        rejected[0]["reason"] = "hacked"
+
+    fresh_candidates = frozen.candidates
+    assert fresh_candidates[0]["candidate"]["gene_id"] != "tampered"
+    assert fresh_candidates[0]["candidate"]["provenance"]["source_trajectory"] != "T-tampered"
+    assert frozen.mining_records[0]["accepted_proposals"]
+    assert frozen.mining_records[0]["raw_structured_response"] != {"injected": True}
+    for r in frozen.rejected:
+        assert r["reason"] != "hacked"
+    # digest relationship intact
+    from trajectory.storage.canonical import canonical_json, sha256_hex
+    assert sha256_hex(canonical_json(list(frozen.candidates)).encode("utf-8")) == \
+        frozen.candidate_set_sha256
+
+
+def test_model_response_error_carries_raw_text(tmp_path, registry, context, miner):
+    from runtime.model_adapters import ModelResponseError
+    # invalid JSON
+    adapter = ScriptedAdapter(["{not json"])
+    with pytest.raises(ModelResponseError) as exc_info:
+        adapter.structured_generate(
+            [__import__("runtime.model_adapters", fromlist=["ModelMessage"]).ModelMessage(
+                role="system", content="x")],
+            __import__("runtime.model_adapters", fromlist=["GenerationSettings"]).GenerationSettings(),
+            {"type": "object"})
+    assert exc_info.value.raw_text == "{not json"
+    # schema-invalid output
+    adapter = ScriptedAdapter([{"unexpected": "shape"}])
+    with pytest.raises(ModelResponseError) as exc_info:
+        adapter.structured_generate(
+            [__import__("runtime.model_adapters", fromlist=["ModelMessage"]).ModelMessage(
+                role="system", content="x")],
+            __import__("runtime.model_adapters", fromlist=["GenerationSettings"]).GenerationSettings(),
+            output_schema())
+    assert exc_info.value.raw_text == json.dumps({"unexpected": "shape"}, sort_keys=True)
+
+
+def test_family_universe_canonical_order(tmp_path, registry, context, miner):
+    """The universe is canonically ordered: identical sets produce identical
+    teacher prompts regardless of caller ordering."""
+    ids = dict(success_trajectory_id="T-aaaa1111aaaa",
+               failure_trajectory_id="T-ffff5555ffff")
+    batch_a, _ = make_batch(tmp_path / "a", registry,
+                             families=("zebra", "alpha", "heat_and_place"), **ids)
+    batch_b, _ = make_batch(tmp_path / "b", registry,
+                             families=("alpha", "heat_and_place", "zebra"), **ids)
+    expected = ("alpha", "heat_and_place", "zebra")  # canonical sorted order
+    assert batch_a.family_universe == expected == batch_b.family_universe
+    scripted = scripted_miner(miner, [{"proposals": []}])
+    miner.mine(batch_a)
+    prompt_a = miner._model.requests[0].messages[0].content
+    scripted_b = ScriptedAdapter([{"proposals": []}])
+    miner._model = scripted_b
+    miner.mine(batch_b)
+    prompt_b = miner._model.requests[0].messages[0].content
+    assert prompt_a == prompt_b
+    assert "Allowed task families: alpha, heat_and_place, zebra" in prompt_a

@@ -39,36 +39,6 @@
     }
   },
   "additionalProperties": false,
-  "if": {
-    "properties": {
-      "validation": {
-        "required": [
-          "state"
-        ],
-        "properties": {
-          "state": {
-            "enum": [
-              "rejected",
-              "validated"
-            ]
-          }
-        }
-      }
-    },
-    "required": [
-      "validation"
-    ]
-  },
-  "then": {
-    "properties": {
-      "validation": {
-        "required": [
-          "state",
-          "gate_reports"
-        ]
-      }
-    }
-  },
   "$defs": {
     "geneRef": {
       "type": "object",
@@ -177,8 +147,95 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "acquired"
+              }
+            },
+            "required": [
+              "origin"
+            ]
+          },
+          "then": {
+            "properties": {
+              "provenance": {
+                "not": {
+                  "required": [
+                    "cig_record"
+                  ]
+                }
+              }
+            }
+          }
         }
       ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "validation": {
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "enum": [
+                  "rejected",
+                  "validated"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "validation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "validation": {
+            "required": [
+              "state",
+              "gate_reports"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "validation": {
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "const": "candidate"
+              }
+            }
+          }
+        },
+        "required": [
+          "validation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "validation": {
+            "not": {
+              "required": [
+                "gate_reports"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

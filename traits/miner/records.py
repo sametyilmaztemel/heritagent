@@ -35,6 +35,7 @@ def build_mining_record(*, mining_record_id: str, success_trajectory_ids: list[s
                          output_schema_sha256: str, mining_seed: int,
                          generation_settings: dict, model_metadata: dict,
                          raw_structured_response: dict | None,
+                         raw_teacher_text: str | None = None,
                          accepted_proposals: list[dict], rejected: list[dict],
                          discovery_order: list[str]) -> dict:
     record = {
@@ -51,6 +52,7 @@ def build_mining_record(*, mining_record_id: str, success_trajectory_ids: list[s
         "generation_settings": dict(generation_settings),
         "model_metadata": dict(model_metadata),
         "raw_structured_response": raw_structured_response,
+        "raw_teacher_text": raw_teacher_text,
         "accepted_proposals": list(accepted_proposals),
         "rejected": list(rejected),
         "discovery_order": list(discovery_order),

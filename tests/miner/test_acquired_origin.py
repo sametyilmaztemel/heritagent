@@ -82,10 +82,27 @@ def test_acquired_origin_in_germline_genome_rejected(tmp_path, registry):
         load_genome(genome)
 
 
-def test_acquired_with_cig_record_is_contradictory_but_schema_valid(registry, tmp_path):
-    """cig_record belongs to assimilation, not acquisition; the somatic schema
-    does not forbid the extra provenance key (documented semantics: miners
-    never emit it — asserted here via the produced candidates in test_miner)."""
+def test_acquired_with_cig_record_rejected(registry, tmp_path):
+    """cig_record belongs to assimilation, not acquisition: an acquired
+    somatic candidate carrying one is structurally rejected (lifecycle:
+    acquired/candidate has no CIG yet)."""
     envelope = acquired_envelope(registry, tmp_path)
     envelope["candidate"]["provenance"]["cig_record"] = "CIG-9999"
-    assert load_somatic(envelope, registry) == envelope
+    with pytest.raises(GenomeValidationError, match="cig_record"):
+        load_somatic(envelope, registry)
+
+
+def test_candidate_state_with_gate_reports_rejected(registry, tmp_path):
+    """state=candidate must not carry gate_reports: no CIG decision exists
+    before gating."""
+    envelope = acquired_envelope(registry, tmp_path)
+    envelope["validation"] = {"state": "candidate", "gate_reports": ["CIG-0001"]}
+    with pytest.raises(GenomeValidationError, match="gate_reports"):
+        load_somatic(envelope, registry)
+
+
+def test_rejected_and_validated_require_non_empty_gate_reports(registry, tmp_path):
+    envelope = acquired_envelope(registry, tmp_path)
+    envelope["validation"] = {"state": "validated", "gate_reports": []}
+    with pytest.raises(GenomeValidationError, match="gate_reports"):
+        load_somatic(envelope, registry)
