@@ -21,7 +21,9 @@
     "accepted_proposals",
     "rejected",
     "discovery_order",
-    "raw_teacher_text"
+    "raw_teacher_text",
+    "rendered_prompt_sha256",
+    "family_universe"
   ],
   "properties": {
     "record": {
@@ -156,6 +158,27 @@
               "string",
               "null"
             ]
+          },
+          "proposal_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "index of the raw proposal within the teacher response"
+          },
+          "gene_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "computed/surviving gene id where known"
+          },
+          "discovery_order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "global discovery order where assigned"
           }
         },
         "additionalProperties": false
@@ -173,7 +196,21 @@
         "string",
         "null"
       ],
-      "description": "exact raw teacher output when the call was malformed (audit); null for valid calls"
+      "description": "exact raw teacher output for this call (audit); present for both valid and malformed calls; null only if unavailable"
+    },
+    "rendered_prompt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 over the exact final rendered teacher prompt content sent to structured_generate()"
+    },
+    "family_universe": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "complete canonical (sorted) family universe used for the call"
     }
   },
   "additionalProperties": false

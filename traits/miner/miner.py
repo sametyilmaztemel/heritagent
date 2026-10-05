@@ -7,17 +7,25 @@ Two-phase pipeline (deterministic except the teacher calls):
     deduped) — nothing is bound to the registry yet.
 
     Phase 2 (batch-wide): ranking (estimated_generality desc,
-    discovery-order tie-break) -> K cap -> ONLY selected descriptors are
-    registered and validated through the existing somatic boundary
-    (load_somatic) -> mining records reconciled so every proposal is
-    exactly one of accepted or rejected (with `outside_cap` recorded in
-    its SOURCE teacher call's record).
+    discovery-order tie-break) -> K cap -> FAIL-ATOMIC persistence:
+    all selected envelopes are prevalidated through the existing somatic
+    boundary BEFORE any registry mutation, then registered (prospective
+    URI == returned URI verified) and post-write re-verified. Mining
+    records are reconciled so every proposal is exactly one of accepted
+    or rejected (with `outside_cap` recorded in its SOURCE teacher call's
+    record).
 
 Research positioning: this is ADAPTED PRIOR ART (SkillRL, arXiv:2602.08234),
 not a novelty claim. Mined skills are UNVALIDATED somatic hypotheses — only
 CIG evidence (#11/#12) can later justify germline assimilation. The miner
 never alters the frozen set after returning it. No semantic near-duplicate
 merging happens in M0 (that would add another uncontrolled model decision).
+
+Canonical candidate semantics (locked): `applicability.task_families[]` is
+sorted before payload hashing, so family order never affects gene identity
+or dedupe. **First valid discovery owns `estimated_generality` and
+`discovery_order`; later exact duplicates are rejected and cannot modify
+its score.**
 """
 
 from __future__ import annotations
@@ -28,6 +36,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from genome.validation.loader import load_somatic
+from trajectory.recorder.errors import RecorderError
 from genome.validation.registry import TraitRegistry
 from runtime.model_adapters import (
     GenerationSettings,
@@ -37,7 +47,6 @@ from runtime.model_adapters import (
 )
 
 from trajectory.storage.canonical import canonical_json, sha256_hex
-from genome.validation.loader import load_somatic
 from traits.miner.evidence import render_pair_evidence
 from traits.miner.inputs import MiningBatch
 from traits.miner.records import build_mining_record
@@ -115,18 +124,24 @@ class TraitMiner:
 
     def __init__(self, model: ModelAdapter, registry: TraitRegistry, *,
                  settings: MiningSettings, born_generation: int):
+        if born_generation < 0:
+            raise ValueError("born_generation must be >= 0 (early defense: the "
+                             "somatic schema rejects negative generations)")
         self._model = model
         self._registry = registry
         self._settings = settings
         self._born_generation = born_generation
 
     # -- teacher interaction ---------------------------------------------------
-    def _record_identity(self, evidence_sha256: str, model_metadata) -> str:
-        """Audit identity for ONE teacher call: derived from evidence, prompt
-        template, output schema, mining seed/settings and model identity —
-        NOT from the teacher output (malformed calls are audited too)."""
+    def _record_identity(self, evidence_sha256: str, rendered_prompt_sha256: str,
+                         source_trajectory_ids: tuple[str, str], model_metadata) -> str:
+        """Audit identity for ONE teacher call: derived from evidence, the
+        exact rendered prompt, prompt/output-schema hashes, mining
+        seed/settings, model identity AND the source trajectory ids — NOT
+        from the teacher output (malformed calls are audited too)."""
         identity_input = {
             "evidence_sha256": evidence_sha256,
+            "rendered_prompt_sha256": rendered_prompt_sha256,
             "prompt_template_sha256": prompt_template_sha256(),
             "output_schema_sha256": output_schema_sha256(),
             "mining_seed": self._settings.seed,
@@ -135,24 +150,33 @@ class TraitMiner:
             "model": {"model_id": model_metadata.model_id,
                        "revision": model_metadata.revision,
                        "backend": model_metadata.backend},
+            "source_trajectory_ids": {"success": source_trajectory_ids[0],
+                                       "failure": source_trajectory_ids[1]},
         }
         digest = sha256_hex(canonical_json(identity_input).encode("utf-8"))
         return f"MR-{digest[:12]}"
 
-    def _ask_teacher(self, *, evidence_text: str,
-                     family_universe: tuple[str, ...]) -> tuple[dict, str]:
-        """Call the teacher; returns (parsed_response, raw_text). Raises
-        ModelResponseError (with raw_text) on malformed output."""
+    def _render_prompt(self, *, evidence_text: str,
+                       family_universe: tuple[str, ...]) -> tuple[str, str]:
+        """Render the final teacher message; returns (rendered_prompt,
+        rendered_prompt_sha256) — available even before the model call so
+        malformed calls are audited with the exact prompt identity."""
         template = prompt_template_text()
-        system = (template
-                   .replace("<<MAX_PROPOSALS>>", str(self._settings.max_proposals))
-                   .replace("<<FAMILIES>>", ", ".join(family_universe))
-                   .replace("<<EVIDENCE>>", evidence_text))
+        rendered_prompt = (template
+                            .replace("<<MAX_PROPOSALS>>", str(self._settings.max_proposals))
+                            .replace("<<FAMILIES>>", ", ".join(family_universe))
+                            .replace("<<EVIDENCE>>", evidence_text))
+        return rendered_prompt, sha256_hex(rendered_prompt.encode("utf-8"))
+
+    def _ask_teacher(self, rendered_prompt: str) -> tuple[dict, str]:
+        """Call the teacher on the rendered prompt; returns
+        (parsed_response, raw_text). Raises ModelResponseError (with
+        raw_text) on malformed output."""
         settings = GenerationSettings(temperature=self._settings.temperature,
                                        max_tokens=self._settings.max_tokens,
                                        seed=self._settings.seed)
         result = self._model.structured_generate(
-            [ModelMessage(role="system", content=system)],
+            [ModelMessage(role="system", content=rendered_prompt)],
             settings, output_schema())
         return json.loads(result.text), result.text
 
@@ -164,8 +188,9 @@ class TraitMiner:
         proposals -> applicability validation -> deterministic identity ->
         batch-wide exact dedupe (before the cap) -> batch-wide ranking
         (estimated_generality desc, discovery-order tie-break) -> K cap ->
-        registry binding + load_somatic validation for SELECTED candidates
-        only -> mining-record reconciliation -> freeze."""
+        FAIL-ATOMIC persistence (prevalidate all selected envelopes, then
+        registry binding + post-write verification) -> mining-record
+        reconciliation -> freeze."""
         descriptors: list[dict] = []       # validated proposals, pre-cap
         seen_payloads: dict[str, str] = {}  # canonical payload -> gene_id
         rejected: list[dict] = []
@@ -176,33 +201,46 @@ class TraitMiner:
         # -- phase 1: per-pair teacher calls -> validated descriptors ---------
         for pair in batch.pairs:
             evidence_text, evidence_sha256 = render_pair_evidence(pair)
-            record_id = self._record_identity(evidence_sha256, model_metadata)
+            source_ids = (pair.success.trajectory_id, pair.failure.trajectory_id)
             raw_response: dict | None = None
             raw_teacher_text: str | None = None
+            rendered_prompt, rendered_prompt_sha256 = self._render_prompt(
+                evidence_text=evidence_text, family_universe=batch.family_universe)
             pair_rejected: list[dict] = []
             pair_descriptors: list[dict] = []
             pair_discovery_order: list[str] = []
+            # call identity is fully determined before the call: malformed
+            # calls are audited under the same identity
+            record_id = self._record_identity(evidence_sha256,
+                                               rendered_prompt_sha256,
+                                               source_ids, model_metadata)
 
             try:
-                raw_response, raw_teacher_text = self._ask_teacher(
-                    evidence_text=evidence_text, family_universe=batch.family_universe)
-                proposals = list(raw_response.get("proposals") or [])
+                raw_response, raw_teacher_text = self._ask_teacher(rendered_prompt)
             except ModelResponseError as exc:
                 # fail closed: the malformed teacher output yields no
                 # proposals but the exact raw output stays auditable
                 raw_teacher_text = exc.raw_text
                 pair_rejected.append({"reason": "malformed_output",
-                                       "proposal_name": None, "detail": str(exc)})
+                                       "proposal_name": None, "proposal_index": None,
+                                       "gene_id": None, "discovery_order": None,
+                                       "detail": str(exc)})
                 proposals = []
+            else:
+                proposals = list(raw_response.get("proposals") or [])
 
             for order, proposal in enumerate(proposals):
                 name = proposal.get("name")
+                # canonical candidate semantics: applicability families are a
+                # SET — sorted before hashing so family order never affects
+                # identity or dedupe
                 payload = {
                     "name": proposal["name"],
                     "principle": proposal["principle"],
                     "when_to_apply": proposal["when_to_apply"],
                     "procedure": proposal.get("procedure") or [],
-                    "applicability": proposal["applicability"],
+                    "applicability": {"task_families":
+                                       sorted(proposal["applicability"]["task_families"])},
                 }
                 payload_json = canonical_json(payload)
 
@@ -210,14 +248,22 @@ class TraitMiner:
                            if f not in batch.family_universe]
                 if invalid:
                     entry = {"reason": "invalid_applicability", "proposal_name": name,
+                              "proposal_index": order,
+                              "gene_id": self._gene_identity(payload),
+                              "discovery_order": None,
                               "detail": f"families outside frozen universe: {sorted(invalid)}"}
                     rejected.append(entry)
                     pair_rejected.append(entry)
                     continue
 
                 if payload_json in seen_payloads:
+                    # duplicate policy (locked): first valid discovery owns
+                    # estimated_generality and discovery_order; later exact
+                    # duplicates are rejected and cannot modify its score
                     entry = {"reason": "exact_duplicate", "proposal_name": name,
-                              "detail": None}
+                              "proposal_index": order,
+                              "gene_id": seen_payloads[payload_json],
+                              "discovery_order": None, "detail": None}
                     rejected.append(entry)
                     pair_rejected.append(entry)
                     continue
@@ -228,6 +274,7 @@ class TraitMiner:
                                "gene_id": gene_id,
                                "estimated_generality": proposal["estimated_generality"],
                                "discovery_order": global_discovery_order,
+                               "proposal_index": order,
                                "record_index": len(record_drafts),
                                "record_id": record_id,
                                "source_trajectory_id": pair.success.trajectory_id,
@@ -240,6 +287,7 @@ class TraitMiner:
             record_drafts.append({
                 "record_id": record_id, "pair": pair,
                 "evidence_sha256": evidence_sha256,
+                "rendered_prompt_sha256": rendered_prompt_sha256,
                 "raw_response": raw_response, "raw_teacher_text": raw_teacher_text,
                 "pair_rejected": pair_rejected,
                 "pair_descriptors": pair_descriptors,
@@ -247,7 +295,7 @@ class TraitMiner:
                 "outside_cap": [],
             })
 
-        # -- phase 2: batch-wide ranking, cap, persistence ---------------------
+        # -- phase 2: batch-wide ranking, cap, FAIL-ATOMIC persistence --------
         ranked = sorted(descriptors, key=lambda d:
                          (-d["estimated_generality"], d["discovery_order"]))
         selected: list[dict] = []
@@ -256,18 +304,22 @@ class TraitMiner:
                 selected.append(descriptor)
             else:
                 entry = {"reason": "outside_cap",
-                          "proposal_name": descriptor["proposal_name"], "detail": None}
+                          "proposal_name": descriptor["proposal_name"],
+                          "proposal_index": descriptor["proposal_index"],
+                          "gene_id": descriptor["gene_id"],
+                          "discovery_order": descriptor["discovery_order"],
+                          "detail": None}
                 rejected.append(entry)
                 record_drafts[descriptor["record_index"]]["outside_cap"].append(entry)
 
-        # only SELECTED candidates are bound to the registry and validated
-        # through the existing somatic boundary — in that order, so a
-        # validation failure cannot leave an apparently selected invalid
-        # candidate behind
-        candidate_envelopes: list[dict] = []
+        # FAIL-ATOMIC persistence: prevalidate ALL selected envelopes before
+        # mutating the registry
+        prospective: list[tuple[dict, dict, str, str]] = []  # (envelope, payload, uri, gene_id)
+        prevalidation_issues: list[str] = []
         for descriptor in selected:
-            artifact_uri = self._registry.put("skill", descriptor["gene_id"], 1,
-                                               dict(descriptor["payload"]))
+            payload_bytes = canonical_json(descriptor["payload"]).encode("utf-8")
+            digest = sha256_hex(payload_bytes)
+            artifact_uri = f"registry://skills/{descriptor['gene_id']}@1/sha256:{digest}"
             envelope = {
                 "candidate": {
                     "gene_id": descriptor["gene_id"],
@@ -283,7 +335,29 @@ class TraitMiner:
                 },
                 "validation": {"state": "candidate"},
             }
-            load_somatic(envelope, self._registry)  # existing boundary; no parallel validator
+            try:
+                # structural + semantic prevalidation without a registry
+                load_somatic(envelope, registry=None)
+            except Exception as exc:  # any prevalidation failure aborts atomically
+                prevalidation_issues.append(f"{descriptor['gene_id']}: {exc}")
+            prospective.append((envelope, descriptor["payload"], artifact_uri,
+                                  descriptor["gene_id"]))
+        if prevalidation_issues:
+            # ZERO registry bindings/artifacts: nothing was written yet
+            raise RecorderError("selected-candidate prevalidation failed; "
+                                 "registry left untouched: "
+                                 f"{sorted(prevalidation_issues)}")
+
+        # bind + post-write integrity verification; the returned URI must
+        # equal the prospective URI (canonical hashing is deterministic)
+        candidate_envelopes: list[dict] = []
+        for envelope, payload, artifact_uri, gene_id in prospective:
+            returned_uri = self._registry.put("skill", gene_id, 1, payload)
+            if returned_uri != artifact_uri:
+                raise RecorderError(
+                    f"registry returned URI {returned_uri!r} != prospective "
+                    f"{artifact_uri!r} for {gene_id!r}")
+            load_somatic(envelope, self._registry)  # post-write integrity check
             candidate_envelopes.append(envelope)
 
         # -- reconcile mining records with the FINAL selection -----------------
@@ -301,6 +375,7 @@ class TraitMiner:
                 failure_trajectory_ids=[draft["pair"].failure.trajectory_id],
                 task_families=[draft["pair"].task_family],
                 evidence_sha256=draft["evidence_sha256"],
+                rendered_prompt_sha256=draft["rendered_prompt_sha256"],
                 prompt_template_sha256=prompt_template_sha256(),
                 output_schema_sha256=output_schema_sha256(),
                 mining_seed=self._settings.seed,
@@ -310,7 +385,10 @@ class TraitMiner:
                 model_metadata={"model_id": model_metadata.model_id,
                                  "revision": model_metadata.revision,
                                  "backend": model_metadata.backend,
-                                 "backend_version": model_metadata.backend_version},
+                                 "backend_version": model_metadata.backend_version,
+                                 "capabilities": copy.deepcopy(
+                                     model_metadata.capabilities)},
+                family_universe=list(batch.family_universe),
                 raw_structured_response=draft["raw_response"],
                 raw_teacher_text=draft["raw_teacher_text"],
                 accepted_proposals=accepted,

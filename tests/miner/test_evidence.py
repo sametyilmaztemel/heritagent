@@ -19,14 +19,20 @@ def test_render_is_canonical_and_deterministic(tmp_path, registry):
     assert text_a == canonical_json(json.loads(text_a))  # canonical serialization
 
 
-def test_different_runs_yield_different_evidence(tmp_path, registry):
-    """Independent runs have distinct opaque trajectory ids, so their
-    evidence digests differ — identity is per-run, not content-derived."""
-    pair_a = make_pair(tmp_path / "a", registry)
-    pair_b = make_pair(tmp_path / "b", registry)
-    _, digest_a = render_pair_evidence(pair_a)
-    _, digest_b = render_pair_evidence(pair_b)
-    assert digest_a != digest_b
+def test_identical_behavior_identical_evidence_across_ids(tmp_path, registry):
+    """Identical behavioral evidence under different opaque trajectory ids
+    yields IDENTICAL evidence text and hash — ids are provenance, not
+    teacher input."""
+    pair_a = make_pair(tmp_path / "a", registry,
+                        success_trajectory_id="T-aaaa1111aaaa",
+                        failure_trajectory_id="T-ffff5555ffff")
+    pair_b = make_pair(tmp_path / "b", registry,
+                        success_trajectory_id="T-bbbb2222bbbb",
+                        failure_trajectory_id="T-eeee3333eeee")
+    text_a, digest_a = render_pair_evidence(pair_a)
+    text_b, digest_b = render_pair_evidence(pair_b)
+    assert text_a == text_b
+    assert digest_a == digest_b
 
 
 def test_evidence_preserves_failures(tmp_path, registry):
@@ -41,15 +47,19 @@ def test_evidence_preserves_failures(tmp_path, registry):
     assert document["successful_trajectory"]["label"] == "success"
 
 
-def test_evidence_excludes_provenance(tmp_path, registry):
+def test_evidence_excludes_provenance_and_trajectory_ids(tmp_path, registry):
+    """Opaque trajectory ids carry no skill-abstraction information and stay
+    in provenance/mining records — never in the teacher prompt."""
     pair = make_pair(tmp_path, registry)
     text, _ = render_pair_evidence(pair)
     for forbidden in ("code_commit", "backend_version", "benchmark", "split",
+                       "evaluator_id", "evaluator_version",
+                       pair.success.trajectory_id, pair.failure.trajectory_id,
                        "R-success-ep", "R-failure-ep"):
         assert forbidden not in text, f"{forbidden} leaked into teacher evidence"
-    # trajectory ids ARE included (the evidence must be referenceable)
-    assert pair.success.trajectory_id in text
-    assert pair.failure.trajectory_id in text
+    # behavioral evidence and outcome labels ARE included
+    assert pair.success.task in text
+    assert '"success":true' in text and '"success":false' in text
 
 
 def test_evidence_includes_task_family_and_outcomes(tmp_path, registry):

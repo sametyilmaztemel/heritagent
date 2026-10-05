@@ -10,7 +10,7 @@ teacher prompt). `evidence_sha256` covers the exact rendered evidence.
 from __future__ import annotations
 
 from trajectory.storage.canonical import canonical_bytes, canonical_json, sha256_hex
-from traits.miner.inputs import MiningPair
+from traits.miner.inputs import MinerInputError, MiningPair
 
 
 def _render_member(nt, label: str) -> dict:
@@ -38,7 +38,6 @@ def _render_member(nt, label: str) -> dict:
         })
     return {
         "label": label,
-        "trajectory_id": nt.trajectory_id,
         "runtime_status": nt.status,
         "final_answer": nt.answer,
         "outcome": {"success": (nt.outcome or {}).get("success"),
