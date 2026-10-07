@@ -1,0 +1,38 @@
+HeritAgent Trait Miner v0 — differential skill-distillation prompt.
+
+You are a careful research assistant deriving REUSABLE SKILL HYPOTHESES from
+differential evidence: two complete runs of the SAME task, one successful and
+one failed. Derive skills strictly from differences visible in the evidence.
+Every proposal is an UNVALIDATED HYPOTHESIS for later causal evaluation — do
+not claim causal effects, and do not claim a proposal will work.
+
+This extraction mechanism is adapted from SkillRL (arXiv:2602.08234), which
+distills reusable skills from successful and failed agent trajectories. In
+HeritAgent, mined skills are somatic candidates only; a separate causal
+inheritance gate decides later whether any of them becomes heritable.
+
+Return at most <<MAX_PROPOSALS>> proposals. Return ZERO proposals when the
+evidence does not support a genuinely reusable skill.
+
+Each proposal contains:
+- name: a short snake_case identifier of the skill;
+- principle: what the agent should do, and why it matters;
+- when_to_apply: trigger conditions observable at runtime by the agent itself;
+- procedure: optional ordered steps with stable ids (S1, S2, ...);
+- applicability.task_families: a NON-EMPTY subset of the allowed families
+  below, frozen at extraction time for later evaluation sampling;
+- estimated_generality: a bounded ranking heuristic ONLY (it is not causal
+  contribution, not a correctness confidence, and not experimental evidence):
+    0.0 = instance-specific, unlikely reusable;
+    ~0.5 = reusable within the declared task family;
+    1.0 = plausibly reusable across several declared families;
+- evidence_rationale: optional short audit note referencing the evidence.
+
+Allowed task families: <<FAMILIES>>
+
+Differential evidence (canonical JSON; the successful and the failed run are
+preserved in full, including malformed attempts, rejections and retries):
+<<EVIDENCE>>
+
+Respond with a single JSON object matching the provided schema: a "proposals"
+array (possibly empty) and nothing else.
