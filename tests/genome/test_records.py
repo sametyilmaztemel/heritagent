@@ -59,12 +59,15 @@ def full_store(cig_id="CIG-0042"):
     return store
 
 
-def somatic_envelope(state="candidate", gate_reports=None):
-    genome = minimal_genome()
-    candidate = genome["genes"]["cognition"]["planner"]
-    candidate["gene_id"] = "look_before_heat_v1"
-    candidate["type"] = "skill"
-    candidate["artifact"] = fake_uri("skills", "look_before_heat_v1", 1)
+def somatic_envelope(state="candidate", gate_reports=None, registry=None):
+    """Acquired somatic candidate fixture (issue #10 lifecycle contract)."""
+    candidate = {
+        "gene_id": "look_before_heat_v1", "version": 1, "type": "skill",
+        "origin": "acquired",
+        "artifact": fake_uri("skills", "look_before_heat_v1", 1),
+        "provenance": {"born_generation": 1,
+                        "source_trajectory": "T-aaaa1111aaaa"},
+    }
     envelope = {"candidate": candidate, "validation": {"state": state}}
     if gate_reports is not None:
         envelope["validation"]["gate_reports"] = gate_reports
@@ -217,7 +220,8 @@ def test_mutating_input_after_add_does_not_change_stored_envelope():
 
 def test_somatic_accessor_mutation_does_not_change_stored_state():
     store = SomaticStore()
-    store.add(somatic_envelope(state="validated", gate_reports=["CIG-0042"]))
+    store.add(somatic_envelope(state="candidate"))
+    store.decide("look_before_heat_v1", 1, "validated", ["CIG-0042"])
     leaked = store.all()
     leaked["look_before_heat_v1"]["validation"]["state"] = "rejected"
     assert store.state("look_before_heat_v1") == "validated"
@@ -227,26 +231,29 @@ def test_somatic_lifecycle_candidate_to_validated():
     store = SomaticStore()
     store.add(somatic_envelope(state="candidate"))
     assert store.state("look_before_heat_v1") == "candidate"
-    store.add(somatic_envelope(state="validated", gate_reports=["CIG-0042"]))
+    store.decide("look_before_heat_v1", 1, "validated", ["CIG-0042"])
     assert store.state("look_before_heat_v1") == "validated"
 
 
 def test_somatic_rejected_kept_as_somatic_memory():
     store = SomaticStore()
     store.add(somatic_envelope(state="candidate"))
-    store.add(somatic_envelope(state="rejected", gate_reports=["CIG-0008"]))
+    store.decide("look_before_heat_v1", 1, "rejected", ["CIG-0008"])
     assert store.state("look_before_heat_v1") == "rejected"
     assert list(store.all()) == ["look_before_heat_v1"]  # kept, not silently discarded
+    assert list(store.by_state("rejected")) == [("look_before_heat_v1", 1)]
 
 
 def test_somatic_terminal_decision_is_immutable():
     store = SomaticStore()
-    store.add(somatic_envelope(state="validated", gate_reports=["CIG-0042"]))
+    store.add(somatic_envelope(state="candidate"))
+    store.decide("look_before_heat_v1", 1, "validated", ["CIG-0042"])
     with pytest.raises(RecordConsistencyError, match="immutable"):
-        store.add(somatic_envelope(state="candidate"))
+        store.decide("look_before_heat_v1", 1, "rejected", ["CIG-0008"])
 
 
 def test_somatic_decision_requires_gate_report():
     store = SomaticStore()
-    with pytest.raises(GenomeValidationError, match="gate_reports"):
-        store.add(somatic_envelope(state="validated", gate_reports=[]))
+    store.add(somatic_envelope(state="candidate"))
+    with pytest.raises(RecordConsistencyError, match="non-empty gate_reports"):
+        store.decide("look_before_heat_v1", 1, "validated", [])
