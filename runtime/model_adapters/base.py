@@ -114,12 +114,14 @@ class ModelAdapter(ABC):
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ModelResponseError(f"structured output is not valid JSON: {exc}") from None
+            raise ModelResponseError(f"structured output is not valid JSON: {exc}",
+                                      raw_text=text) from None
         if not isinstance(payload, dict):
-            raise ModelResponseError("structured output must be a JSON object")
+            raise ModelResponseError("structured output must be a JSON object",
+                                      raw_text=text)
         errors = [e.message for e in Draft202012Validator(schema).iter_errors(payload)]
         if errors:
-            raise ModelResponseError(sorted(errors))
+            raise ModelResponseError(sorted(errors), raw_text=text)
         return payload
 
 

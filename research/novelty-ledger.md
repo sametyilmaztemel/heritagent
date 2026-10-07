@@ -2,7 +2,7 @@
 
 Living document per SPEC §30. Every relevant paper is recorded here with: paper / date / core mechanism / overlap with HeritAgent / what remains different / required architecture changes. Update whenever a new paper appears; adjust the novelty claim if needed.
 
-- **Last updated:** 2026-10-02 (Round 1 — full review of the seven works named in SPEC §40 plus a broad 2023–2026 sweep; see `related-work/` for detailed notes)
+- **Last updated:** 2026-10-04 (Round 1 + issue #9 miner updates: SkillRL NeurIPS 2026 status, SkillForge 2608.24747, Agent Skills Can Be Harmful 2608.11888; see `related-work/` for detailed notes)
 - **Next review:** before any paper submission, and on any new arXiv hit in the sweep categories
 
 ---
@@ -70,7 +70,7 @@ Format per SPEC §30. Detailed notes live in `research/related-work/<name>.md`.
 
 ### 2.5 SkillRL — Feb 2026 (NeurIPS 2026)
 
-- **Paper:** *SkillRL: Evolving Agents via Recursive Skill-Augmented Reinforcement Learning* — Peng Xia et al. (aiming-lab / Huaxiu Yao group). arXiv:2602.08234.
+- **Paper:** *SkillRL: Evolving Agents via Recursive Skill-Augmented Reinforcement Learning* — Peng Xia et al. (aiming-lab / Huaxiu Yao group). arXiv:2602.08234. **Status update 2026-10-04: accepted at NeurIPS 2026.** Trait Miner v0 (#9) explicitly credits SkillRL's experience-based differential skill distillation (success/failure trajectories → reusable skills) as the adapted acquisition mechanism; HeritAgent's distinction remains the somatic→germline lifecycle with causal gating.
 - **Core mechanism:** o3-teacher differential distillation from success/failure trajectories → SkillBank (general + task-specific skills with `when_to_apply`), GRPO **weight training** (weights NOT frozen), recursive skill-library growth at validation checkpoints (≤3 skills/update, triggered by weak categories <0.4 success).
 - **Overlap:** trajectory → reusable skill extraction with activation conditions (element 1 + primitive regulation); ALFWorld 89.9 / WebShop 85.2 headline numbers.
 - **What remains different:** no somatic/germline separation; skill persistence is heuristic (rate-limited growth + Top-K retrieval), not causally validated — no per-skill ablation, attribution, or regression tests before a skill persists; "recursive evolution" is within **one training run**, not across agent generations; weights are fine-tuned (contradicts our frozen-weights setting).
@@ -101,6 +101,9 @@ Format per SPEC §30. Detailed notes live in `research/related-work/<name>.md`.
 - **Required architecture changes:** candidate reuse of BAES-style budgeted sampling if CIG stage-4 interaction testing gets expensive — defer to implementation time.
 
 ### 2.9 Adjacent works from the sweep (short entries)
+
+- **SkillForge** (arXiv:2608.24747, 2026) — evidence-based skill verification/refinement. Reduces any claim that "verifying extracted skills" is itself novel. HeritAgent's CIG must therefore be positioned as an **inheritance prerequisite tied to the somatic→germline lifecycle** (gating what becomes HERITABLE), not as skill verification per se. Added 2026-10-04 per issue #9 handoff.
+- **Agent Skills Can Be Harmful** (arXiv:2608.11888, 2026) — shows functional failures and efficiency regressions induced by seemingly relevant skills, using differential comparisons for attribution. Strengthens the motivation for CIG regression/cost protection (H5, τ_r) and selective reuse; also supports the EXP-0001 arm B framing (unrestricted skill reuse as the risk baseline). Added 2026-10-04 per issue #9 handoff.
 
 Detailed notes in `related-work/adjacent-sweep.md`.
 

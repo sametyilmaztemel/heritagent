@@ -267,3 +267,13 @@ Non-blocking follow-ups: deeper payload-shape validation lands with #7/#9; canon
 
 1. **Record immutability:** `CigRecordStore` and `SomaticStore` deep-copy records/envelopes on insertion and return deep copies from `aggregates` / `children` / `all()` — stored evidence and terminal decisions cannot be mutated through the caller's original input or through accessor results. White-box corruption of private internals remains possible deliberately for `verify()` defense-in-depth tests.
 2. **Monotonic identity binding:** `verify_binding()` rejects an **unbound** `(kind, gene_id, version)` — referencing an identity that was never stored via `put()` fails even when its digest file exists under another identity. Content sharing across identities stays valid only when every identity was explicitly registered. This makes identity/version validity monotonic and auditable: a genome that validates against a registry cannot be invalidated later by binding a new identity to reused content.
+
+### Amendment A1 — somatic-only `origin="acquired"` (2026-10-04, issue #9)
+
+`somatic/0.1` gains `origin: "acquired"` for lifetime-mined (Trait Miner)
+traits: it requires `provenance.source_trajectory` + `born_generation`, may
+remain somatic through `candidate|rejected|validated`, and never carries a
+`cig_record` (that belongs to assimilation). The germline `genome/0.1`
+schema still rejects `acquired`; VTA/assimilation later creates the germline
+ref with `origin="assimilation"` + `cig_record`. Implemented in
+`genome/schema/eag-0.1.somatic.schema.json` (geneRef `allOf` rules).
