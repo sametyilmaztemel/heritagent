@@ -152,7 +152,9 @@ def test_decision_artifact_swap_rejected_by_replay(tmp_path, registry):
     path.write_text("\n".join(lines) + "\n")
     with pytest.raises(RecordConsistencyError) as exc_info:
         SomaticStore.open(path, registry)  # replay verification fails closed
-    assert "artifact URI name" in str(exc_info.value)
+    # centralized transition validation catches the swap before anything else
+    assert "decision mutated the candidate gene ref/artifact/provenance" \
+        in str(exc_info.value)
 
 
 def test_verify_detects_candidate_mutation_in_decision(tmp_path, registry):

@@ -215,7 +215,8 @@ def test_mutating_input_after_add_does_not_change_stored_envelope():
     envelope["validation"]["state"] = "validated"
     envelope["validation"]["gate_reports"] = ["CIG-fake"]
     assert store.state("look_before_heat_v1") == "candidate"
-    assert store.all()["look_before_heat_v1"]["validation"] == {"state": "candidate"}
+    assert store.all()[("look_before_heat_v1", 1)]["validation"] == \
+        {"state": "candidate"}
 
 
 def test_somatic_accessor_mutation_does_not_change_stored_state():
@@ -223,7 +224,7 @@ def test_somatic_accessor_mutation_does_not_change_stored_state():
     store.add(somatic_envelope(state="candidate"))
     store.decide("look_before_heat_v1", 1, "validated", ["CIG-0042"])
     leaked = store.all()
-    leaked["look_before_heat_v1"]["validation"]["state"] = "rejected"
+    leaked[("look_before_heat_v1", 1)]["validation"]["state"] = "rejected"
     assert store.state("look_before_heat_v1") == "validated"
 
 
@@ -240,7 +241,7 @@ def test_somatic_rejected_kept_as_somatic_memory():
     store.add(somatic_envelope(state="candidate"))
     store.decide("look_before_heat_v1", 1, "rejected", ["CIG-0008"])
     assert store.state("look_before_heat_v1") == "rejected"
-    assert list(store.all()) == ["look_before_heat_v1"]  # kept, not silently discarded
+    assert list(store.all()) == [("look_before_heat_v1", 1)]  # kept, not discarded
     assert list(store.by_state("rejected")) == [("look_before_heat_v1", 1)]
 
 
@@ -248,7 +249,8 @@ def test_somatic_terminal_decision_is_immutable():
     store = SomaticStore()
     store.add(somatic_envelope(state="candidate"))
     store.decide("look_before_heat_v1", 1, "validated", ["CIG-0042"])
-    with pytest.raises(RecordConsistencyError, match="immutable"):
+    with pytest.raises(RecordConsistencyError,
+                        match="decision requires previous state 'candidate'"):
         store.decide("look_before_heat_v1", 1, "rejected", ["CIG-0008"])
 
 
