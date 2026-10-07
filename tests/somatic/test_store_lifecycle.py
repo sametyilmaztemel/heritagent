@@ -19,7 +19,8 @@ def test_add_accepts_only_candidate_state(tmp_path, registry, envelope):
     store = SomaticStore.create(tmp_path / "j.jsonl", registry)
     terminal = dict(envelope)
     terminal["validation"] = {"state": "validated", "gate_reports": ["CIG-0001"]}
-    with pytest.raises(RecordConsistencyError, match="only validation.state == 'candidate'"):
+    with pytest.raises(RecordConsistencyError,
+                        match="candidate_added requires state 'candidate'"):
         store.add_candidate(terminal)
     store.close()
 
@@ -55,7 +56,8 @@ def test_terminal_decisions_are_immutable(tmp_path, registry, envelope, verdict)
     store = SomaticStore.create(tmp_path / "j.jsonl", registry)
     store.add_candidate(envelope)
     store.decide("look_before_heat_v1", 1, verdict, ["CIG-0007"])
-    with pytest.raises(RecordConsistencyError, match="immutable"):
+    with pytest.raises(RecordConsistencyError,
+                        match="decision requires previous state 'candidate'"):
         store.decide("look_before_heat_v1", 1,
                       "rejected" if verdict == "validated" else "validated",
                       ["CIG-0008"])

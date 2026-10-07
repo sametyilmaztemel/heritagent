@@ -126,32 +126,59 @@ class SomaticStore(_PersistentSomaticStore):
     """Compatibility re-export of the persistent somatic store (issue #10).
 
     ``SomaticStore()`` keeps the historical in-memory usage
-    (``path=None``); pass ``path=...`` for a persistent journal. The old
-    ``add()``-driven decision API is retired: candidates are inserted with
-    :meth:`add_candidate` and terminal decisions use :meth:`decide` —
-    a single lifecycle implementation now backs both entry points."""
+    (``path=None``); persistent journals are created/opened through the
+    same classmethods as the base implementation (``SomaticStore.create /
+    SomaticStore.open``) — logical identity ``(gene_id, version)`` is
+    always preserved. The old ``add()``-driven decision API is retired:
+    candidates are inserted with :meth:`add_candidate` and terminal
+    decisions use :meth:`decide` — a single lifecycle implementation now
+    backs both entry points."""
 
     def __init__(self, registry=None, path=None):
         super().__init__(path, registry=registry, mode="create")
+
+    @classmethod
+    def create(cls, path=None, registry=None) -> "SomaticStore":
+        # delegate to the base implementation (returns the base store; all
+        # lifecycle/read/mutation APIs live there)
+        return _PersistentSomaticStore.create(path, registry)
+
+    @classmethod
+    def open(cls, path, registry=None) -> "SomaticStore":
+        return _PersistentSomaticStore.open(path, registry)
 
     def add(self, envelope: dict) -> dict:
         """Compat alias accepting only fresh candidates (transitions go
         through :meth:`decide`)."""
         return self.add_candidate(envelope)
 
-    def state(self, gene_id: str, version: int | None = None):  # noqa: F811
-        """Compat: version optional for single-version in-memory usage."""
-        if version is None:
-            matches = [key for key in self._envelopes if key[0] == gene_id]
-            if not matches:
-                return None
-            version = matches[0][1]
-        return super().state(gene_id, version)
+    def get(self, gene_id: str, version: int | None = None):  # noqa: F811
+        """Compat: version optional. 0 versions -> None; exactly 1 ->
+        convenience lookup; >1 -> typed ambiguity error (logical identity
+        ``(gene_id, version)`` never collapses)."""
+        if version is not None:
+            return super().get(gene_id, version)
+        versions = sorted(key[1] for key in self._envelopes if key[0] == gene_id)
+        if not versions:
+            return None
+        if len(versions) > 1:
+            raise RecordConsistencyError(
+                f"ambiguous gene_id {gene_id!r}: versions {versions} exist; "
+                f"address the trait as (gene_id, version)")
+        return super().get(gene_id, versions[0])
 
-    def all(self):  # noqa: F811
-        """Compat: gene_id keys for single-version in-memory usage."""
-        result = super().all()
-        return {key[0]: env for key, env in result.items()}
+    def state(self, gene_id: str, version: int | None = None):  # noqa: F811
+        """Compat: version optional, same ambiguity contract as get()."""
+        if version is not None:
+            return super().state(gene_id, version)
+        versions = sorted(key[1] for key in self._envelopes if key[0] == gene_id)
+        if not versions:
+            return None
+        if len(versions) > 1:
+            raise RecordConsistencyError(
+                f"ambiguous gene_id {gene_id!r}: versions {versions} exist; "
+                f"address the trait as (gene_id, version)")
+        return super().state(gene_id, versions[0])
 
 
 # re-export the journal pieces so existing ``genome.validation`` users keep

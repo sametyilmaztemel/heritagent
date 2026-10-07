@@ -14,15 +14,24 @@ Hard guarantees:
 - ``validated`` still carries ``origin="acquired"`` — assimilation into a
   germline genome is NOT this store's job (#12/#13 create the separate
   germline ref with origin="assimilation");
-- persistence is an append-only hash-chained journal (see somatic/journal.py);
-  replay reconstructs state deterministically and every resulting envelope
-  is validated through the existing ``load_somatic(..., registry)`` boundary.
+- persistence is an append-only hash-chained journal (see somatic/journal.py).
+  The JOURNAL FILE is the source of truth: ``verify()`` re-reads it from
+  disk, and every persistent append first checks that the on-disk record
+  count + tail digest still match this handle's expected state (stale-writer
+  protection). Replay uses the SAME centralized transition validation as the
+  live write path — a semantically invalid record is rejected on replay even
+  when its hashes were recomputed.
 
 Explicit create/open semantics (issue #8 lesson): ``SomaticStore.create``
 uses atomic exclusive file creation; ``SomaticStore.open`` replays and fully
 verifies an existing journal before it becomes append-capable; neither path
 truncates or overwrites somatic memory. ``SomaticStore(path=None)`` is the
 in-memory variant (same lifecycle, no persistence).
+
+Close lifecycle: ``close()`` is idempotent; after close, mutation APIs
+(``add_candidate``/``decide``) raise a typed error while read APIs
+(``get``/``state``/``all``/``by_state``/``history``/``candidate_ref``/
+``verify``/``verify_strict``) remain usable — documented and tested.
 """
 
 from __future__ import annotations
@@ -75,26 +84,32 @@ class SomaticStore:
         self._envelopes: dict[tuple[str, int], dict] = {}
         self._history: dict[tuple[str, int], list[dict]] = {}
         self._records: list[dict] = []
-        self._closed = False
-
         self._writer = None
-        self._closed = True
+        self._closed = True  # flipped after successful setup
+
         if self.path is None:
             if mode == "open":
                 raise RecorderError("cannot open an in-memory store; use create")
             self._closed = False
+            self._expected_count = 0
+            self._expected_tail = None
             return
 
         if mode == "create":
             # atomic exclusive creation (issue #8 lesson): never overwrite
             self._writer = JournalAppender(self.path, exclusive=True)
             self._closed = False
+            self._expected_count = 0
+            self._expected_tail = None
         else:
-            self._replay_and_verify()
+            self._reload_from_disk()  # full replay + verification, fail closed
             self._writer = JournalAppender(self.path, exclusive=False)
             self._closed = False
+            self._expected_count = len(self._records)
+            self._expected_tail = self._records[-1]["record_sha256"] \
+                if self._records else None
 
-    # -- explicit constructors -------------------------------------------------
+    # -- explicit constructors ---------------------------------------------------
     @classmethod
     def create(cls, path: Path | None, registry: TraitRegistry | None = None) -> "SomaticStore":
         return cls(path, registry=registry, mode="create")
@@ -105,20 +120,48 @@ class SomaticStore:
             raise RecorderError("open requires a journal path")
         return cls(path, registry=registry, mode="open")
 
+    # -- centralized transition validation (live write AND replay) ----------------
+    @staticmethod
+    def _candidate_insert_issues(envelope: dict) -> list[str]:
+        """Full candidate contract for `candidate_added` / add_candidate."""
+        issues: list[str] = []
+        state = envelope["validation"]["state"]
+        origin = envelope["candidate"]["origin"]
+        if state != "candidate":
+            issues.append(f"candidate_added requires state 'candidate', got {state!r}")
+        if origin != "acquired":
+            issues.append(f"candidate_added requires origin 'acquired', got {origin!r}")
+        return issues
+
+    @staticmethod
+    def _decision_transition_issues(current: dict, terminal: dict) -> list[str]:
+        """Full decision contract for `decision_recorded` / decide: previous
+        state must be candidate, resulting state must be a terminal verdict,
+        gate_reports must be non-empty, and the candidate gene ref/artifact/
+        provenance must be byte-identical to the stored candidate."""
+        issues: list[str] = []
+        if current["validation"]["state"] != "candidate":
+            issues.append(
+                f"decision requires previous state 'candidate', got "
+                f"{current['validation']['state']!r}")
+        resulting = terminal["validation"]["state"]
+        if resulting not in _VERDICTS:
+            issues.append(
+                f"decision requires resulting state in {list(_VERDICTS)}, got {resulting!r}")
+        if not terminal["validation"].get("gate_reports"):
+            issues.append("decision requires non-empty gate_reports")
+        if canonical_json(terminal["candidate"]) != canonical_json(current["candidate"]):
+            issues.append("decision mutated the candidate gene ref/artifact/provenance")
+        return issues
+
     # -- lifecycle: candidate ----------------------------------------------------
     def add_candidate(self, envelope: dict) -> dict:
-        """Insert a NEW acquired candidate. Only ``validation.state ==
-        "candidate"`` is accepted; acquired semantics (origin="acquired",
-        no cig_record, no gate_reports) are enforced by the existing somatic
-        schema through ``load_somatic``."""
+        """Insert a NEW acquired candidate."""
+        self._append_guard()
         stored = copy.deepcopy(envelope)
-        if stored["validation"]["state"] != "candidate":
-            raise RecordConsistencyError(
-                "add_candidate accepts only validation.state == 'candidate'; "
-                "use decide() for terminal transitions")
-        if stored["candidate"]["origin"] != "acquired":
-            raise RecordConsistencyError(
-                "somatic candidates must be lifetime-acquired (origin='acquired')")
+        issues = self._candidate_insert_issues(stored)
+        if issues:
+            raise RecordConsistencyError(sorted(issues))
         key = self._key(stored)
         if key in self._envelopes:
             raise RecordConsistencyError(
@@ -135,6 +178,7 @@ class SomaticStore:
         """Record one terminal CIG decision for a candidate. Only the
         validation envelope changes — gene ref, artifact URI and provenance
         are carried over byte-identically from the stored candidate."""
+        self._append_guard()
         if verdict not in _VERDICTS:
             raise RecordConsistencyError(
                 f"verdict must be one of {list(_VERDICTS)}, got {verdict!r}")
@@ -149,26 +193,19 @@ class SomaticStore:
         if key not in self._envelopes:
             raise RecordConsistencyError(f"unknown somatic trait {gene_id!r}@{version}")
         current = self._envelopes[key]
-        if current["validation"]["state"] != "candidate":
-            raise RecordConsistencyError(
-                f"somatic trait {gene_id!r}@{version} is terminal "
-                f"({current['validation']['state']!r}); decisions are immutable")
-
         terminal = copy.deepcopy(current)
         terminal["validation"] = {
             "state": verdict,
-            "gate_reports": sorted(set(gate_reports)),  # deterministic canonical order
+            "gate_reports": sorted(set(gate_reports)),
         }
-        # lifecycle invariant: only the validation envelope may change
-        if canonical_json(terminal["candidate"]) != canonical_json(current["candidate"]):
-            raise RecordConsistencyError(
-                "decision mutated the candidate gene ref/provenance; only the "
-                "validation envelope may change")
+        issues = self._decision_transition_issues(current, terminal)
+        if issues:
+            raise RecordConsistencyError(sorted(issues))
         load_somatic(copy.deepcopy(terminal), self._registry)  # schema re-validation
         self._commit("decision_recorded", terminal, key=key)
         return copy.deepcopy(terminal)
 
-    # -- read API (defensive copies; #11/#12 surface) ----------------------------
+    # -- read API (defensive copies; usable after close) ----------------------------
     def get(self, gene_id: str, version: int) -> dict | None:
         entry = self._envelopes.get((gene_id, version))
         return copy.deepcopy(entry) if entry else None
@@ -185,25 +222,66 @@ class SomaticStore:
                 if env["validation"]["state"] == state}
 
     def candidate_ref(self, gene_id: str, version: int) -> dict | None:
-        """Convenient read-only access to the immutable gene ref."""
         entry = self._envelopes.get((gene_id, version))
         return copy.deepcopy(entry["candidate"]) if entry else None
 
     def history(self, gene_id: str, version: int) -> tuple[dict, ...]:
-        """Ordered envelope snapshots for one trait (candidate → decision)."""
         return tuple(copy.deepcopy(env) for env in
                       self._history.get((gene_id, version), []))
 
-    # -- integrity ------------------------------------------------------------------
+    # -- integrity (journal file is the source of truth) ------------------------------
+    def verify(self) -> list[str]:
+        """Re-read the journal (from disk for persistent stores) and replay it
+        with the same transition validation as the live write path; returns
+        consistency issues (empty = sound). Read-safe after close."""
+        records = read_journal_records(self.path) if self.path is not None \
+            else self._records
+        issues: list[str] = []
+        if self.path is not None and len(records) != self._expected_count:
+            issues.append(
+                f"journal on disk has {len(records)} records but this handle's "
+                f"expected state is {self._expected_count} (external append or "
+                f"truncation)")
+        saved = (self._envelopes, self._history)
+        self._replay_records(records, self._registry, issues)
+        self._envelopes, self._history = saved
+        return issues
+
+    def verify_strict(self) -> None:
+        issues = self.verify()
+        if issues:
+            raise RecordConsistencyError(sorted(issues))
+
     def close(self) -> None:
+        """Idempotent resource cleanup. After close, mutation APIs raise a
+        typed error; read APIs remain usable."""
         if self._writer is not None:
             self._writer.close()
+        self._closed = True
 
     # -- internals ---------------------------------------------------------------------
     @staticmethod
     def _key(envelope: dict) -> tuple[str, int]:
         candidate = envelope["candidate"]
         return candidate["gene_id"], candidate["version"]
+
+    def _append_guard(self) -> None:
+        """Fail closed on closed stores and on stale handles (another writer
+        appended, or the journal was modified/truncated externally)."""
+        if self._closed:
+            raise RecorderError("somatic store is closed")
+        if self.path is None:
+            return
+        disk = read_journal_records(self.path)
+        disk_count = len(disk)
+        disk_tail = disk[-1]["record_sha256"] if disk else None
+        if disk_count != self._expected_count or disk_tail != self._expected_tail:
+            raise RecorderError(
+                f"stale somatic store handle for {str(self.path)!r}: journal on "
+                f"disk has {disk_count} records (tail {str(disk_tail)[:16]}...) "
+                f"but this handle expected {self._expected_count} (tail "
+                f"{str(self._expected_tail)[:16]}...); another writer appended "
+                f"or the journal was modified externally")
 
     def _commit(self, op: str, envelope: dict, *, key: tuple[str, int]) -> None:
         """Append one journal record (schema-checked) and apply the state
@@ -212,40 +290,32 @@ class SomaticStore:
         record = build_record(seq=len(self._records) + 1, op=op,
                                gene_id=key[0], version=key[1],
                                envelope=envelope, prev_sha256=prev)
-        # schema validation of the assembled record (defense in depth)
         errors = [e.message for e in journal_record_validator().iter_errors(record)]
         if errors:
             raise RecordConsistencyError(sorted(errors))
         if self._writer is not None:  # in-memory stores keep records only
             self._writer.append(record)
         self._records.append(record)
+        self._expected_count = len(self._records)
+        self._expected_tail = record["record_sha256"]
         self._envelopes[key] = copy.deepcopy(envelope)
         self._history.setdefault(key, []).append(copy.deepcopy(envelope))
 
-    def _replay_and_verify(self) -> None:
+    def _reload_from_disk(self) -> None:
         self._records = read_journal_records(self.path)
         issues: list[str] = []
         self._envelopes, self._history = {}, {}
         self._replay_records(self._records, self._registry, issues)
         if issues:
             # a failed replay leaves the store unusable (fail closed)
-            self.close()
-            self._envelopes, self._history = {}, {}
             raise RecordConsistencyError(f"{self.path}: {sorted(issues)}")
-
-    def verify(self) -> list[str]:
-        """Full replay from the journal source of truth; returns consistency
-        issues (empty = sound). Cached state is never trusted over replay."""
-        issues: list[str] = []
-        self._replay_records(self._records, self._registry, issues)
-        return issues
-
-    def verify_strict(self) -> None:
-        issues = self.verify()
-        if issues:
-            raise RecordConsistencyError(sorted(issues))
+        self._expected_count = len(self._records)
+        self._expected_tail = self._records[-1]["record_sha256"] if self._records else None
 
     def _replay_records(self, records: list[dict], registry, issues_sink: list[str]) -> None:
+        """Replay journal records through the SAME centralized transition
+        validation as the live write path; rebuilds live state only when the
+        replay was clean."""
         replay_envelopes: dict[tuple[str, int], dict] = {}
         replay_history: dict[tuple[str, int], list[dict]] = {}
         prev: str | None = None
@@ -277,51 +347,42 @@ class SomaticStore:
                 issues_sink.append(f"record {seq}: envelope identity {envelope_key} "
                                     f"disagrees with record trait {key}")
                 continue
-            try:
-                load_somatic(copy.deepcopy(envelope), registry)
-            except Exception as exc:  # noqa: BLE001 — any envelope violation is a replay issue
-                issues_sink.append(f"record {seq}: envelope fails somatic validation: {exc}")
-                continue
-
             op = record["op"]
+            # centralized transition validation FIRST (same contract as the
+            # live write path), then the existing schema/registry boundary
             if op == "candidate_added":
+                transition_issues = self._candidate_insert_issues(envelope)
                 if key in replay_envelopes:
-                    issues_sink.append(f"record {seq}: duplicate candidate insertion "
-                                        f"for {key}")
+                    transition_issues.append(
+                        f"duplicate candidate insertion for {key}")
+                if transition_issues:
+                    issues_sink.extend(f"record {seq}: {issue}"
+                                        for issue in transition_issues)
                     continue
-                if envelope["validation"]["state"] != "candidate":
-                    issues_sink.append(f"record {seq}: candidate_added with non-candidate "
-                                        f"state {envelope['validation']['state']!r}")
-                    continue
-            else:  # decision_recorded
+            elif op == "decision_recorded":
                 current = replay_envelopes.get(key)
                 if current is None:
                     issues_sink.append(f"record {seq}: decision for unknown trait {key}")
                     continue
-                if current["validation"]["state"] != "candidate":
-                    issues_sink.append(f"record {seq}: decision on terminal trait {key} "
-                                        f"({current['validation']['state']!r})")
+                transition_issues = self._decision_transition_issues(current, envelope)
+                if transition_issues:
+                    issues_sink.extend(f"record {seq}: {issue}"
+                                        for issue in transition_issues)
                     continue
-                if canonical_json(envelope["candidate"]) != \
-                        canonical_json(current["candidate"]):
-                    issues_sink.append(f"record {seq}: decision mutated the candidate "
-                                        f"gene ref/provenance")
-                    continue
+            else:
+                issues_sink.append(f"record {seq}: unknown op {op!r}")
+                continue
+
+            try:
+                load_somatic(copy.deepcopy(envelope), registry)
+            except Exception as exc:  # any envelope violation is a replay issue
+                issues_sink.append(f"record {seq}: envelope fails somatic validation: {exc}")
+                continue
+
+            # only reached when both transition and envelope validation passed
             replay_envelopes[key] = copy.deepcopy(envelope)
             replay_history.setdefault(key, []).append(copy.deepcopy(envelope))
-        # deterministic state reconstruction (only when the replay was clean)
+
         if not issues_sink:
             self._envelopes = replay_envelopes
             self._history = replay_history
-        return None
-
-    # replace the stub with a bound wrapper
-    def verify(self) -> list[str]:  # noqa: F811 — final implementation
-        issues: list[str] = []
-        saved = (self._envelopes, self._history)
-        try:
-            self._envelopes, self._history = {}, {}
-            self._replay_records(self._records, self._registry, issues)
-        finally:
-            self._envelopes, self._history = saved
-        return issues
