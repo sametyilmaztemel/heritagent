@@ -13,28 +13,6 @@ from somatic.store import SomaticStore
 from tests.somatic.conftest import acquired_envelope
 
 
-def resign_record(record: dict) -> dict:
-    """Recompute record_sha256 AND every downstream prev/record hash, so a
-    semantically edited journal has a fully valid hash chain — replay must
-    still reject it on lifecycle grounds."""
-    lines = [json.loads(line) for line in
-             (record["_path"]).read_text().splitlines()]
-    index = records_index = None
-    records = lines
-    start = next(i for i, r in enumerate(records) if r["seq"] == record["seq"])
-    prev = records[start - 1]["record_sha256"] if start > 0 else None
-    for i in range(start, len(records)):
-        r = records[i]
-        r["prev_sha256"] = prev
-        r["record_sha256"] = compute_record_digest(
-            seq=r["seq"], op=r["op"], trait=r["trait"], envelope=r["envelope"],
-            prev_sha256=r["prev_sha256"])
-        prev = r["record_sha256"]
-    record["_path"].write_text(
-        "\n".join(json.dumps(r, sort_keys=True, separators=(",", ":"))
-                   for r in records) + "\n")
-
-
 def test_candidate_added_with_seed_origin_rejected_on_replay(tmp_path, registry):
     """A candidate_added record edited to origin=seed with a FULLY VALID
     recomputed hash chain is still rejected — replay enforces the same

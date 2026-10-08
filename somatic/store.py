@@ -148,8 +148,16 @@ class SomaticStore:
         if resulting not in _VERDICTS:
             issues.append(
                 f"decision requires resulting state in {list(_VERDICTS)}, got {resulting!r}")
-        if not terminal["validation"].get("gate_reports"):
+        reports = terminal["validation"].get("gate_reports") or []
+        if not reports:
             issues.append("decision requires non-empty gate_reports")
+        if len(reports) != len(set(reports)):
+            issues.append("decision gate_reports contain duplicates "
+                           "(live decide() rejects them; replay enforces the "
+                           "same state space)")
+        if list(reports) != sorted(set(reports)):
+            issues.append("decision gate_reports are not canonicalized "
+                           "(expected sorted unique order, as live decide() writes)")
         if canonical_json(terminal["candidate"]) != canonical_json(current["candidate"]):
             issues.append("decision mutated the candidate gene ref/artifact/provenance")
         return issues
@@ -266,22 +274,33 @@ class SomaticStore:
         return candidate["gene_id"], candidate["version"]
 
     def _append_guard(self) -> None:
-        """Fail closed on closed stores and on stale handles (another writer
-        appended, or the journal was modified/truncated externally)."""
+        """Fail closed on closed stores and on stale/diverged handles: the
+        current disk journal is strict-read and the canonical parsed records
+        are compared byte-for-byte against this handle's cached records.
+        Catches same-count/same-tail payload tampering (a stale handle whose
+        cached tail string still matches), external appends, reorder, and
+        truncation — BEFORE any write."""
         if self._closed:
             raise RecorderError("somatic store is closed")
         if self.path is None:
             return
-        disk = read_journal_records(self.path)
-        disk_count = len(disk)
-        disk_tail = disk[-1]["record_sha256"] if disk else None
-        if disk_count != self._expected_count or disk_tail != self._expected_tail:
+        disk = read_journal_records(self.path)  # strict JSON; corruption fails closed
+        disk_canonical = [canonical_json(r) for r in disk]
+        cached_canonical = [canonical_json(r) for r in self._records]
+        if disk_canonical != cached_canonical:
+            detail = "journal content diverged from this handle's state"
+            if len(disk) != len(self._records):
+                detail += (f" (disk has {len(disk)} records, handle expected "
+                            f"{len(self._records)})")
+            else:
+                for index, (d, c) in enumerate(zip(disk, self._records)):
+                    if canonical_json(d) != canonical_json(c):
+                        detail += (f" (first divergence at record {index + 1})")
+                        break
             raise RecorderError(
-                f"stale somatic store handle for {str(self.path)!r}: journal on "
-                f"disk has {disk_count} records (tail {str(disk_tail)[:16]}...) "
-                f"but this handle expected {self._expected_count} (tail "
-                f"{str(self._expected_tail)[:16]}...); another writer appended "
-                f"or the journal was modified externally")
+                f"stale somatic store handle for {str(self.path)!r}: {detail}; "
+                f"another writer appended or the journal was modified externally "
+                f"— append refused, journal left untouched")
 
     def _commit(self, op: str, envelope: dict, *, key: tuple[str, int]) -> None:
         """Append one journal record (schema-checked) and apply the state
