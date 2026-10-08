@@ -1,4 +1,4 @@
-"""Somatic envelopes and two-level CIG record stores.
+"""CIG record store plus the persistent somatic trait store re-export.
 
 CIG evidence is two-level (ADR-0001 section 4): one aggregate record per
 candidate carrying the verdict, plus immutable per-seed/per-run child
@@ -17,7 +17,8 @@ import copy
 import re
 
 from genome.validation.errors import GenomeValidationError, RecordConsistencyError
-from genome.validation.loader import load_cig, load_somatic
+from genome.validation.loader import load_cig
+from somatic.store import SomaticStore as _PersistentSomaticStore
 
 _SEED_IN_ID = re.compile(r"/S(\d+)")
 
@@ -118,35 +119,68 @@ class CigRecordStore:
         return copy.deepcopy(self._children)
 
 
-class SomaticStore:
-    """Lifecycle store for somatic candidate traits (SPEC sections 5, 9-10).
+class SomaticStore(_PersistentSomaticStore):
+    """Compatibility re-export of the persistent somatic store (issue #10).
 
-    Envelopes are deep-copied on insertion and ``all()`` returns deep
-    copies: candidate state and terminal decisions are immutable from the
-    caller's side.
-    """
+    ``SomaticStore()`` keeps the historical in-memory usage
+    (``path=None``); persistent journals are created/opened through the
+    same classmethods as the base implementation (``SomaticStore.create /
+    SomaticStore.open``) — logical identity ``(gene_id, version)`` is
+    always preserved. The old ``add()``-driven decision API is retired:
+    candidates are inserted with :meth:`add_candidate` and terminal
+    decisions use :meth:`decide` — a single lifecycle implementation now
+    backs both entry points."""
 
-    TERMINAL_STATES = ("validated", "rejected")
+    def __init__(self, registry=None, path=None, mode="create"):
+        super().__init__(path, registry=registry, mode=mode)
 
-    def __init__(self, registry=None):
-        self._envelopes: dict[str, dict] = {}
-        self._registry = registry
+    @classmethod
+    def create(cls, path=None, registry=None) -> "SomaticStore":
+        """Create a new persistent journal; returns the COMPAT class instance
+        so version-less convenience APIs and the add() alias survive on the
+        persistent path."""
+        return cls(path=path, registry=registry, mode="create")
 
-    def add(self, envelope: dict) -> None:
-        load_somatic(envelope, self._registry)
-        gene_id = envelope["candidate"]["gene_id"]
-        state = envelope["validation"]["state"]
-        existing = self._envelopes.get(gene_id)
-        if existing is not None:
-            if existing["validation"]["state"] in self.TERMINAL_STATES:
-                raise RecordConsistencyError(
-                    f"somatic candidate {gene_id!r} already reached terminal state "
-                    f"{existing['validation']['state']!r}; decisions are immutable")
-        self._envelopes[gene_id] = copy.deepcopy(envelope)
+    @classmethod
+    def open(cls, path, registry=None) -> "SomaticStore":
+        """Open + verify an existing journal; returns the COMPAT class
+        instance (see create)."""
+        return cls(path=path, registry=registry, mode="open")
 
-    def state(self, gene_id: str) -> str | None:
-        envelope = self._envelopes.get(gene_id)
-        return envelope["validation"]["state"] if envelope else None
+    def add(self, envelope: dict) -> dict:
+        """Compat alias accepting only fresh candidates (transitions go
+        through :meth:`decide`)."""
+        return self.add_candidate(envelope)
 
-    def all(self) -> dict[str, dict]:
-        return copy.deepcopy(self._envelopes)
+    def get(self, gene_id: str, version: int | None = None):  # noqa: F811
+        """Compat: version optional. 0 versions -> None; exactly 1 ->
+        convenience lookup; >1 -> typed ambiguity error (logical identity
+        ``(gene_id, version)`` never collapses)."""
+        if version is not None:
+            return super().get(gene_id, version)
+        versions = sorted(key[1] for key in self._envelopes if key[0] == gene_id)
+        if not versions:
+            return None
+        if len(versions) > 1:
+            raise RecordConsistencyError(
+                f"ambiguous gene_id {gene_id!r}: versions {versions} exist; "
+                f"address the trait as (gene_id, version)")
+        return super().get(gene_id, versions[0])
+
+    def state(self, gene_id: str, version: int | None = None):  # noqa: F811
+        """Compat: version optional, same ambiguity contract as get()."""
+        if version is not None:
+            return super().state(gene_id, version)
+        versions = sorted(key[1] for key in self._envelopes if key[0] == gene_id)
+        if not versions:
+            return None
+        if len(versions) > 1:
+            raise RecordConsistencyError(
+                f"ambiguous gene_id {gene_id!r}: versions {versions} exist; "
+                f"address the trait as (gene_id, version)")
+        return super().state(gene_id, versions[0])
+
+
+# re-export the journal pieces so existing ``genome.validation`` users keep
+# a stable import surface
+__all__ = ["CigRecordStore", "SomaticStore"]

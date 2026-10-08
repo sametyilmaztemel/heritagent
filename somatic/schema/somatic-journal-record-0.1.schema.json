@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heritagent.dev/schemas/somatic/somatic-journal-record-0.1.json",
+  "title": "Somatic Journal Record v0.1",
+  "description": "One append-only lifecycle event for the somatic trait store. record_sha256 covers the full semantic record excluding itself; prev_sha256 chains records so edits/reordering of prior records are detected.",
+  "type": "object",
+  "required": ["record", "schema_version", "seq", "op", "trait", "envelope",
+                "prev_sha256", "record_sha256"],
+  "properties": {
+    "record": {"const": "somatic-journal"},
+    "schema_version": {"const": "0.1"},
+    "seq": {"type": "integer", "minimum": 1},
+    "op": {"enum": ["candidate_added", "decision_recorded"]},
+    "trait": {
+      "type": "object",
+      "required": ["gene_id", "version"],
+      "properties": {
+        "gene_id": {"type": "string", "pattern": "^[a-z0-9_]+(_v[0-9]+)?$"},
+        "version": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "envelope": {
+      "type": "object",
+      "description": "full resulting somatic envelope AFTER this operation (separately validated through load_somatic during replay)",
+      "properties": {
+        "candidate": {"type": "object"},
+        "validation": {"type": "object"}
+      },
+      "required": ["candidate", "validation"],
+      "additionalProperties": false
+    },
+    "prev_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}
