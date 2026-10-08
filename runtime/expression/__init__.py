@@ -24,9 +24,36 @@ from runtime.regulation import Condition
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "payload_schemas"
 
+_SKILL_SCHEMA_CACHE: dict | None = None
+
 
 def _load_schema(name: str) -> dict:
     return json.loads((_SCHEMA_DIR / name).read_text(encoding="utf-8"))
+
+
+def _skill_schema() -> dict:
+    global _SKILL_SCHEMA_CACHE
+    if _SKILL_SCHEMA_CACHE is None:
+        _SKILL_SCHEMA_CACHE = _load_schema("runtime_skill.schema.json")
+    return _SKILL_SCHEMA_CACHE
+
+
+def validate_runtime_skill_payload(payload: dict) -> dict:
+    """Public runtime-skill validation boundary shared by
+    compile_runtime_config and the CIG evaluation overlay: JSON Schema +
+    procedure shape + unique stable step IDs. Returns the payload unchanged
+    or raises GenomeValidationError (fail closed)."""
+    from jsonschema import Draft202012Validator
+
+    errors = [e.message for e in Draft202012Validator(_skill_schema()).iter_errors(payload)]
+    if errors:
+        raise GenomeValidationError(
+            [f"runtime skill payload: {m}" for m in sorted(errors)])
+    ids = [step["id"] for step in payload.get("procedure") or []]
+    if len(ids) != len(set(ids)):
+        raise GenomeValidationError(
+            "runtime skill payload: procedure step ids must be unique")
+    return payload
 
 
 _PLANNER_SCHEMA = _load_schema("planner_policy.schema.json")
@@ -119,8 +146,7 @@ def compile_runtime_config(genome: dict, registry: TraitRegistry) -> RuntimeConf
     if len(skill_refs) != len(projected_skills):
         raise GenomeValidationError("projection returned a different number of skills than the genome holds")
     for ref, payload in zip(skill_refs, projected_skills):
-        _validate_payload(payload, _SKILL_SCHEMA, f"skill {ref['gene_id']!r}")
-        _validate_procedure_ids(payload, ref["gene_id"])
+        validate_runtime_skill_payload(payload)  # shared boundary (overlay parity)
         skills.append(RuntimeSkill(
             gene_id=ref["gene_id"],
             name=payload["name"],

@@ -91,7 +91,8 @@ def build_evaluation_configs(base_config: RuntimeConfig, envelope: dict,
     # allowlist/leak guard — evaluation-only metadata cannot survive
     payload = json.loads(registry.resolve(candidate["artifact"]))
     from genome.validation.projection import project_skill  # merged #4 path
-    projected = project_skill(payload)
+    from runtime.expression import validate_runtime_skill_payload  # same boundary
+    projected = validate_runtime_skill_payload(project_skill(payload))
 
     target_skill = RuntimeSkill(
         gene_id=gene_id,
