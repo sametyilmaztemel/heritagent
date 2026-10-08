@@ -16,9 +16,6 @@ from __future__ import annotations
 import copy
 import re
 
-import copy as _copy
-import re
-
 from genome.validation.errors import GenomeValidationError, RecordConsistencyError
 from genome.validation.loader import load_cig
 from somatic.store import SomaticStore as _PersistentSomaticStore

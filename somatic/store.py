@@ -16,11 +16,21 @@ Hard guarantees:
   germline ref with origin="assimilation");
 - persistence is an append-only hash-chained journal (see somatic/journal.py).
   The JOURNAL FILE is the source of truth: ``verify()`` re-reads it from
-  disk, and every persistent append first checks that the on-disk record
-  count + tail digest still match this handle's expected state (stale-writer
-  protection). Replay uses the SAME centralized transition validation as the
-  live write path — a semantically invalid record is rejected on replay even
-  when its hashes were recomputed.
+  disk, and every persistent append first strict-reads the current journal
+  and compares the canonical parsed records byte-for-byte against this
+  handle's cached records (full content + chain + digest comparison, so
+  same-count/same-tail payload tampering is also caught — stale-writer
+  protection). Replay uses the SAME centralized transition validation as
+  the live write path — a semantically invalid record is rejected on replay
+  even when its hashes were recomputed.
+- a REGISTRY IS REQUIRED for persistent stores: candidate/decision
+  envelopes are evidence only when their artifacts exist in the registry
+  with matching digests and valid identity bindings
+  (``load_somatic(..., registry)`` checks all three). Persistent
+  create/open without a registry fails early (before the journal file is
+  created or replayed). The in-memory variant
+  (``SomaticStore(path=None, registry=None)``) remains for legacy
+  compatibility.
 
 Explicit create/open semantics (issue #8 lesson): ``SomaticStore.create``
 uses atomic exclusive file creation; ``SomaticStore.open`` replays and fully
@@ -86,6 +96,17 @@ class SomaticStore:
         self._records: list[dict] = []
         self._writer = None
         self._closed = True  # flipped after successful setup
+
+        if self.path is not None and registry is None:
+            # persistent evidence requires registry-backed validation
+            # (artifact existence, digest match, identity binding) — fail
+            # closed BEFORE the journal file is created or replayed
+            raise RecorderError(
+                "a persistent somatic store requires a TraitRegistry: "
+                "envelopes are evidence only when their artifacts exist in "
+                "the registry with matching digests and valid identity "
+                "bindings; pass registry=... or use the in-memory variant "
+                "SomaticStore(path=None)")
 
         if self.path is None:
             if mode == "open":
