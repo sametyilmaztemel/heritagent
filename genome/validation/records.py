@@ -134,18 +134,21 @@ class SomaticStore(_PersistentSomaticStore):
     decisions use :meth:`decide` — a single lifecycle implementation now
     backs both entry points."""
 
-    def __init__(self, registry=None, path=None):
-        super().__init__(path, registry=registry, mode="create")
+    def __init__(self, registry=None, path=None, mode="create"):
+        super().__init__(path, registry=registry, mode=mode)
 
     @classmethod
     def create(cls, path=None, registry=None) -> "SomaticStore":
-        # delegate to the base implementation (returns the base store; all
-        # lifecycle/read/mutation APIs live there)
-        return _PersistentSomaticStore.create(path, registry)
+        """Create a new persistent journal; returns the COMPAT class instance
+        so version-less convenience APIs and the add() alias survive on the
+        persistent path."""
+        return cls(path=path, registry=registry, mode="create")
 
     @classmethod
     def open(cls, path, registry=None) -> "SomaticStore":
-        return _PersistentSomaticStore.open(path, registry)
+        """Open + verify an existing journal; returns the COMPAT class
+        instance (see create)."""
+        return cls(path=path, registry=registry, mode="open")
 
     def add(self, envelope: dict) -> dict:
         """Compat alias accepting only fresh candidates (transitions go
