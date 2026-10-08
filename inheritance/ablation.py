@@ -26,14 +26,15 @@ from dataclasses import dataclass, field
 from genome.validation.loader import load_cig
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
+from trajectory.recorder.errors import RecorderError
 
 from inheritance.bootstrap import paired_cluster_bootstrap, stage_passes
 from inheritance.overlay import build_evaluation_configs
-from inheritance.replay import ReplayEvaluator  # re-export convenience
 from inheritance.runner import (
-    EvaluationTask,
+    EvaluationIntegrityError,
     GateEpisodeRunner,
     RunnerContractError,
+    validate_gate_setup,
     validate_outcome,
 )
 
@@ -55,6 +56,9 @@ class AblationAllocation:
     frozen_strata: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
+        import copy as _copy
+        object.__setattr__(self, "tasks", _copy.deepcopy(self.tasks))
+        object.__setattr__(self, "frozen_strata", _copy.deepcopy(self.frozen_strata))
         ids = [t.task_id for t in self.tasks]
         if len(ids) != ABLATION_INSTANCE_COUNT:
             raise ValueError(
@@ -62,10 +66,19 @@ class AblationAllocation:
                 f"distinct task instances, got {len(ids)}")
         if len(set(ids)) != len(ids):
             raise ValueError("ablation task ids must be distinct (no replacement)")
+        if not self.frozen_strata:
+            raise ValueError(
+                "frozen_strata plan must be non-empty: the evaluator verifies "
+                "the observed family counts against the frozen stratification")
+        if sum(self.frozen_strata.values()) != len(self.tasks):
+            raise ValueError(
+                f"frozen strata counts {self.frozen_strata} sum to "
+                f"{sum(self.frozen_strata.values())}, expected "
+                f"{len(self.tasks)} task instances")
         observed: dict[str, int] = {}
         for task in self.tasks:
             observed[task.family] = observed.get(task.family, 0) + 1
-        if self.frozen_strata and observed != self.frozen_strata:
+        if observed != self.frozen_strata:
             raise ValueError(
                 f"observed family counts {observed} != frozen stratification "
                 f"plan {self.frozen_strata}")
@@ -133,6 +146,9 @@ class AblationEvaluator:
                  target_regulation=None, tau_c: float = TAU_C,
                  bootstrap_seed: int = BOOTSTRAP_SEED,
                  n_resamples: int = BOOTSTRAP_N_RESAMPLES):
+        # central preflight BEFORE any episode (zero runner calls on invalid
+        # setup): parent grammar, seed representation, child coherence
+        validate_gate_setup(parent_cig_id, mining_seed)
         self._registry = registry
         self._base_config = base_config
         self._runner = runner
@@ -147,9 +163,6 @@ class AblationEvaluator:
             base_config, candidate_envelope, registry,
             target_regulation=target_regulation)
         self._candidate_gene_id = self._configs.target_gene_id
-        if not self._parent_cig_id.startswith("CIG-"):
-            raise RecorderError(
-                f"invalid parent CIG id {self._parent_cig_id!r}")
 
     def evaluate(self, allocation: AblationAllocation) -> AblationEvaluation:
         """Run the paired 20-task ablation; returns immutable stage evidence
@@ -159,6 +172,9 @@ class AblationEvaluator:
         deltas: list[float] = []
         expression_observations: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
+        # locked evaluation settings shared by both conditions
+        from inheritance.overlay import evaluation_settings
+        settings = evaluation_settings()
 
         for task in allocation.tasks:
             outcomes: dict[str, tuple[bool, tuple[str, ...]]] = {}
@@ -170,7 +186,8 @@ class AblationEvaluator:
                         f"duplicate execution for {pair_key}; exactly one run "
                         f"per (task instance, condition) is allowed")
                 seen_pairs.add(pair_key)
-                outcome = self._runner.run_episode(task, config, self._budgets, condition)
+                outcome = self._runner.run_episode(task, config, self._budgets,
+                                                    condition, settings)
                 validate_outcome(outcome, task.task_id, condition)
                 outcomes[condition] = (outcome.success,
                                         tuple(outcome.expressed_gene_ids))
@@ -185,6 +202,13 @@ class AblationEvaluator:
                 })
             fired_with = gene in outcomes["with_trait"][1]
             fired_without = gene in outcomes["without_trait"][1]
+            if fired_without:
+                # contaminated intervention: INVALID evidence — abort the
+                # stage with no completed child record (both stages)
+                raise EvaluationIntegrityError(
+                    f"without-trait episode on {task.task_id!r} expressed the "
+                    f"target gene {gene!r}: the paired intervention is "
+                    f"contaminated and produced no child CIG record")
             expression_observations.append({
                 "task_id": task.task_id,
                 "fired_with": fired_with,
@@ -200,7 +224,7 @@ class AblationEvaluator:
         child = self._build_child_record(
             allocation=allocation, episodes=episodes, deltas=deltas,
             bootstrap=bootstrap, expression_observations=expression_observations,
-            passed=passed)
+            passed=passed, settings=settings)
         return AblationEvaluation(
             _passed=passed, _deltas=tuple(deltas),
             _delta_success=bootstrap.point_estimate, _bootstrap={
@@ -219,7 +243,7 @@ class AblationEvaluator:
     def _build_child_record(self, *, allocation: AblationAllocation,
                              episodes: list[dict], deltas: list[float],
                              bootstrap, expression_observations: list[dict],
-                             passed: bool) -> dict:
+                             passed: bool, settings) -> dict:
         child_id = f"{self._parent_cig_id}/S{self._mining_seed}-ablation"
         child = {
             "cig_id": child_id,
@@ -246,6 +270,12 @@ class AblationEvaluator:
                     "runs_per_task_condition": 1,
                     "eval_temperature": 0.0,
                     "paired_conditions": ["with_trait", "without_trait"],
+                },
+                "eval_generation_settings": {
+                    "temperature": settings.temperature,
+                    "max_tokens": settings.max_tokens,
+                    "seed": settings.seed,
+                    "stop": list(settings.stop),
                 },
                 "stage_pass": passed,
             },

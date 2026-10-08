@@ -33,8 +33,8 @@ def test_fixed_seed_deterministic():
     assert (a.point_estimate, a.lower_bound, a.upper_bound) == \
         (b.point_estimate, b.lower_bound, b.upper_bound)
     c = paired_cluster_bootstrap(deltas, seed=7)
-    assert (c.lower_bound, c.upper_bound) != (a.lower_bound, a.upper_bound) or True
-    # different seed -> different RNG stream (bounds almost surely differ)
+    # different seed -> different RNG stream -> different resample means
+    assert (c.lower_bound, c.upper_bound) != (a.lower_bound, a.upper_bound)
     assert a.seed == 4242 and c.seed == 7
 
 

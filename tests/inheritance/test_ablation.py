@@ -52,8 +52,11 @@ def test_allocation_validation(tmp_path, registry):
 def test_exactly_forty_calls_paired(tmp_path, registry, base_config, envelope):
     allocation = make_allocation(tmp_path, registry)
     evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    evaluator._runner.default_success = True
-    evaluator._runner.default_expressed = with_gene(True)
+    outcomes = {}
+    for i in range(20):
+        outcomes[(f"abl-{i}", "with_trait")] = (True, with_gene(True))
+        outcomes[(f"abl-{i}", "without_trait")] = (True, ())  # no contamination
+    evaluator._runner.outcomes = outcomes
     result = evaluator.evaluate(allocation)
     assert len(evaluator._runner.calls) == 40  # 20 tasks x 2 conditions
     assert len(set(evaluator._runner.calls)) == 40
@@ -134,20 +137,22 @@ def test_lower_bound_and_tau_c_boundaries(tmp_path, registry, base_config, envel
     assert result.delta_success == pytest.approx(1.0)
     assert TAU_C < result.delta_success
 
-    # tiny effect: one +1 pair among 20 (point 0.05 == tau_c), resamples
-    # rarely include the pair -> LB will be 0.0 -> fail
+    # real tau_c boundary at evaluator level: exactly ONE paired +1 delta
+    # among 20 (point 0.05 == tau_c) and 19 paired zeros -> every bootstrap
+    # resample mean is k/20; the 2.5th percentile lands on 0.0 -> LB == 0
+    # -> FAIL despite the point estimate meeting tau_c
     allocation2 = make_allocation(tmp_path, registry)
     evaluator2 = make_evaluator(tmp_path, registry, base_config, envelope,
                                  bootstrap_seed=12345)
     outcomes2 = {}
     for i in range(20):
-        outcomes2[(f"abl-{i}", "with_trait")] = (True, with_gene(True))
+        outcomes2[(f"abl-{i}", "with_trait")] = (i == 0, with_gene(True))
         outcomes2[(f"abl-{i}", "without_trait")] = (False, ())
     evaluator2._runner.outcomes = outcomes2
     result2 = evaluator2.evaluate(allocation2)
-    assert result2.delta_success == pytest.approx(1.0)
-    assert result2.passed is True  # strong-effect boundary stays a pass
-    # the earlier strong-effect case remains the LB==1.0 boundary
+    assert result2.delta_success == pytest.approx(0.05)
+    assert result2.bootstrap["lower_bound"] == 0.0
+    assert result2.passed is False  # LB must be strictly > 0
 
 
 def test_child_record_schema_valid(tmp_path, registry, base_config, envelope):

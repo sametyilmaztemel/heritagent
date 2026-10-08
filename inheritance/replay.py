@@ -28,11 +28,16 @@ from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
 from trajectory.recorder.errors import RecorderError
 
-from inheritance.overlay import EvaluationConfigs, build_evaluation_configs
+from inheritance.overlay import (
+    EvaluationConfigs,
+    evaluation_settings,
+    build_evaluation_configs,
+)
 from inheritance.runner import (
-    EvaluationTask,
+    EvaluationIntegrityError,
     GateEpisodeRunner,
     RunnerContractError,
+    validate_gate_setup,
     validate_outcome,
 )
 
@@ -47,13 +52,25 @@ REPLAY_THRESHOLD_TEXT = ("successes_with >= 3/5 and delta_count >= +2/5 "
 class ReplayAllocation:
     """The frozen replay allocation validated fail-closed before execution:
     exactly source + 4 unseen same-family bank variants, all distinct task
-    ids, no replacement within the trait."""
+    ids, no replacement within the trait. Every variant must carry the
+    declared frozen replay-bank provenance. Tasks and metadata are
+    deep-frozen at construction: caller mutation cannot change the
+    executed task definitions."""
 
     source_task: EvaluationTask
     bank_variants: tuple[EvaluationTask, ...]
     source_family: str
+    replay_bank_id: str   # frozen canonical bank id, e.g. replay_bank[heat_and_place]
 
     def __post_init__(self):
+        import copy as _copy
+        object.__setattr__(self, "source_task",
+                            _copy.deepcopy(self.source_task))
+        object.__setattr__(self, "bank_variants",
+                            _copy.deepcopy(self.bank_variants))
+        if not isinstance(self.replay_bank_id, str) or not self.replay_bank_id.strip():
+            raise ValueError(
+                "replay_bank_id must be a non-empty frozen bank identifier")
         if len(self.bank_variants) != REPLAY_INSTANCE_COUNT - 1:
             raise ValueError(
                 f"replay allocation requires exactly {REPLAY_INSTANCE_COUNT - 1} "
@@ -66,6 +83,11 @@ class ReplayAllocation:
                 raise ValueError(
                     f"bank variant {variant.task_id!r} family "
                     f"{variant.family!r} != source family {self.source_family!r}")
+            if not variant.bank_id or variant.bank_id != self.replay_bank_id:
+                raise ValueError(
+                    f"bank variant {variant.task_id!r} bank_id "
+                    f"{variant.bank_id!r} does not match the declared frozen "
+                    f"replay bank {self.replay_bank_id!r}")
         if self.source_task.family != self.source_family:
             raise ValueError(
                 f"source task family {self.source_task.family!r} != "
@@ -79,6 +101,7 @@ class ReplayAllocation:
         return {
             "source_task_id": self.source_task.task_id,
             "source_family": self.source_family,
+            "replay_bank_id": self.replay_bank_id,
             "bank_variant_ids": [t.task_id for t in self.bank_variants],
             "bank_ids": [t.bank_id for t in self.bank_variants],
             "instance_count": len(self.tasks),
@@ -144,6 +167,9 @@ class ReplayEvaluator:
                  base_config: RuntimeConfig, runner: GateEpisodeRunner,
                  budgets: Budgets, parent_cig_id: str, mining_seed: int,
                  target_regulation=None):
+        # central preflight BEFORE any episode (zero runner calls on invalid
+        # setup): parent grammar, seed representation, child coherence
+        validate_gate_setup(parent_cig_id, mining_seed)
         self._registry = registry
         self._base_config = base_config
         self._runner = runner
@@ -153,17 +179,14 @@ class ReplayEvaluator:
         self._target_regulation = target_regulation
         self._configs: EvaluationConfigs | None = None
         self._candidate_gene_id: str | None = None
+        # locked evaluation settings: temperature 0, ONE deterministic run
+        # per (task instance, condition); both conditions share this object
+        self._settings = evaluation_settings()
         # fail-closed setup (criterion 13): state/origin/binding/duplicate
         self._configs = build_evaluation_configs(
             base_config, candidate_envelope, registry,
             target_regulation=target_regulation)
         self._candidate_gene_id = self._configs.target_gene_id
-        self._validate_parent()
-
-    def _validate_parent(self) -> None:
-        if not self._parent_cig_id.startswith("CIG-"):
-            raise RecorderError(
-                f"invalid parent CIG id {self._parent_cig_id!r}")
 
     def evaluate(self, allocation: ReplayAllocation) -> ReplayEvaluation:
         """Run the paired 5-instance replay; returns immutable stage
@@ -184,7 +207,7 @@ class ReplayEvaluator:
                         f"duplicate execution for {pair_key}; exactly one run "
                         f"per (task instance, condition) is allowed")
                 seen_pairs.add(pair_key)
-                outcome = self._runner.run_episode(task, config, self._budgets, condition)
+                outcome = self._runner.run_episode(task, config, self._budgets, condition, self._settings)
                 validate_outcome(outcome, task.task_id, condition)
                 episodes.append({
                     "task_id": task.task_id,
@@ -209,9 +232,13 @@ class ReplayEvaluator:
                     if outcome.success:
                         successes_without += 1
                     if gene in outcome.expressed_gene_ids:
-                        expression_violations.append(
+                        # contaminated intervention: INVALID evidence, not a
+                        # candidate failure — abort with no completed child
+                        raise EvaluationIntegrityError(
                             f"without-trait episode on {task.task_id!r} "
-                            f"expressed the target gene (leak)")
+                            f"expressed the target gene {gene!r}: the paired "
+                            f"intervention is contaminated and produced no "
+                            f"child CIG record")
 
         delta_count = successes_with - successes_without
         expression_ok = not expression_violations

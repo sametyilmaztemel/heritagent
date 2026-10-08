@@ -67,7 +67,8 @@ def test_skill_procedure_id_pattern_enforced(registry):
         "principle": "p", "when_to_apply": "w",
         "procedure": [{"id": "step-one", "text": "a"}],
     })
-    with pytest.raises(GenomeValidationError, match="look_before_heat_v1"):
+    with pytest.raises(GenomeValidationError,
+                        match="does not match"):
         compile_runtime_config(genome, registry)
 
 
