@@ -81,7 +81,8 @@ def test_task_payload_snapshot_survives_caller_mutation(tmp_path, registry, base
     allocation = make_allocation(tmp_path, registry)
     original_payload = dict(allocation.tasks[0].payload)
     make_evaluator(tmp_path, registry, base_config)  # separate store-side setup
-    allocation.tasks[0].payload["goal"] = "TAMPERED"
+    with pytest.raises(TypeError):
+        allocation.tasks[0].payload["goal"] = "TAMPERED"
     assert original_payload == {"goal": "task 0"}  # payload snapshot intact
 
 

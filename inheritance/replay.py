@@ -26,7 +26,6 @@ from typing import Any
 from genome.validation.loader import load_cig
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
-from trajectory.recorder.errors import RecorderError
 
 from inheritance.overlay import (
     EvaluationConfigs,
@@ -179,9 +178,12 @@ class ReplayEvaluator:
         self._target_regulation = target_regulation
         self._configs: EvaluationConfigs | None = None
         self._candidate_gene_id: str | None = None
-        # locked evaluation settings: temperature 0, ONE deterministic run
-        # per (task instance, condition); both conditions share this object
-        self._settings = evaluation_settings()
+        # locked evaluation settings derived from the fixed budget:
+        # temperature 0, max_tokens = budgets.max_tokens_per_request, seed =
+        # the mining seed, no stop — ONE deterministic run per (task
+        # instance, condition); both conditions share this exact object
+        self._locked_settings = evaluation_settings(
+            max_tokens=budgets.max_tokens_per_request, seed=mining_seed)
         # fail-closed setup (criterion 13): state/origin/binding/duplicate
         self._configs = build_evaluation_configs(
             base_config, candidate_envelope, registry,
@@ -207,8 +209,9 @@ class ReplayEvaluator:
                         f"duplicate execution for {pair_key}; exactly one run "
                         f"per (task instance, condition) is allowed")
                 seen_pairs.add(pair_key)
-                outcome = self._runner.run_episode(task, config, self._budgets, condition, self._settings)
-                validate_outcome(outcome, task.task_id, condition)
+                outcome = self._runner.run_episode(task, config, self._budgets, condition, self._locked_settings)
+                validate_outcome(outcome, task.task_id, condition,
+                                  settings=self._locked_settings)
                 episodes.append({
                     "task_id": task.task_id,
                     "family": task.family,

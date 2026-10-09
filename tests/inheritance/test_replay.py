@@ -1,5 +1,7 @@
 """Replay evaluator tests (issue #11 criteria 5-6, 13)."""
 
+import json
+
 import pytest
 
 from inheritance.runner import EvaluationTask, RunnerContractError
@@ -29,11 +31,12 @@ def make_allocation(tmp_path, registry, *, bank_id="replay_bank[heat_and_place]"
                              replay_bank_id=bank_id)
 
 
-def make_evaluator(tmp_path, registry, base_config, envelope):
+def make_evaluator(tmp_path, registry, base_config, envelope, budgets=None):
     return ReplayEvaluator(
         candidate_envelope=envelope, registry=registry, base_config=base_config,
-        runner=ScriptedRunner(), budgets=Budgets(max_steps=4, max_total_retries=10,
-                                                  max_tokens_per_request=64),
+        runner=ScriptedRunner(),
+        budgets=budgets or Budgets(max_steps=4, max_total_retries=10,
+                                    max_tokens_per_request=64),
         parent_cig_id=PARENT_CIG, mining_seed=MINING_SEED)
 
 
@@ -308,14 +311,74 @@ def test_runner_temperature_violation_rejected_no_child(tmp_path, registry, base
 
 def test_both_conditions_receive_identical_locked_settings(tmp_path, registry,
                                                              base_config, envelope):
+    """Every with/without pair receives the IDENTICAL locked settings; the
+    settings acknowledge temperature 0 and max_tokens == the fixed Budgets
+    contract; both conditions see exactly the same object values."""
+    budgets = Budgets(max_steps=4, max_total_retries=10, max_tokens_per_request=64)
+    allocation = make_allocation(tmp_path, registry)
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
+    runner = evaluator._runner
+    evaluator._runner.outcomes = outcomes_for(
+        per_task_with=[True] * 5, per_task_without=[False] * 5)
+    received = []  # (task_id, condition, settings)
+    real_run = runner.run_episode
+
+    def recording_run(task, config, budgets, condition, settings):
+        received.append((task.task_id, condition, settings))
+        return real_run(task, config, budgets, condition, settings)
+    runner.run_episode = recording_run
+
+    evaluator.evaluate(allocation)
+    assert len(received) == 10
+    locked = evaluator._locked_settings
+    for task_id, condition, settings in received:
+        assert settings == locked  # identical locked settings object values
+        assert settings.temperature == 0.0
+        assert settings.max_tokens == budgets.max_tokens_per_request
+    # per pair: with and without received identical settings
+    by_task = {}
+    for task_id, condition, settings in received:
+        by_task.setdefault(task_id, []).append(settings)
+    assert all(len({json.dumps(s.__dict__, sort_keys=True)
+                     for s in settings_list}) == 1
+                for settings_list in by_task.values())
+
+
+def test_runner_acks_temp0_but_changes_max_tokens_rejected(tmp_path, registry,
+                                                             base_config, envelope):
+    """A runner acknowledging temperature 0 while changing max_tokens/seed/
+    stop is rejected: exact settings divergence, no completed child."""
+    from inheritance.runner import EpisodeOutcome, RunnerContractError
     from runtime.model_adapters import GenerationSettings
     allocation = make_allocation(tmp_path, registry)
     evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
     evaluator._runner.outcomes = outcomes_for(
         per_task_with=[True] * 5, per_task_without=[False] * 5)
-    evaluator.evaluate(allocation)
-    settings_seen = [call_effective for call_effective in
-                      [o.effective_settings for o in []]]  # placeholder
-    # validate via the adapter-style recorded settings: outcomes ack them;
-    # verify both conditions share the same locked settings object values
-    assert evaluator._settings.temperature == 0.0
+    real_run = evaluator._runner.run_episode
+
+    def diverging(task, config, budgets, condition, settings):
+        outcome = real_run(task, config, budgets, condition, settings)
+        diverged = GenerationSettings(temperature=0.0,   # acks temp 0...
+                                       max_tokens=9999,   # ...but changed budget
+                                       seed=12345,        # ...changed seed
+                                       stop=("END",))     # ...changed stop
+        return EpisodeOutcome(
+            task_id=outcome.task_id, condition=outcome.condition,
+            success=outcome.success,
+            expressed_gene_ids=outcome.expressed_gene_ids,
+            status=outcome.status, trajectory_id=outcome.trajectory_id,
+            effective_settings=diverged)
+    evaluator._runner.run_episode = diverging
+    with pytest.raises(RunnerContractError, match="effective settings differ"):
+        evaluator.evaluate(allocation)  # no completed child is produced
+
+
+def test_locked_settings_derived_from_budgets(tmp_path, registry, base_config, envelope):
+    budgets = Budgets(max_steps=4, max_total_retries=10, max_tokens_per_request=64)
+    allocation = make_allocation(tmp_path, registry)
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope,
+                                budgets=budgets)
+    assert evaluator._locked_settings.temperature == 0.0
+    assert evaluator._locked_settings.max_tokens == budgets.max_tokens_per_request
+    assert evaluator._locked_settings.seed == MINING_SEED  # mining seed as fixed seed
+    assert evaluator._locked_settings.stop == ()

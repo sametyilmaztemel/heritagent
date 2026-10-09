@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from genome.validation.loader import load_cig
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
-from trajectory.recorder.errors import RecorderError
 
 from inheritance.bootstrap import paired_cluster_bootstrap, stage_passes
 from inheritance.overlay import build_evaluation_configs
@@ -143,9 +142,8 @@ class AblationEvaluator:
     def __init__(self, *, candidate_envelope: dict, registry,
                  base_config: RuntimeConfig, runner: GateEpisodeRunner,
                  budgets: Budgets, parent_cig_id: str, mining_seed: int,
-                 target_regulation=None, tau_c: float = TAU_C,
-                 bootstrap_seed: int = BOOTSTRAP_SEED,
-                 n_resamples: int = BOOTSTRAP_N_RESAMPLES):
+                 target_regulation=None,
+                 bootstrap_seed: int = BOOTSTRAP_SEED):
         # central preflight BEFORE any episode (zero runner calls on invalid
         # setup): parent grammar, seed representation, child coherence
         validate_gate_setup(parent_cig_id, mining_seed)
@@ -156,13 +154,56 @@ class AblationEvaluator:
         self._parent_cig_id = parent_cig_id
         self._mining_seed = mining_seed
         self._target_regulation = target_regulation
-        self._tau_c = tau_c
+        # primary protocol is LOCKED (ADR-0002): tau_c/n_resamples are not
+        # constructor parameters — sensitivity analysis must use the
+        # explicit analysis-only API (evaluate_analysis), which cannot emit
+        # primary CIG evidence
+        self._tau_c = TAU_C
         self._bootstrap_seed = bootstrap_seed
-        self._n_resamples = n_resamples
+        self._n_resamples = BOOTSTRAP_N_RESAMPLES
         self._configs = build_evaluation_configs(
             base_config, candidate_envelope, registry,
             target_regulation=target_regulation)
         self._candidate_gene_id = self._configs.target_gene_id
+
+    def evaluate_analysis(self, allocation: AblationAllocation, *, tau_c: float,
+                           n_resamples: int, bootstrap_seed: int) -> dict:
+        """ANALYSIS-ONLY sensitivity evaluation (ADR-0002: threshold
+        sensitivity is secondary). Runs the same paired episodes but CANNOT
+        emit primary CIG evidence — returns analysis deltas/bootstrap only,
+        with no child record and no stage-pass verdict. Arbitrary tau_c/
+        n_resamples are permitted HERE because the analysis result never
+        enters the primary gate or the somatic lifecycle."""
+        from inheritance.overlay import evaluation_settings
+        settings = evaluation_settings(
+            max_tokens=self._budgets.max_tokens_per_request,
+            seed=self._mining_seed)
+        analysis_deltas: list[float] = []
+        for task in allocation.tasks:
+            outcomes: dict[str, bool] = {}
+            for condition, config in (("with_trait", self._configs.with_trait),
+                                       ("without_trait", self._configs.without_trait)):
+                outcome = self._runner.run_episode(task, config, self._budgets,
+                                                    condition, settings)
+                validate_outcome(outcome, task.task_id, condition, settings=settings)
+                outcomes[condition] = outcome.success
+            analysis_deltas.append(float(outcomes["with_trait"])
+                                    - float(outcomes["without_trait"]))
+        bootstrap = paired_cluster_bootstrap(
+            analysis_deltas, seed=bootstrap_seed, n_resamples=n_resamples)
+        return {
+            "analysis_only": True,
+            "deltas": analysis_deltas,
+            "bootstrap": {
+                "method": bootstrap.method, "seed": bootstrap.seed,
+                "n_resamples": bootstrap.n_resamples,
+                "lower_bound": bootstrap.lower_bound,
+                "upper_bound": bootstrap.upper_bound,
+            },
+            "tau_c": tau_c,
+            "child_record": None,   # analysis-only: never primary evidence
+            "stage_pass": None,     # analysis-only: never a stage verdict
+        }
 
     def evaluate(self, allocation: AblationAllocation) -> AblationEvaluation:
         """Run the paired 20-task ablation; returns immutable stage evidence
@@ -172,9 +213,12 @@ class AblationEvaluator:
         deltas: list[float] = []
         expression_observations: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
-        # locked evaluation settings shared by both conditions
+        # locked evaluation settings derived from the fixed budget, shared
+        # by both conditions
         from inheritance.overlay import evaluation_settings
-        settings = evaluation_settings()
+        locked_settings = evaluation_settings(
+            max_tokens=self._budgets.max_tokens_per_request,
+            seed=self._mining_seed)
 
         for task in allocation.tasks:
             outcomes: dict[str, tuple[bool, tuple[str, ...]]] = {}
@@ -187,8 +231,9 @@ class AblationEvaluator:
                         f"per (task instance, condition) is allowed")
                 seen_pairs.add(pair_key)
                 outcome = self._runner.run_episode(task, config, self._budgets,
-                                                    condition, settings)
-                validate_outcome(outcome, task.task_id, condition)
+                                                    condition, locked_settings)
+                validate_outcome(outcome, task.task_id, condition,
+                                  settings=locked_settings)
                 outcomes[condition] = (outcome.success,
                                         tuple(outcome.expressed_gene_ids))
                 episodes.append({
@@ -224,7 +269,7 @@ class AblationEvaluator:
         child = self._build_child_record(
             allocation=allocation, episodes=episodes, deltas=deltas,
             bootstrap=bootstrap, expression_observations=expression_observations,
-            passed=passed, settings=settings)
+            passed=passed, settings=locked_settings)
         return AblationEvaluation(
             _passed=passed, _deltas=tuple(deltas),
             _delta_success=bootstrap.point_estimate, _bootstrap={
@@ -272,7 +317,7 @@ class AblationEvaluator:
                     "paired_conditions": ["with_trait", "without_trait"],
                 },
                 "eval_generation_settings": {
-                    "temperature": settings.temperature,
+                                        "temperature": settings.temperature,
                     "max_tokens": settings.max_tokens,
                     "seed": settings.seed,
                     "stop": list(settings.stop),

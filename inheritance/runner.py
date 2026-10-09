@@ -72,19 +72,75 @@ def validate_gate_setup(parent_cig_id: str, mining_seed: int) -> None:
         raise RunnerContractError(sorted(issues))
 
 
-@dataclass(frozen=True)
+def deep_freeze(obj):
+    """Recursively freeze JSON-like structures: dicts become MappingProxyType
+    over frozen values, lists become tuples. Reads work unchanged; any
+    mutation (including nested) raises TypeError. Serializers that reject
+    mapping proxies should convert via ``dict(obj)`` first."""
+    import types
+    if isinstance(obj, dict):
+        return types.MappingProxyType({k: deep_freeze(v) for k, v in obj.items()})
+    if isinstance(obj, list):
+        return tuple(deep_freeze(v) for v in obj)
+    return obj
+
+
 class EvaluationTask:
-    """One frozen task instance from a bank/allocation. The payload is
-    deep-copied at construction: caller mutation after validation cannot
-    change the executed task definition."""
+    """One frozen task instance from a bank/allocation.
 
-    task_id: str
-    family: str
-    payload: dict = field(default_factory=dict)   # benchmark-agnostic task content/ref
-    bank_id: str | None = None                    # bank/allocation provenance
+    The payload is deep-frozen at construction (nested dicts become
+    mapping proxies): ``task.payload["goal"] = ...`` and nested mutations
+    raise TypeError, so caller mutation cannot change the executed task
+    definition. ``payload`` returns the frozen view — convert with
+    ``dict(task.payload)`` if a mutable copy is needed."""
 
-    def __post_init__(self):
-        object.__setattr__(self, "payload", copy.deepcopy(self.payload))
+    __slots__ = ("_task_id", "_family", "_bank_id", "_payload")
+
+    def __init__(self, task_id: str, family: str, payload: dict | None = None,
+                 bank_id: str | None = None):
+        object.__setattr__(self, "_task_id", task_id)
+        object.__setattr__(self, "_family", family)
+        object.__setattr__(self, "_bank_id", bank_id)
+        object.__setattr__(self, "_payload", deep_freeze(copy.deepcopy(payload or {})))
+
+    @property
+    def task_id(self) -> str:
+        return self._task_id
+
+    @property
+    def family(self) -> str:
+        return self._family
+
+    @property
+    def bank_id(self) -> str | None:
+        return self._bank_id
+
+    @property
+    def payload(self):
+        return self._payload  # deep-frozen view; mutation raises TypeError
+
+    def __setattr__(self, name, value):
+        raise AttributeError("EvaluationTask is immutable after construction")
+
+    def __delattr__(self, name):
+        raise AttributeError("EvaluationTask is immutable after construction")
+
+    def __deepcopy__(self, memo):
+        return EvaluationTask(self._task_id, self._family,
+                               copy.deepcopy(dict(self._payload)), self._bank_id)
+
+    def __eq__(self, other):
+        if not isinstance(other, EvaluationTask):
+            return NotImplemented
+        return (self._task_id, self._family, self._bank_id) == \
+            (other._task_id, other._family, other._bank_id)
+
+    def __hash__(self):
+        return hash((self._task_id, self._family, self._bank_id))
+
+    def __repr__(self):
+        return (f"EvaluationTask(task_id={self._task_id!r}, "
+                 f"family={self._family!r}, bank_id={self._bank_id!r})")
 
 
 @dataclass(frozen=True)
@@ -154,7 +210,9 @@ def validate_outcome(outcome: EpisodeOutcome, expected_task_id: str,
     if settings is not None and outcome.effective_settings != settings:
         raise RunnerContractError(
             f"runner effective settings differ from the evaluator's locked "
-            f"settings for {expected_task_id!r}")
+            f"settings for {expected_task_id!r}: locked "
+            f"{settings!r} vs acknowledged {outcome.effective_settings!r} "
+            f"(temperature/max_tokens/seed/stop must match exactly)")
     # trajectory provenance is REQUIRED for completed episodes
     trajectory = outcome.trajectory_id
     if not isinstance(trajectory, str) or not _TRAJECTORY_ID_PATTERN.match(trajectory):

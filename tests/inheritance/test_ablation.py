@@ -198,3 +198,90 @@ def test_immutable_result_evidence(tmp_path, registry, base_config, envelope):
     assert result.bootstrap["lower_bound"] > 0.0
     assert result.passed is True
     assert result.child_record["measurements"]["stage_pass"] is True
+
+
+def test_runner_acks_temp0_but_changes_max_tokens_rejected(tmp_path, registry, base_config,
+                                                             envelope):
+    """A runner acknowledging temperature 0 while changing max_tokens/seed/
+    stop is rejected: exact settings divergence, no completed child."""
+    from inheritance.runner import EpisodeOutcome, RunnerContractError
+    from runtime.model_adapters import GenerationSettings
+    allocation = make_allocation(tmp_path, registry)
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
+    outcomes = {}
+    for i in range(20):
+        outcomes[(f"abl-{i}", "with_trait")] = (True, with_gene(True))
+        outcomes[(f"abl-{i}", "without_trait")] = (False, ())
+    evaluator._runner.outcomes = outcomes
+    real_run = evaluator._runner.run_episode
+
+    def diverging(task, config, budgets, condition, settings):
+        outcome = real_run(task, config, budgets, condition, settings)
+        diverged = GenerationSettings(temperature=0.0,   # acks temp 0...
+                                       max_tokens=9999,   # ...changed budget
+                                       seed=12345,        # ...changed seed
+                                       stop=("END",))     # ...changed stop
+        return EpisodeOutcome(
+            task_id=outcome.task_id, condition=outcome.condition,
+            success=outcome.success,
+            expressed_gene_ids=outcome.expressed_gene_ids,
+            status=outcome.status, trajectory_id=outcome.trajectory_id,
+            effective_settings=diverged)
+    evaluator._runner.run_episode = diverging
+    with pytest.raises(RunnerContractError, match="effective settings differ"):
+        evaluator.evaluate(allocation)  # no completed child produced
+
+
+def test_locked_primary_protocol_values(tmp_path, registry, base_config, envelope):
+    """Primary protocol constants are locked (ADR-0002): tau_c/n_resamples
+    are not constructor parameters — passing them is a TypeError BEFORE any
+    episode — and child evidence always records the locked values."""
+    from tests.miner.conftest import make_pair  # noqa: F401
+    allocation = make_allocation(tmp_path, registry)
+    outcomes = {}
+    for i in range(20):
+        outcomes[(f"abl-{i}", "with_trait")] = (True, with_gene(True))
+        outcomes[(f"abl-{i}", "without_trait")] = (False, ())
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
+    evaluator._runner.outcomes = outcomes
+    with pytest.raises(TypeError, match="tau_c"):
+        AblationEvaluator(
+            candidate_envelope=envelope, registry=registry,
+            base_config=base_config, runner=evaluator._runner,
+            budgets=Budgets(max_steps=1, max_total_retries=1,
+                             max_tokens_per_request=64),
+            parent_cig_id="CIG-0007", mining_seed=11, tau_c=0.03)
+    with pytest.raises(TypeError, match="n_resamples"):
+        AblationEvaluator(
+            candidate_envelope=envelope, registry=registry,
+            base_config=base_config, runner=evaluator._runner,
+            budgets=Budgets(max_steps=1, max_total_retries=1,
+                             max_tokens_per_request=64),
+            parent_cig_id="CIG-0007", mining_seed=11, n_resamples=500)
+    # locked protocol executes cleanly and records the locked values
+    result = evaluator.evaluate(allocation)
+    m = result.child_record["measurements"]
+    assert m["tau_c"] == 0.05
+    assert m["bootstrap"]["n_resamples"] == 10_000
+    assert m["stage_pass"] is True
+
+
+def test_analysis_only_api_cannot_emit_primary_child(tmp_path, registry, base_config,
+                                                      envelope):
+    """The analysis-only API runs arbitrary tau/n_resamples but returns no
+    child record and no stage verdict — primary evidence is untouchable."""
+    from inheritance.runner import EvaluationTask
+    allocation = make_allocation(tmp_path, registry)
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
+    outcomes = {}
+    for i in range(20):
+        outcomes[(f"abl-{i}", "with_trait")] = (True, with_gene(True))
+        outcomes[(f"abl-{i}", "without_trait")] = (False, ())
+    evaluator._runner.outcomes = outcomes
+    analysis = evaluator.evaluate_analysis(
+        allocation, tau_c=0.10, n_resamples=500, bootstrap_seed=99)
+    assert analysis["analysis_only"] is True
+    assert analysis["child_record"] is None
+    assert analysis["stage_pass"] is None
+    assert analysis["tau_c"] == 0.10  # analysis-only: arbitrary values allowed
+    assert len(analysis["deltas"]) == 20
