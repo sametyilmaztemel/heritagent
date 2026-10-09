@@ -295,6 +295,12 @@ class ReplayEvaluator:
                     "eval_temperature": 0.0,
                     "paired_conditions": ["with_trait", "without_trait"],
                 },
+                "eval_generation_settings": {
+                    "temperature": self._locked_settings.temperature,
+                    "max_tokens": self._locked_settings.max_tokens,
+                    "seed": self._locked_settings.seed,
+                    "stop": list(self._locked_settings.stop),
+                },
                 "stage_pass": passed,
             },
         }
