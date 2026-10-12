@@ -115,3 +115,55 @@ def test_with_trait_non_expression_still_allowed(tmp_path, registry, base_config
     observations = result.child_record["measurements"]["expression_observations"]
     assert all(obs["fired_with"] is False for obs in observations)
     assert len(observations) == 20  # unfiltered
+
+
+def test_frozen_strata_public_mutation_raises(tmp_path, registry):
+    """Direct mutation through allocation.frozen_strata raises TypeError and
+    the internal metadata stays unchanged (issue #10 final re-review)."""
+    allocation = make_allocation(tmp_path, registry)
+    before = allocation.allocation_metadata()["frozen_strata"]
+    with pytest.raises(TypeError):
+        allocation.frozen_strata["heat_and_place"] = 999
+    with pytest.raises(TypeError):
+        allocation.frozen_strata["injected"] = 5
+    assert allocation.allocation_metadata()["frozen_strata"] == before
+    assert "injected" not in dict(allocation.frozen_strata)
+
+
+def test_nested_payload_dict_list_dict_frozen(tmp_path, registry, base_config):
+    """Nested payload (dict -> list -> dict) survives allocation
+    construction; nested mutation is impossible through any copy."""
+    import copy as _copy
+    nested_payload = {
+        "name": "nested_skill_v1",
+        "principle": "p",
+        "when_to_apply": "w",
+        "applicability": {"task_families": ["heat_and_place"]},
+        "procedure": [{"id": "S1", "text": "step",
+                        "refs": [{"inner": {"key": "value"}}]}],
+    }
+    from genome.validation.registry import TraitRegistry as _TR
+    uri = registry.put("skill", "nested_skill_v1", 1, nested_payload)
+    task = EvaluationTask(task_id="nested-1", family="heat_and_place",
+                           payload={"outer": {"list": [{"inner": {"k": "v"}}]}},
+                           bank_id="replay_bank[heat_and_place]")
+    # nested mutation through the frozen view raises
+    with pytest.raises(TypeError):
+        task.payload["outer"]["list"][0]["inner"]["k"] = "hacked"
+    with pytest.raises(TypeError):
+        task.payload["outer"]["new"] = 1
+    # allocation construction + replay evaluator setup work with nested payload
+    from traits.miner.miner import MiningSettings  # noqa: F401
+    allocation = make_allocation(tmp_path, registry)
+    allocation_tasks_frozen = allocation.tasks[0]
+    with pytest.raises(TypeError):
+        allocation_tasks_frozen.payload["goal"] = "hacked"
+    assert task.payload["outer"]["list"][0]["inner"]["k"] == "v"
+
+
+def test_deepcopy_returns_self_for_immutable_task(tmp_path, registry):
+    import copy as _copy
+    task = EvaluationTask(task_id="t-1", family="heat_and_place",
+                           payload={"outer": [{"inner": 1}]}, bank_id="b")
+    copied = _copy.deepcopy(task)
+    assert copied is task  # deeply immutable: deepcopy is identity

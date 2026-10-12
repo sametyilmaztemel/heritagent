@@ -126,8 +126,10 @@ class EvaluationTask:
         raise AttributeError("EvaluationTask is immutable after construction")
 
     def __deepcopy__(self, memo):
-        return EvaluationTask(self._task_id, self._family,
-                               copy.deepcopy(dict(self._payload)), self._bank_id)
+        # EvaluationTask is already deeply immutable (payload is a frozen
+        # mapping tree): returning self is safe and avoids deepcopy of
+        # MappingProxyType nodes, which is not generally supported.
+        return self
 
     def __eq__(self, other):
         if not isinstance(other, EvaluationTask):
