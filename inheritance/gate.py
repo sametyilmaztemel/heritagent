@@ -42,6 +42,7 @@ explicit per-cell identifiability.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -586,21 +587,48 @@ class CigGateOrchestrator:
             if not isinstance(settings, dict):
                 issues.append(f"{stage} child lacks eval_generation_settings "
                                f"provenance")
-            else:
-                # EXACT deterministic-settings contract: the #11 evidence
-                # must have been produced under the locked evaluation
-                # settings this gate would have used — temperature 0, the
-                # gate budgets, the candidate's own mining seed, no stops
-                expected_settings = {"temperature": 0.0,
-                                      "max_tokens":
-                                          self._budgets.max_tokens_per_request,
-                                      "seed": seed,
-                                      "stop": []}
-                for key, expected in expected_settings.items():
-                    if settings.get(key) != expected:
-                        issues.append(
-                            f"{stage} eval_generation_settings.{key} "
-                            f"{settings.get(key)!r} != locked {expected!r}")
+                continue
+            # EXACT deterministic-settings provenance: exactly the four
+            # locked keys, with strict types (loose Python equality is not
+            # trusted: 0.0 == False and 64 == 64.0 must NOT validate)
+            expected_keys = {"temperature", "max_tokens", "seed", "stop"}
+            actual_keys = set(settings)
+            if actual_keys != expected_keys:
+                issues.append(
+                    f"{stage} eval_generation_settings keys "
+                    f"{sorted(actual_keys)} != exactly "
+                    f"{sorted(expected_keys)} "
+                    f"(missing: {sorted(expected_keys - actual_keys)}, "
+                    f"unexpected: {sorted(actual_keys - expected_keys)})")
+            temperature = settings.get("temperature")
+            if isinstance(temperature, bool) \
+                    or not isinstance(temperature, (int, float)) \
+                    or not math.isfinite(temperature) \
+                    or temperature != 0.0:
+                issues.append(
+                    f"{stage} eval_generation_settings.temperature "
+                    f"{temperature!r} != locked 0.0 (finite number, "
+                    f"non-bool)")
+            max_tokens = settings.get("max_tokens")
+            if isinstance(max_tokens, bool) \
+                    or not isinstance(max_tokens, int) \
+                    or max_tokens != self._budgets.max_tokens_per_request:
+                issues.append(
+                    f"{stage} eval_generation_settings.max_tokens "
+                    f"{max_tokens!r} != locked "
+                    f"{self._budgets.max_tokens_per_request!r} (strict int, "
+                    f"non-bool)")
+            eval_seed = settings.get("seed")
+            if isinstance(eval_seed, bool) or not isinstance(eval_seed, int) \
+                    or eval_seed != seed:
+                issues.append(
+                    f"{stage} eval_generation_settings.seed {eval_seed!r} "
+                    f"!= locked mining seed {seed!r} (strict int, non-bool)")
+            stop = settings.get("stop")
+            if not isinstance(stop, list) or stop != []:
+                issues.append(
+                    f"{stage} eval_generation_settings.stop {stop!r} != "
+                    f"locked [] (empty list)")
         if issues:
             raise EvidenceCoherenceError(sorted(issues))
 

@@ -114,9 +114,10 @@ class CigRecordStore:
     def _stage_pass_issue(aggregate: dict, child: dict, *,
                           require: bool = False) -> str | None:
         """A child's ``measurements.stage_pass`` must agree with the
-        aggregate's declared pass for that stage; for M0 bundle children
-        (``require=True``) the field is MANDATORY and its absence is itself
-        an issue."""
+        aggregate's declared pass for that stage via DIRECT boolean
+        equality (no ``bool()`` coercion); for M0 bundle children
+        (``require=True``) the field is MANDATORY and must be a STRICT
+        boolean (``1``, ``"true"``, ``{}``, ... are rejected)."""
         measurements = child.get("measurements") or {}
         stage = child["stage"]
         if stage not in aggregate["stages"]:
@@ -127,9 +128,14 @@ class CigRecordStore:
                         f"missing required stage_pass for stage {stage!r}")
             return None
         declared = aggregate["stages"][stage]["pass"]
-        if bool(measurements["stage_pass"]) != bool(declared):
+        value = measurements["stage_pass"]
+        if require and not isinstance(value, bool):
             return (f"child record {child['cig_id']!r} stage_pass "
-                    f"{measurements['stage_pass']!r} disagrees with aggregate "
+                    f"{value!r} must be a strict boolean for M0 stage "
+                    f"{stage!r}")
+        if value != declared:
+            return (f"child record {child['cig_id']!r} stage_pass "
+                    f"{value!r} disagrees with aggregate "
                     f"{aggregate['cig_id']!r} stage {stage!r} pass {declared!r}")
         return None
 

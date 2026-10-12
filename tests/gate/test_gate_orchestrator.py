@@ -408,15 +408,21 @@ def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
 
 @pytest.mark.parametrize("field,bad_value", [
     ("temperature", 0.7),
+    ("temperature", False),      # bool is NOT a valid 0.0 (loose equality trap)
     ("max_tokens", 32),
+    ("max_tokens", 64.0),        # float is NOT a strict int
     ("seed", 99),
+    ("seed", 11.0),              # float is NOT a strict int
     ("stop", ["x"]),
+    ("top_p", 0.9),              # extra key: exactly the four locked keys
 ])
 def test_stage11_settings_must_match_locked_contract(tmp_path, field,
                                                       bad_value):
-    """#11 evidence settings are validated as an EXACT contract —
-    temperature 0.0, gate max_tokens, resolved mining seed, empty stop.
-    Any mismatch fails closed with zero new stage-3/4 runner calls."""
+    """#11 evidence settings are validated as an EXACT TYPED contract —
+    exactly the four keys (temperature 0.0 finite non-bool, strict-int
+    max_tokens at the gate budget, strict-int seed at the resolved mining
+    seed, empty-list stop). Any key/type/value mismatch fails closed with
+    zero new stage-3/4 runner calls."""
     from inheritance.gate import EvidenceCoherenceError
     world = build_world(tmp_path, candidates=("a",))
     orch, somatic, cig_store, runner, inputs, registry = world

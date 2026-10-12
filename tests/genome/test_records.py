@@ -262,6 +262,18 @@ def test_bundle_rejects_missing_stage_pass():
         store.add_bundle(agg, children)
 
 
+def test_bundle_rejects_non_boolean_stage_pass():
+    """stage_pass must be a STRICT boolean in M0 children: truthy non-bool
+    values (1, \"true\", {}, ...) are rejected — no bool() coercion."""
+    store = CigRecordStore()
+    agg = aggregate_record()
+    for bad in (1, "true", {}, 1.0):
+        children = m0_children()
+        children[0]["measurements"]["stage_pass"] = bad
+        with pytest.raises(RecordConsistencyError, match="strict boolean"):
+            store.add_bundle(agg, children)
+
+
 def test_bundle_rejects_wrong_or_missing_candidate_gene_id():
     store = CigRecordStore()
     agg = aggregate_record()
@@ -303,6 +315,13 @@ def test_verify_parity_for_m0_shape_corruptions():
     assert any("missing required stage_pass" in i for i in store.verify())
     with pytest.raises(RecordConsistencyError):
         store.require_consistent()
+    # NON-BOOLEAN stage_pass (white-box corruption): 1 / "true" / {} caught
+    for bad in (1, "true", {}):
+        store = full_store()
+        store._children["CIG-0042/S11-replay"]["measurements"]["stage_pass"] = bad
+        assert any("strict boolean" in i for i in store.verify())
+        with pytest.raises(RecordConsistencyError):
+            store.require_consistent()
     # wrong candidate_gene_id binding
     store = full_store()
     store._children["CIG-0042/S11-replay"]["measurements"]["candidate_gene_id"] = \
