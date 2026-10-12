@@ -15,6 +15,7 @@ from somatic.store import SomaticStore
 from tests.somatic.conftest import acquired_envelope
 
 GENE_ID = "look_before_heat_v1"
+MINING_SEED = 11
 
 
 class ScriptedRegRunner:
@@ -45,11 +46,13 @@ def make_treg(count=40):
         for i in range(count)))
 
 
-def make_evaluator(tmp_path, registry, base_config, envelope, runner):
+def make_evaluator(tmp_path, registry, base_config, envelope, runner,
+                    mining_seed=MINING_SEED):
     return RegressionEvaluator(
         candidate_envelope=envelope, registry=registry, base_config=base_config,
         runner=runner, budgets=Budgets(max_steps=4, max_total_retries=10,
-                                        max_tokens_per_request=64))
+                                        max_tokens_per_request=64),
+        parent_cig_id="CIG-0007", mining_seed=mining_seed)
 
 
 def test_regression_39_of_40_passes(tmp_path, registry, base_config, envelope):
@@ -86,6 +89,7 @@ def test_locked_settings_passed_to_runner(tmp_path, registry, base_config, envel
     settings = runner.received_settings[0]
     assert settings.temperature == 0.0
     assert settings.max_tokens == 64  # Budgets.max_tokens_per_request
+    assert settings.seed == MINING_SEED  # derived from candidate mining seed
 
 
 def test_baseline_provenance_required():
