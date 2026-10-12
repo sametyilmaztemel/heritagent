@@ -111,20 +111,38 @@ class CigRecordStore:
         return None
 
     @staticmethod
-    def _stage_pass_issue(aggregate: dict, child: dict) -> str | None:
-        """When a child records ``stage_pass``, it must agree with the
-        aggregate's declared pass for that stage."""
+    def _stage_pass_issue(aggregate: dict, child: dict, *,
+                          require: bool = False) -> str | None:
+        """A child's ``measurements.stage_pass`` must agree with the
+        aggregate's declared pass for that stage; for M0 bundle children
+        (``require=True``) the field is MANDATORY and its absence is itself
+        an issue."""
         measurements = child.get("measurements") or {}
         stage = child["stage"]
         if stage not in aggregate["stages"]:
             return None  # already flagged as absent-stage elsewhere
         if "stage_pass" not in measurements:
+            if require:
+                return (f"child record {child['cig_id']!r} measurements "
+                        f"missing required stage_pass for stage {stage!r}")
             return None
         declared = aggregate["stages"][stage]["pass"]
         if bool(measurements["stage_pass"]) != bool(declared):
             return (f"child record {child['cig_id']!r} stage_pass "
                     f"{measurements['stage_pass']!r} disagrees with aggregate "
                     f"{aggregate['cig_id']!r} stage {stage!r} pass {declared!r}")
+        return None
+
+    @staticmethod
+    def _candidate_binding_issue(aggregate: dict, child: dict) -> str | None:
+        """The child must carry the aggregate's ``candidate_gene_id``
+        (borrowed evidence from another candidate is corruption)."""
+        m = child.get("measurements") or {}
+        if m.get("candidate_gene_id") != aggregate["candidate_gene_id"]:
+            return (f"child record {child['cig_id']!r} candidate_gene_id "
+                    f"{m.get('candidate_gene_id')!r} != aggregate "
+                    f"{aggregate['cig_id']!r} candidate_gene_id "
+                    f"{aggregate['candidate_gene_id']!r}")
         return None
 
     def add_bundle(self, aggregate: dict, children: list[dict]) -> None:
@@ -193,12 +211,10 @@ class CigRecordStore:
                                f"present in aggregate stages")
                 continue
             m = child["measurements"]
-            if m.get("candidate_gene_id") != staged_agg["candidate_gene_id"]:
-                issues.append(f"child {child['cig_id']!r} candidate_gene_id "
-                               f"{m.get('candidate_gene_id')!r} != aggregate "
-                               f"{staged_agg['candidate_gene_id']!r} (borrowed "
-                               f"child ref?)")
-            pass_issue = self._stage_pass_issue(staged_agg, child)
+            binding_issue = self._candidate_binding_issue(staged_agg, child)
+            if binding_issue:
+                issues.append(binding_issue)
+            pass_issue = self._stage_pass_issue(staged_agg, child, require=True)
             if pass_issue:
                 issues.append(pass_issue)
         for stage in self.M0_STAGE_KEYS:
@@ -229,6 +245,7 @@ class CigRecordStore:
         """
         issues = []
         for cig_id, aggregate in self._aggregates.items():
+            m0_shape = set(aggregate["stages"]) == set(self.M0_STAGE_KEYS)
             for ref in aggregate["child_records"]:
                 child = self._children.get(ref)
                 if child is None:
@@ -239,13 +256,19 @@ class CigRecordStore:
                 if child["stage"] not in aggregate["stages"]:
                     issues.append(f"child record {ref!r} has stage {child['stage']!r} "
                                   f"not present in aggregate {cig_id!r} stages")
-                pass_issue = self._stage_pass_issue(aggregate, child)
+                pass_issue = self._stage_pass_issue(aggregate, child,
+                                                     require=m0_shape)
                 if pass_issue:
                     issues.append(pass_issue)
+                if m0_shape:
+                    binding_issue = self._candidate_binding_issue(aggregate,
+                                                                   child)
+                    if binding_issue:
+                        issues.append(binding_issue)
             verdict_issue = self._verdict_issue(aggregate)
             if verdict_issue:
                 issues.append(verdict_issue)
-            if set(aggregate["stages"]) == set(self.M0_STAGE_KEYS):
+            if m0_shape:
                 issues.extend(self._m0_shape_issues(cig_id, aggregate))
         declared = {ref for agg in self._aggregates.values() for ref in agg["child_records"]}
         for child_id, child in self._children.items():

@@ -358,6 +358,17 @@ def test_invalid_token_counter_fails_closed(tmp_path):
         CigGateOrchestrator(**common, token_counter=_FloatCounter())
 
 
+def _replay_with_child(replay, child):
+    """Rebuild the frozen ReplayEvaluation around a (possibly corrupted)
+    child record."""
+    return type(replay)(
+        _passed=replay.passed, _successes_with=replay.successes_with,
+        _successes_without=replay.successes_without,
+        _delta_count=replay.delta_count, _delta_success=replay.delta_success,
+        _expression_ok=replay.expression_ok, _episodes=(),
+        _child_record=child, _allocation=replay.allocation)
+
+
 def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
     """A structurally invalid #11 child (load_cig failure) and a wrong
     exact child id each fail closed BEFORE any stage-3/4 runner call."""
@@ -370,12 +381,7 @@ def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
     replay = inputs[0].replay_evaluation
     broken_child = dict(replay.child_record)
     broken_child["stage"] = "bogus_stage"
-    broken_replay = type(replay)(
-        _passed=replay.passed, _successes_with=replay.successes_with,
-        _successes_without=replay.successes_without,
-        _delta_count=replay.delta_count, _delta_success=replay.delta_success,
-        _expression_ok=replay.expression_ok, _episodes=(),
-        _child_record=broken_child, _allocation=replay.allocation)
+    broken_replay = _replay_with_child(replay, broken_child)
     bad_input = GateCandidateInput(
         candidate_envelope=inputs[0].candidate_envelope, frozen_rank=0,
         replay_evaluation=broken_replay,
@@ -388,12 +394,7 @@ def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
     # wrong exact child id
     wrong_id = dict(inputs[0].replay_evaluation.child_record)
     wrong_id["cig_id"] = PARENT_CIG + "/S11-replay-typo"
-    wrong_replay = type(replay)(
-        _passed=replay.passed, _successes_with=replay.successes_with,
-        _successes_without=replay.successes_without,
-        _delta_count=replay.delta_count, _delta_success=replay.delta_success,
-        _expression_ok=replay.expression_ok, _episodes=(),
-        _child_record=wrong_id, _allocation=replay.allocation)
+    wrong_replay = _replay_with_child(replay, wrong_id)
     bad_input2 = GateCandidateInput(
         candidate_envelope=inputs[0].candidate_envelope, frozen_rank=0,
         replay_evaluation=wrong_replay,
@@ -402,4 +403,36 @@ def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
         regression_allocation=inputs[0].regression_allocation)
     with pytest.raises(EvidenceCoherenceError, match="exact"):
         orch.run([bad_input2])
+    assert len(runner.calls) == calls_before
+
+
+@pytest.mark.parametrize("field,bad_value", [
+    ("temperature", 0.7),
+    ("max_tokens", 32),
+    ("seed", 99),
+    ("stop", ["x"]),
+])
+def test_stage11_settings_must_match_locked_contract(tmp_path, field,
+                                                      bad_value):
+    """#11 evidence settings are validated as an EXACT contract —
+    temperature 0.0, gate max_tokens, resolved mining seed, empty stop.
+    Any mismatch fails closed with zero new stage-3/4 runner calls."""
+    from inheritance.gate import EvidenceCoherenceError
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    calls_before = len(runner.calls)
+    replay = inputs[0].replay_evaluation
+    child = dict(replay.child_record)
+    settings = dict(child["measurements"]["eval_generation_settings"])
+    settings[field] = bad_value
+    child["measurements"] = dict(
+        child["measurements"], eval_generation_settings=settings)
+    bad_input = GateCandidateInput(
+        candidate_envelope=inputs[0].candidate_envelope, frozen_rank=0,
+        replay_evaluation=_replay_with_child(replay, child),
+        ablation_evaluation=inputs[0].ablation_evaluation,
+        generalization_allocation=inputs[0].generalization_allocation,
+        regression_allocation=inputs[0].regression_allocation)
+    with pytest.raises(EvidenceCoherenceError, match=field):
+        orch.run([bad_input])
     assert len(runner.calls) == calls_before

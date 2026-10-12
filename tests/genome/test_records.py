@@ -48,24 +48,25 @@ def child_record(cig_id="CIG-0042/S11-replay", stage="replay", seed=11, parent_c
 
 def m0_children(cig_id="CIG-0042", seed=SEED):
     """Bundle-ready M0 children: correct parent, coherent seed, and the
-    aggregate's candidate_gene_id in every child."""
+    mandatory candidate_gene_id binding + stage_pass in every child."""
     children = []
     for stage in STAGES:
         child = child_record(cig_id=f"{cig_id}/S{seed}-{stage}", stage=stage,
                              seed=seed, parent_cig_id=cig_id)
         child["measurements"]["candidate_gene_id"] = "look_before_heat_v1"
+        child["measurements"]["stage_pass"] = True
         children.append(child)
     return children
 
 
 def full_store(cig_id="CIG-0042"):
     """One M0 gate run: aggregate + the five per-stage children (one
-    coherent seed), verified consistent."""
+    coherent seed, mandatory stage_pass + candidate binding), verified
+    consistent."""
     store = CigRecordStore()
     store.add_aggregate(aggregate_record(cig_id))
-    for stage in STAGES:
-        store.add_child(child_record(cig_id=f"{cig_id}/S{SEED}-{stage}",
-                                     stage=stage, seed=SEED))
+    for child in m0_children(cig_id):
+        store.add_child(child)
     store.require_consistent()
     return store
 
@@ -250,6 +251,30 @@ def test_bundle_rejects_stage_pass_disagreement():
         store.add_bundle(agg, children)
 
 
+def test_bundle_rejects_missing_stage_pass():
+    """stage_pass is MANDATORY in M0 bundle children: a child without it is
+    rejected even though the aggregate stage pass would 'agree'."""
+    store = CigRecordStore()
+    agg = aggregate_record()
+    children = m0_children()
+    del children[2]["measurements"]["stage_pass"]
+    with pytest.raises(RecordConsistencyError, match="stage_pass"):
+        store.add_bundle(agg, children)
+
+
+def test_bundle_rejects_wrong_or_missing_candidate_gene_id():
+    store = CigRecordStore()
+    agg = aggregate_record()
+    children = m0_children()
+    children[1]["measurements"]["candidate_gene_id"] = "other_gene"
+    with pytest.raises(RecordConsistencyError, match="candidate_gene_id"):
+        store.add_bundle(agg, children)
+    children = m0_children()
+    del children[3]["measurements"]["candidate_gene_id"]
+    with pytest.raises(RecordConsistencyError, match="candidate_gene_id"):
+        store.add_bundle(agg, children)
+
+
 def test_verify_parity_for_m0_shape_corruptions():
     """Whatever add_bundle rejects must also be DETECTABLE by verify() when
     white-box injected into the stored state."""
@@ -272,6 +297,23 @@ def test_verify_parity_for_m0_shape_corruptions():
     store = full_store()
     store._children["CIG-0042/S11-replay"]["measurements"]["stage_pass"] = False
     assert any("stage_pass" in i for i in store.verify())
+    # MISSING stage_pass (white-box corruption of a stored M0 child)
+    store = full_store()
+    del store._children["CIG-0042/S11-replay"]["measurements"]["stage_pass"]
+    assert any("missing required stage_pass" in i for i in store.verify())
+    with pytest.raises(RecordConsistencyError):
+        store.require_consistent()
+    # wrong candidate_gene_id binding
+    store = full_store()
+    store._children["CIG-0042/S11-replay"]["measurements"]["candidate_gene_id"] = \
+        "other_gene"
+    assert any("candidate_gene_id" in i for i in store.verify())
+    # MISSING candidate_gene_id binding
+    store = full_store()
+    del store._children["CIG-0042/S11-replay"]["measurements"]["candidate_gene_id"]
+    assert any("candidate_gene_id" in i for i in store.verify())
+    with pytest.raises(RecordConsistencyError):
+        store.require_consistent()
     # inexact M0 child id
     store = full_store()
     child = store._children.pop("CIG-0042/S11-replay")

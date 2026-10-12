@@ -115,12 +115,13 @@ def test_sensitivity_per_cell_composition_identifiable(tmp_path):
     assert cell_loose_c["eliminated_by_interaction"] == ["b"]
 
 
-def test_sensitivity_not_identifiable_cell_marks_newly_eligible(tmp_path):
+def test_sensitivity_not_identifiable_cell_marks_missing_pairs(tmp_path):
     """b fails PRIMARY ablation (delta 0.04 < tau_c=0.05) so no pair
     evidence ever includes b; the looser tau_c=0.03 grid cells would make b
-    newly preliminary-eligible — those cells require interaction evidence
-    that was never collected -> not_identifiable with reason + ids, while
-    the tau_c in {0.05, 0.08} cells stay identifiable."""
+    newly preliminary-eligible, so the (a, b) pair evidence REQUIRED by
+    those cells was never collected -> not_identifiable with the EXACT
+    missing pair list, while the tau_c in {0.05, 0.08} cells stay
+    identifiable."""
     world = build_world(tmp_path, candidates=("a", "b"),
                          ablation_deltas={"a": 0.9, "b": 0.04},
                          interaction={"both": (True, ("a",)),
@@ -132,8 +133,17 @@ def test_sensitivity_not_identifiable_cell_marks_newly_eligible(tmp_path):
     assert outcome.results[0].stage4_child["measurements"]["interaction"][
         "vacuous"] is True
     calls_after_primary = len(runner.calls)
+    evidence_before = [(r.gene_id, r.verdict, r.aggregate, r.stage4_child)
+                        for r in outcome.results]
+    states_before = {r.gene_id: somatic.state(r.gene_id, 1)
+                      for r in outcome.results}
     grid = orch.sensitivity_recomputation("a")
+    # zero additional runner calls; primary evidence + stores unchanged
     assert len(runner.calls) == calls_after_primary
+    assert [(r.gene_id, r.verdict, r.aggregate, r.stage4_child)
+             for r in outcome.results] == evidence_before
+    assert {r.gene_id: somatic.state(r.gene_id, 1)
+             for r in outcome.results} == states_before
     assert grid["primary_eligible"] == ["a"]
     # tau_c=0.05 / 0.08 cells: b never re-enters -> identifiable
     for tau_c in (0.05, 0.08):
@@ -142,13 +152,45 @@ def test_sensitivity_not_identifiable_cell_marks_newly_eligible(tmp_path):
             assert cell["identifiable"] is True
             assert cell["hypothetical_eligible"] == ["a"]
             assert cell["hypothetical_promote"] == ["a"]
-    # tau_c=0.03 cells: b (0.04 >= 0.03, lb > 0) is NEWLY eligible ->
-    # not_identifiable with the explicit reason and ids
+    # tau_c=0.03 cells: b (0.04 >= 0.03, lb > 0) is newly eligible -> the
+    # required (a, b) pair evidence is missing -> not_identifiable with the
+    # exact missing pair list
     for tau_r in (0.02, 0.03, 0.05):
         cell = grid["cells"][f"tau_c=0.03|tau_r={tau_r}"]
         assert cell["identifiable"] is False
         assert cell["not_identifiable"] is True
-        assert cell["newly_eligible_requiring_interaction_evidence"] == ["b"]
-        assert "b" in cell["reason"]
+        assert cell["missing_interaction_pairs"] == [["a", "b"]]
+        assert "a" in cell["reason"] and "b" in cell["reason"]
         assert cell["hypothetical_eligible"] == ["a", "b"]
         assert "hypothetical_promote" not in cell
+
+
+def test_sensitivity_single_newly_eligible_candidate_identifiable(tmp_path):
+    """EDGE: a candidate that becomes newly eligible under a looser cell but
+    is the ONLY eligible member requires NO interaction pairs -> the cell
+    is identifiable and reports the recomposed promote set."""
+    # a fails replay (never eligible, never paired); b fails primary
+    # ablation (0.04 < 0.05) but passes the looser tau_c=0.03
+    world = build_world(tmp_path, candidates=("a", "b"),
+                         replay_pass_for={"a": False},
+                         ablation_deltas={"a": 0.9, "b": 0.04})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    outcome = orch.run(inputs)
+    # primary: NEITHER candidate eligible -> zero interaction episodes
+    assert outcome.verdicts == {"a": "reject", "b": "reject"}
+    assert [c for c in runner.calls if c[0].startswith("ix-")] == []
+    calls_after_primary = len(runner.calls)
+    grid = orch.sensitivity_recomputation("b")
+    assert len(runner.calls) == calls_after_primary
+    cell = grid["cells"]["tau_c=0.03|tau_r=0.03"]
+    # b alone: no unordered pairs required -> identifiable despite being
+    # newly eligible
+    assert cell["identifiable"] is True
+    assert cell["not_identifiable"] is False
+    assert cell["hypothetical_eligible"] == ["b"]
+    assert cell["eliminated_by_interaction"] == []
+    assert cell["hypothetical_promote"] == ["b"]
+    # primary evidence/stores untouched
+    assert outcome.verdicts == {"a": "reject", "b": "reject"}
+    assert {r.gene_id: somatic.state(r.gene_id, 1)
+             for r in outcome.results} == {"a": "rejected", "b": "rejected"}
