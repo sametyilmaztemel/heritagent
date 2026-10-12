@@ -101,12 +101,11 @@ class GeneralizationAllocation:
                 raise ValueError(f"{scope} observed family counts {observed} != "
                                   f"frozen plan {dict(plan)}")
             for task in tasks:
-                if not task.bank_id or not task.bank_id.startswith(
-                        f"generalization_bank[{task.family}]"):
+                expected_bank = f"generalization_bank[{task.family}]"
+                if task.bank_id != expected_bank:
                     raise ValueError(
                         f"{scope} task {task.task_id!r} bank provenance "
-                        f"{task.bank_id!r} is not canonical "
-                        f"generalization_bank[{task.family}]")
+                        f"{task.bank_id!r} != canonical {expected_bank!r}")
 
     def validate_against_applicability(self, frozen_families: tuple[str, ...]) -> None:
         in_scope_families = {t.family for t in self.in_scope_tasks}
@@ -122,13 +121,18 @@ class GeneralizationAllocation:
                 f"out-of-scope families {sorted(overlap)} overlap the frozen "
                 f"applicability {sorted(frozen_families)}")
 
-    def allocation_metadata(self) -> dict:
+    def allocation_metadata(self, resolved_applicability=None) -> dict:
+        """resolved_applicability: the evaluator's artifact-resolved frozen
+        families; when supplied, overrides the (ignored) declared label so
+        audit metadata always reports the actual enforced scope."""
+        applicability = list(resolved_applicability or
+                              self.declared_frozen_applicability)
         return {
             "in_scope_task_ids": [t.task_id for t in self.in_scope_tasks],
             "out_scope_task_ids": [t.task_id for t in self.out_scope_tasks],
             "in_scope_family_plan": dict(self.frozen_in_scope_plan),
             "out_scope_family_plan": dict(self.frozen_out_scope_plan),
-            "frozen_applicability": list(self.declared_frozen_applicability),
+            "frozen_applicability": applicability,
             "bank_provenance": sorted({t.bank_id for t in
                                         self.in_scope_tasks + self.out_scope_tasks
                                         if t.bank_id}),
@@ -216,21 +220,23 @@ class GeneralizationEvaluator:
         self._budgets = budgets
         self._parent_cig_id = parent_cig_id
         self._mining_seed = mining_seed
+        # bind the candidate + frozen applicability ONCE from the validated
+        # artifact (never from caller labels)
         self._configs: EvaluationConfigs = build_evaluation_configs(
             base_config, candidate_envelope, registry,
             target_regulation=target_regulation)
         self._candidate_gene_id = self._configs.target_gene_id
+        self._frozen_applicability = resolve_frozen_applicability(
+            candidate_envelope, registry)
         self._settings = evaluation_settings(
             max_tokens=budgets.max_tokens_per_request, seed=mining_seed)
 
-    def evaluate(self, allocation: GeneralizationAllocation,
-                  candidate_envelope: dict) -> GeneralizationEvaluation:
+    def evaluate(self, allocation: GeneralizationAllocation) -> GeneralizationEvaluation:
         """Validate the allocation against the artifact-declared frozen
         applicability, run the 40 paired episodes, emit both child records."""
         from inheritance.runner import validate_gate_setup
         validate_gate_setup(self._parent_cig_id, self._mining_seed)
-        frozen_families = resolve_frozen_applicability(candidate_envelope,
-                                                        self._registry)
+        frozen_families = self._frozen_applicability
         allocation.validate_against_applicability(frozen_families)
 
         gene = self._candidate_gene_id
@@ -308,7 +314,8 @@ class GeneralizationEvaluator:
             _episodes=tuple(copy.deepcopy(episodes)),
             _in_scope_child=copy.deepcopy(in_child),
             _out_scope_child=copy.deepcopy(out_child),
-            _allocation=copy.deepcopy(allocation.allocation_metadata()))
+            _allocation=copy.deepcopy(allocation.allocation_metadata(
+                resolved_applicability=self._frozen_applicability)))
 
     def _build_child(self, *, child_id: str, scope: str,
                       allocation: GeneralizationAllocation,
@@ -325,7 +332,8 @@ class GeneralizationEvaluator:
                 "candidate_gene_id": self._candidate_gene_id,
                 "scope": scope,
                 "frozen_applicability": list(frozen_families),
-                "allocation": allocation.allocation_metadata(),
+                "allocation": allocation.allocation_metadata(
+                    resolved_applicability=self._frozen_applicability),
                 "summary": summaries,
                 "scope_episodes": scope_episodes,
                 "delta": delta,
@@ -336,9 +344,14 @@ class GeneralizationEvaluator:
                     "eval_temperature": 0.0,
                     "paired_conditions": ["with_trait", "without_trait"],
                 },
+                "eval_generation_settings": {
+                    "temperature": self._settings.temperature,
+                    "max_tokens": self._settings.max_tokens,
+                    "seed": self._mining_seed,
+                    "stop": [],
+                },
                 "stage_pass": passed,
             },
         }
         load_cig(child)
         return child
-
