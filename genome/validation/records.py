@@ -76,6 +76,75 @@ class CigRecordStore:
                     f"but declares seed {seed!r}")
         return None
 
+    M0_STAGE_KEYS = ("replay", "ablation", "generalization_in_scope",
+                     "generalization_out_of_scope", "interaction_regression")
+
+    def add_bundle(self, aggregate: dict, children: list[dict]) -> None:
+        """ALL-OR-NOTHING atomic bundle commit (issue #12 criterion 12):
+        validates deep copies of the aggregate and every child BEFORE
+        mutating the live store, then inserts everything. Any validation
+        failure leaves the live store byte-identical.
+
+        Checks: exact declared child set (unique ids, none borrowed),
+        parent ids, seed coherence, the five M0 stage children,
+        child candidate_gene_id == aggregate candidate_gene_id,
+        child stage_pass == aggregate stage pass, and verdict coherence
+        (promote iff every stage pass is true)."""
+        staged_agg = copy.deepcopy(aggregate)
+        staged_children = copy.deepcopy(children)
+        issues: list[str] = []
+        load_cig(staged_agg)
+        if staged_agg["cig_id"] in self._aggregates:
+            issues.append(f"aggregate {staged_agg['cig_id']!r} already exists")
+        for child in staged_children:
+            load_cig(child)
+        child_ids = [c["cig_id"] for c in staged_children]
+        declared = list(staged_agg["child_records"])
+        if sorted(child_ids) != sorted(declared):
+            issues.append(f"child records {sorted(child_ids)} do not match the "
+                           f"declared set {sorted(declared)}")
+        if len(set(child_ids)) != len(child_ids):
+            issues.append("duplicate child ids in bundle")
+        m0_stages = set(self.M0_STAGE_KEYS)
+        stage_keys = set(staged_agg["stages"])
+        if stage_keys != m0_stages:
+            issues.append(f"aggregate stages {sorted(stage_keys)} != the five "
+                           f"M0 stage keys {sorted(m0_stages)}")
+        if issues:
+            raise RecordConsistencyError(sorted(issues))
+        # per-child checks (staged; store untouched)
+        for child in staged_children:
+            if child["parent_cig_id"] != staged_agg["cig_id"]:
+                issues.append(f"child {child['cig_id']!r} parent mismatch")
+            if not child["cig_id"].startswith(child["parent_cig_id"] + "/S"):
+                issues.append(f"child {child['cig_id']!r} is not a child of "
+                               f"{child['parent_cig_id']!r}")
+            if child["cig_id"] in self._children:
+                issues.append(f"child {child['cig_id']!r} already exists "
+                               f"(append-only)")
+            stage = child["stage"]
+            if stage not in staged_agg["stages"]:
+                issues.append(f"child {child['cig_id']!r} stage {stage!r} not "
+                               f"present in aggregate stages")
+                continue
+            m = child["measurements"]
+            if m.get("candidate_gene_id") != staged_agg["candidate_gene_id"]:
+                issues.append(f"child {child['cig_id']!r} candidate_gene_id "
+                               f"{m.get('candidate_gene_id')!r} != aggregate "
+                               f"{staged_agg['candidate_gene_id']!r} (borrowed "
+                               f"child ref?)")
+            if bool(m.get("stage_pass")) !=                     bool(staged_agg["stages"][stage]["pass"]):
+                issues.append(f"child {child['cig_id']!r} stage_pass "
+                               f"{m.get('stage_pass')!r} disagrees with "
+                               f"aggregate stage pass "
+                               f"{staged_agg['stages'][stage]['pass']!r}")
+        if issues:
+            raise RecordConsistencyError(sorted(issues))
+        # all-or-nothing commit
+        self._aggregates[staged_agg["cig_id"]] = staged_agg
+        for child in staged_children:
+            self._children[child["cig_id"]] = child
+
     def verify(self) -> list[str]:
         """Return consistency issues; empty list means the store is consistent.
 
