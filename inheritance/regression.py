@@ -153,10 +153,17 @@ class RegressionEvaluation:
     _regression_drop: float
     _episodes: tuple[dict, ...]
     _allocation: dict
+    _locked_settings: dict
 
     @property
     def passed(self) -> bool:
         return self._passed
+
+    @property
+    def locked_settings(self) -> dict:
+        """The exact generation settings every T_reg episode ran with
+        (persisted verbatim in the stage-4 child)."""
+        return copy.deepcopy(self._locked_settings)
 
     @property
     def successes_with(self) -> int:
@@ -196,6 +203,10 @@ class RegressionEvaluator:
         self._settings = GenerationSettings(
             temperature=0.0, max_tokens=budgets.max_tokens_per_request,
             seed=mining_seed)
+        self._locked = {"temperature": self._settings.temperature,
+                         "max_tokens": self._settings.max_tokens,
+                         "seed": self._settings.seed,
+                         "stop": list(self._settings.stop)}
 
     def evaluate(self, allocation: RegressionAllocation) -> RegressionEvaluation:
         episodes: list[dict] = []
@@ -222,7 +233,8 @@ class RegressionEvaluator:
         return RegressionEvaluation(
             _passed=passed, _successes_with=successes,
             _regression_drop=drop, _episodes=tuple(copy.deepcopy(episodes)),
-            _allocation=copy.deepcopy(allocation.allocation_metadata()))
+            _allocation=copy.deepcopy(allocation.allocation_metadata()),
+            _locked_settings=copy.deepcopy(self._locked))
 
 
 @dataclass(frozen=True)

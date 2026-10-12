@@ -30,13 +30,18 @@ from tests.gate.helpers import (
 def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
                  replay_pass=True, ablation_deltas=None, gen_in_with=True,
                  gen_out_with=True, treg_success_count=40,
-                 interaction=None, replay_pass_for=None):
+                 interaction=None, replay_pass_for=None,
+                 commit_stores=True):
     """Build a full scripted world: runner, inputs, orchestrator, stores.
 
+    Every candidate carries its OWN aggregate CIG id (CIG-0007, CIG-0008,
+    ...); multi-candidate inputs can never share one parent.
     Generalization defaults: with-trait all succeed, without-trait all
     succeed -> delta 0 (pass both scopes). Interaction defaults: both pass,
     neither pass -> delta 0 (not harmful).
-    ablation_deltas: optional per-name ablation contribution."""
+    ablation_deltas: optional per-name ablation contribution.
+    commit_stores=False wires the orchestrator WITHOUT stores so a run
+    produces results without committing (candidates stay 'candidate')."""
     from inheritance.generalization import GeneralizationAllocation
     from inheritance.regression import RegressionAllocation, TRegTask
     from inheritance.interaction import InteractionAllocation
@@ -50,7 +55,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
     store = SomaticStore.create(tmp_path / "somatic.jsonl", registry)
     cig_store = CigRecordStore()
 
-    for name in candidates:
+    for index, name in enumerate(candidates):
+        parent = "CIG-" + format(7 + index, "04d")
         envelope = mint_envelope(registry, name)
         store.add_candidate(envelope)  # real flow: candidate persisted by #9/#10
         gene_id = envelope["candidate"]["gene_id"]
@@ -59,7 +65,7 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
         if replay_pass_for is not None and name in replay_pass_for:
             rp = replay_pass_for[name]
         replay, ablation = coherent_stage11_children(
-            gene_id, replay_pass=rp, ablation_pass=delta >= 0.05,
+            gene_id, parent=parent, replay_pass=rp, ablation_pass=delta >= 0.05,
             ablation_delta=delta)
         # generalization: with/without per scope
         for scope, w_ok in (("in", gen_in_with), ("out", gen_out_with)):
@@ -102,7 +108,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
             candidate_envelope=envelope, frozen_rank=ranks[name],
             replay_evaluation=replay, ablation_evaluation=ablation,
             generalization_allocation=gen_alloc,
-            regression_allocation=treg))
+            regression_allocation=treg,
+            parent_cig_id=parent))
 
     interaction_alloc = InteractionAllocation(tasks=interaction_tasks(10))
     counter = _WordCounter()
@@ -110,7 +117,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
         registry=registry, base_config=g0_config(registry), runner=runner,
         budgets=BUDGETS, parent_cig_id=PARENT_CIG, mining_seed=MINING_SEED,
         token_counter=counter, interaction_allocation=interaction_alloc,
-        somatic_store=store, cig_record_store=cig_store)
+        somatic_store=store if commit_stores else None,
+        cig_record_store=cig_store if commit_stores else None)
     return orch, store, cig_store, runner, inputs, registry
 
 
@@ -124,6 +132,21 @@ class _WordCounter:
 
     def count_tokens(self, text: str) -> int:
         return len(text.split())
+
+
+def assert_live_bundle_exposed(cig_store, result):
+    """The live CigRecordStore holds the aggregate + all five children of
+    this candidate, and the whole store is consistent."""
+    agg_id = result.aggregate_cig_id
+    assert agg_id in cig_store.aggregates
+    stored_agg = cig_store.aggregates[agg_id]
+    assert stored_agg["candidate_gene_id"] == result.gene_id
+    assert sorted(stored_agg["child_records"]) == \
+        sorted(result.aggregate["child_records"])
+    assert len(stored_agg["child_records"]) == 5
+    for child_id in stored_agg["child_records"]:
+        assert child_id in cig_store.children
+    cig_store.require_consistent()
 
 
 def test_single_candidate_promotes_when_all_stages_pass(tmp_path):
@@ -140,9 +163,12 @@ def test_single_candidate_promotes_when_all_stages_pass(tmp_path):
     assert set(aggregate["stages"]) == {
         "replay", "ablation", "generalization_in_scope",
         "generalization_out_of_scope", "interaction_regression"}
-    # interaction vacuously passed (fewer than 2 eligible candidates)
+    # interaction vacuously passed (fewer than 2 eligible candidates) with
+    # an explicit reason
     stage4 = result.stage4_child["measurements"]
     assert stage4["interaction"]["pair_count"] == 0
+    assert stage4["interaction"]["vacuous"] is True
+    assert stage4["interaction"]["reason"]
     # atomic commit: somatic terminal decision = validated
     assert somatic.state(gene, 1) == "validated"
     # gate_reports references the AGGREGATE id only
@@ -151,6 +177,13 @@ def test_single_candidate_promotes_when_all_stages_pass(tmp_path):
     # origin/artifact/provenance unchanged; no assimilation
     assert stored["candidate"]["origin"] == "acquired"
     assert "cig_record" not in stored["candidate"]["provenance"]
+    # live CIG store: aggregate + five children exposed and consistent
+    assert_live_bundle_exposed(cig_store, result)
+    # the stage-4 child persists the exact regression generation settings
+    reg = stage4["regression"]
+    assert reg["eval_generation_settings"] == {
+        "temperature": 0.0, "max_tokens": 64,
+        "seed": MINING_SEED, "stop": []}
 
 
 def test_interaction_two_eligible_twenty_calls_shared_evidence(tmp_path):
@@ -165,11 +198,17 @@ def test_interaction_two_eligible_twenty_calls_shared_evidence(tmp_path):
     assert len(set(ix_calls)) == 20
     # both candidates promote (delta 0, not harmful)
     assert set(outcome.verdicts.values()) == {"promote"}
-    # both stage-4 children reference the SAME pair evidence hash
+    # both stage-4 children reference the SAME pair evidence hash AND embed
+    # the IDENTICAL canonical compact evidence record
     children = [r.stage4_child for r in outcome.results]
     hashes = [c["measurements"]["interaction"]["pair_evidence"][0]
                ["evidence_sha256"] for c in children]
     assert hashes[0] == hashes[1]
+    canonical = [c["measurements"]["interaction"]["pair_evidence"][0]
+                  ["canonical_evidence"] for c in children]
+    assert canonical[0] == canonical[1]
+    # canonical gene-id order (not caller order)
+    assert canonical[0]["gene_ids"] == ["a", "b"]
 
 
 def test_harmful_pair_eliminates_lower_contribution(tmp_path):
@@ -182,16 +221,17 @@ def test_harmful_pair_eliminates_lower_contribution(tmp_path):
     orch, somatic, cig_store, runner, inputs, registry = world
     outcome = orch.run(inputs)
     verdicts = outcome.verdicts
-    # a retained (higher contribution); b eliminated -> interaction stage
-    # fails for b -> reject
-    a_gene = "a"
-    b_gene = "b"
-    assert verdicts[a_gene] == "promote" or verdicts[a_gene] == "reject"
-    assert verdicts[b_gene] == "reject"
-    b_result = [r for r in outcome.results if r.gene_id == b_gene][0]
-    assert b_result.eliminated_by == a_gene
+    # a retained (higher contribution) and promotes; b eliminated ->
+    # interaction stage fails for b -> reject
+    assert verdicts["a"] == "promote"
+    assert verdicts["b"] == "reject"
+    b_result = [r for r in outcome.results if r.gene_id == "b"][0]
+    assert b_result.eliminated_by == "a"
     assert b_result.stage4_child["measurements"]["component_pass_flags"][
         "not_eliminated"] is False
+    # both live bundles exposed (b's reject is still a terminal CIG record)
+    for result in outcome.results:
+        assert_live_bundle_exposed(cig_store, result)
 
 
 def test_equal_contribution_tie_uses_earlier_frozen_rank(tmp_path):
@@ -222,7 +262,8 @@ def test_candidate_ordering_does_not_change_verdicts(tmp_path):
 
 
 def test_fewer_than_two_eligible_zero_pair_calls(tmp_path):
-    """Both candidates fail ablation -> both reject, zero interaction calls."""
+    """Both candidates fail ablation -> both reject, zero interaction calls,
+    explicit vacuous interaction reason."""
     world = build_world(tmp_path, candidates=("a", "b"),
                          ablation_deltas={"a": 0.0, "b": 0.0})
     orch, somatic, cig_store, runner, inputs, registry = world
@@ -231,7 +272,34 @@ def test_fewer_than_two_eligible_zero_pair_calls(tmp_path):
     assert ix_calls == []
     assert set(outcome.verdicts.values()) == {"reject"}
     for r in outcome.results:
-        assert r.stage4_child["measurements"]["interaction"]["pair_count"] == 0
+        inter = r.stage4_child["measurements"]["interaction"]
+        assert inter["pair_count"] == 0
+        assert inter["vacuous"] is True
+        assert inter["reason"]
+    # live bundles still exposed for the rejected candidates
+    for result in outcome.results:
+        assert_live_bundle_exposed(cig_store, result)
+
+
+def test_duplicate_parent_cig_ids_rejected_before_any_episode(tmp_path):
+    """Two candidates resolving to the SAME aggregate CIG id collide on the
+    per-candidate aggregate identity: rejected before any stage-3/4 runner
+    call."""
+    world = build_world(tmp_path, candidates=("a", "b"))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    colliding = [
+        GateCandidateInput(
+            candidate_envelope=inp.candidate_envelope, frozen_rank=inp.frozen_rank,
+            replay_evaluation=inp.replay_evaluation,
+            ablation_evaluation=inp.ablation_evaluation,
+            generalization_allocation=inp.generalization_allocation,
+            regression_allocation=inp.regression_allocation,
+            parent_cig_id=PARENT_CIG)  # BOTH forced to the same parent
+        for inp in inputs]
+    calls_before = len(runner.calls)
+    with pytest.raises(GateInputError, match="[Uu]NIQUE aggregate CIG ids"):
+        orch.run(colliding)
+    assert len(runner.calls) == calls_before
 
 
 def test_control_expression_of_target_aborts_no_child(tmp_path):
@@ -260,3 +328,78 @@ def test_reject_verdicts_when_replay_fails(tmp_path):
     # somatic decisions: rejected
     for r in outcome.results:
         assert somatic.state(r.gene_id, 1) == "rejected"
+
+
+def test_invalid_token_counter_fails_closed(tmp_path):
+    """validate_token_counter runs at orchestrator construction: a counter
+    with a blank identity or a non-integer count contract is rejected
+    before any episode."""
+    from inheritance.runner import RunnerContractError
+
+    class _BlankIdentity:
+        identity = "   "
+
+        def count_tokens(self, text: str) -> int:
+            return len(text.split())
+
+    class _FloatCounter:
+        identity = "float-counter"
+
+        def count_tokens(self, text: str):
+            return 1.5
+
+    registry = TraitRegistry(tmp_path / "registry")
+    common = dict(registry=registry, base_config=g0_config(registry),
+                  runner=ScriptedGateRunner(), budgets=BUDGETS,
+                  parent_cig_id=PARENT_CIG, mining_seed=MINING_SEED)
+    with pytest.raises(RunnerContractError, match="identity"):
+        CigGateOrchestrator(**common, token_counter=_BlankIdentity())
+    with pytest.raises(RunnerContractError, match="non-negative integer"):
+        CigGateOrchestrator(**common, token_counter=_FloatCounter())
+
+
+def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
+    """A structurally invalid #11 child (load_cig failure) and a wrong
+    exact child id each fail closed BEFORE any stage-3/4 runner call."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    calls_before = len(runner.calls)
+
+    # corrupt the replay child structurally: stage outside the CIG schema
+    # enum -> load_cig must reject it before any episode
+    replay = inputs[0].replay_evaluation
+    broken_child = dict(replay.child_record)
+    broken_child["stage"] = "bogus_stage"
+    broken_replay = type(replay)(
+        _passed=replay.passed, _successes_with=replay.successes_with,
+        _successes_without=replay.successes_without,
+        _delta_count=replay.delta_count, _delta_success=replay.delta_success,
+        _expression_ok=replay.expression_ok, _episodes=(),
+        _child_record=broken_child, _allocation=replay.allocation)
+    bad_input = GateCandidateInput(
+        candidate_envelope=inputs[0].candidate_envelope, frozen_rank=0,
+        replay_evaluation=broken_replay,
+        ablation_evaluation=inputs[0].ablation_evaluation,
+        generalization_allocation=inputs[0].generalization_allocation,
+        regression_allocation=inputs[0].regression_allocation)
+    from inheritance.gate import EvidenceCoherenceError
+    with pytest.raises(EvidenceCoherenceError, match="structurally invalid"):
+        orch.run([bad_input])
+    # wrong exact child id
+    wrong_id = dict(inputs[0].replay_evaluation.child_record)
+    wrong_id["cig_id"] = PARENT_CIG + "/S11-replay-typo"
+    wrong_replay = type(replay)(
+        _passed=replay.passed, _successes_with=replay.successes_with,
+        _successes_without=replay.successes_without,
+        _delta_count=replay.delta_count, _delta_success=replay.delta_success,
+        _expression_ok=replay.expression_ok, _episodes=(),
+        _child_record=wrong_id, _allocation=replay.allocation)
+    bad_input2 = GateCandidateInput(
+        candidate_envelope=inputs[0].candidate_envelope, frozen_rank=0,
+        replay_evaluation=wrong_replay,
+        ablation_evaluation=inputs[0].ablation_evaluation,
+        generalization_allocation=inputs[0].generalization_allocation,
+        regression_allocation=inputs[0].regression_allocation)
+    with pytest.raises(EvidenceCoherenceError, match="exact"):
+        orch.run([bad_input2])
+    assert len(runner.calls) == calls_before

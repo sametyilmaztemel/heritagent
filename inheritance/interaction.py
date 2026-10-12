@@ -9,12 +9,19 @@ delta_pair = mean(success_both - success_neither)
 harmful iff delta_pair < -0.05.
 
 Interaction evidence is SHARED between the two candidates of a pair: a
-deterministic evidence id/hash over the canonical ordered gene ids, the
-frozen 10-task allocation, paired outcomes + trajectories, locked settings,
-delta_pair and harmful flag. Each candidate's stage-4 child references the
-same evidence id; the compact pair measurements may be duplicated into both
-children for M0 simplicity and the canonical pair-evidence hash must be
-identical in both (tested).
+deterministic evidence id/hash over the CANONICAL (gene-id sorted) pair
+order, the frozen 10-task allocation, paired outcomes + trajectories,
+locked settings, delta_pair and harmful flag. Each candidate's stage-4
+child embeds the same canonical compact evidence record (byte-identical on
+both sides) plus the evidence hash, so the pair evidence is durably
+reconstructable from either child.
+
+The both-trait overlay preserves the exact base config and adds each
+candidate's target skill WITH its frozen target regulation (candidates
+never become constitutive by dropping an ``express_when`` condition). The
+neither-trait arm is the exact base config. Pair members are validated
+through the #11 overlay boundary; gene ids are always handled in canonical
+sorted order so caller order cannot change evidence or verdicts.
 
 Pair resolution happens ONLY after all pair evidence is computed:
 eliminate the lower-ablation-contribution candidate of each harmful pair;
@@ -26,15 +33,12 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from itertools import combinations
 
-from genome.validation.loader import load_somatic
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
 from runtime.model_adapters import GenerationSettings
 
 from inheritance.overlay import (
-    EvaluationConfigs,
     EvaluationSetupError,
     build_evaluation_configs,
 )
@@ -42,7 +46,6 @@ from inheritance.runner import (
     EvaluationIntegrityError,
     EvaluationTask,
     GateEpisodeRunner,
-    RunnerContractError,
     validate_outcome,
 )
 
@@ -84,6 +87,7 @@ class InteractionPairEvidence:
     _allocation: dict
     _evidence_sha256: str
     _locked_settings: dict
+    _canonical_evidence: dict           # durable compact record, hash domain
 
     @property
     def gene_ids(self) -> tuple[str, ...]:
@@ -113,17 +117,27 @@ class InteractionPairEvidence:
     def locked_settings(self) -> dict:
         return copy.deepcopy(self._locked_settings)
 
+    @property
+    def canonical_evidence(self) -> dict:
+        """The durable compact evidence record (the exact hash domain):
+        embedded identically in both candidates' stage-4 children."""
+        return copy.deepcopy(self._canonical_evidence)
+
 
 class InteractionEvaluator:
     """Evaluates both-traits-vs-neither for one unordered candidate pair,
     exactly once per pair."""
 
     def __init__(self, *, registry, base_config: RuntimeConfig,
-                 runner: GateEpisodeRunner, budgets: Budgets):
+                 runner: GateEpisodeRunner, budgets: Budgets,
+                 target_regulation_by_gene: dict | None = None):
         self._registry = registry
         self._base_config = base_config
         self._runner = runner
         self._budgets = budgets
+        # frozen per-candidate target regulations; a regulated candidate
+        # keeps its express_when condition in the both-trait overlay
+        self._target_regulation_by_gene = dict(target_regulation_by_gene or {})
 
     def evaluate_pair(self, envelope_a: dict, envelope_b: dict,
                        allocation: InteractionAllocation,
@@ -168,7 +182,13 @@ class InteractionEvaluator:
         harmful = delta_pair < HARMFUL_PAIR_DELTA
         allocation_meta = allocation.allocation_metadata()
         from trajectory.storage.canonical import canonical_json, sha256_hex
-        evidence_domain = {
+        locked = {"temperature": locked_settings.temperature,
+                   "max_tokens": locked_settings.max_tokens,
+                   "seed": locked_settings.seed,
+                   "stop": list(locked_settings.stop)}
+        # canonical compact evidence record = the exact hash domain; it is
+        # embedded (identically) in both candidates' stage-4 children
+        canonical_evidence = {
             "kind": "heritagent-interaction-pair",
             "gene_ids": list(gene_ids),
             "allocation": allocation_meta,
@@ -178,46 +198,51 @@ class InteractionEvaluator:
                                  for e in episodes],
             "delta_pair": delta_pair,
             "harmful": harmful,
-            "locked_settings": {"temperature": locked_settings.temperature,
-                                 "max_tokens": locked_settings.max_tokens,
-                                 "seed": locked_settings.seed,
-                                 "stop": list(locked_settings.stop)},
+            "locked_settings": locked,
         }
-        evidence_sha256 = sha256_hex(canonical_json(evidence_domain).encode("utf-8"))
+        evidence_sha256 = sha256_hex(
+            canonical_json(canonical_evidence).encode("utf-8"))
         return InteractionPairEvidence(
             _gene_ids=gene_ids, _delta_pair=delta_pair, _harmful=harmful,
             _episodes=tuple(copy.deepcopy(episodes)),
             _allocation=allocation_meta, _evidence_sha256=evidence_sha256,
-            _locked_settings={"temperature": locked_settings.temperature,
-                               "max_tokens": locked_settings.max_tokens,
-                               "seed": locked_settings.seed,
-                               "stop": list(locked_settings.stop)})
+            _locked_settings=dict(locked),
+            _canonical_evidence=copy.deepcopy(canonical_evidence))
 
     def _build_pair_configs(self, envelope_a: dict, envelope_b: dict
                              ) -> tuple[RuntimeConfig, RuntimeConfig, tuple[str, ...]]:
-        """Both-trait overlay = base + skill A + skill B (each independently
-        validated through the #11 overlay boundary); control = exact base
-        config with neither. Duplicate gene ids across pair members are
-        rejected before episodes."""
-        configs_a = build_evaluation_configs(self._base_config, envelope_a,
-                                              self._registry)
-        configs_b = build_evaluation_configs(self._base_config, envelope_b,
-                                              self._registry)
-        gene_a, gene_b = configs_a.target_gene_id, configs_b.target_gene_id
+        """Both-trait overlay = exact base + skill A + skill B (each
+        independently validated through the #11 overlay boundary, each with
+        its frozen target regulation); control = exact base config with
+        neither. Duplicate gene ids across pair members are rejected before
+        episodes. Returned gene ids are in CANONICAL (sorted) order and the
+        both-arm skills are inserted in that same canonical order."""
+        gene_a = envelope_a["candidate"]["gene_id"]
+        gene_b = envelope_b["candidate"]["gene_id"]
         if gene_a == gene_b:
             raise EvaluationSetupError(
                 f"interaction pair members share gene_id {gene_a!r}")
+        configs_a = build_evaluation_configs(
+            self._base_config, envelope_a, self._registry,
+            target_regulation=self._target_regulation_by_gene.get(gene_a))
+        configs_b = build_evaluation_configs(
+            self._base_config, envelope_b, self._registry,
+            target_regulation=self._target_regulation_by_gene.get(gene_b))
         existing = {s.gene_id for s in self._base_config.skills}
         clash = {gene_a, gene_b} & existing
         if clash:
             raise EvaluationSetupError(
                 f"pair genes {sorted(clash)} already exist in the base config")
+        gene_ids = tuple(sorted((gene_a, gene_b)))
+        configs_by_gene = {gene_a: configs_a, gene_b: configs_b}
         combined_skills = list(self._base_config.skills)
         regulation = dict(self._base_config.regulation)
-        for configs, gene in ((configs_a, gene_a), (configs_b, gene_b)):
-            target = [s for s in configs.with_trait.skills
+        for gene in gene_ids:
+            target = [s for s in
+                       configs_by_gene[gene].with_trait.skills
                        if s.gene_id == gene][0]
             combined_skills.append(target)
+            regulation.update(configs_by_gene[gene].with_trait.regulation)
         both = RuntimeConfig(
             genome_id=self._base_config.genome_id,
             policies=self._base_config.policies,
@@ -227,4 +252,4 @@ class InteractionEvaluator:
             policies=self._base_config.policies,
             skills=self._base_config.skills,
             regulation=dict(self._base_config.regulation))
-        return both, neither, (gene_a, gene_b)
+        return both, neither, gene_ids
