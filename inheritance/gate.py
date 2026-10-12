@@ -242,9 +242,7 @@ class CigGateOrchestrator:
                 base_config=self._base_config, runner=self._runner,
                 budgets=self._budgets, parent_cig_id=parent, mining_seed=seed,
                 target_regulation=self._target_regulation_by_gene.get(gid))
-            gen_results[gid] = evaluator.evaluate(
-                inp.generalization_allocation,
-                candidate_envelope=inp.candidate_envelope)
+            gen_results[gid] = evaluator.evaluate(inp.generalization_allocation)
 
         # step 4: regression + overhead for ALL candidates
         reg_results: dict[str, RegressionEvaluation] = {}
