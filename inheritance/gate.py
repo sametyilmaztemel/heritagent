@@ -399,11 +399,14 @@ class CigGateOrchestrator:
                  "runner_calls": 0,
                  "child_records": None, "aggregate_verdicts": None,
                  "somatic_states": None}
-        replay_hypothetical = {}
-        for tau in SENSITIVITY_TAU_C_GRID:
-            replay_hypothetical[f"tau_c={tau}"] = (
-                replay.successes_with >= 3
-                and replay.delta_count >= round(tau * 5))
+        # ADR-0002: tau_c grid applies ONLY to ablation; tau_r grid ONLY to
+        # regression. Replay/generalization/overhead remain fixed primary
+        # evidence. Interaction evidence exists only for the primary
+        # preliminary-eligible set: if a looser cell would make a previously
+        # ineligible candidate newly eligible but pair evidence is missing,
+        # that composition is marked not-identifiable.
+        replay_hypothetical = {"fixed": replay.successes_with >= 3
+                                 and replay.delta_count >= 2}
         ablation_hypothetical = {}
         for tau in SENSITIVITY_TAU_C_GRID:
             ablation_hypothetical[f"tau_c={tau}"] = (
@@ -413,9 +416,20 @@ class CigGateOrchestrator:
         for tau in SENSITIVITY_TAU_R_GRID:
             regression_hypothetical[f"tau_r={tau}"] = \
                 reg.regression_drop <= tau
-        grid["replay"] = replay_hypothetical
+        # interaction composition: identifiable only when the candidate was
+        # in the primary preliminary-eligible set (pair evidence was
+        # collected); otherwise marked not-identifiable
+        interaction_note = ("interaction evidence collected for the primary "
+                             "preliminary-eligible set only; looser-sensitivity "
+                             "compositions that would newly include previously "
+                             "ineligible candidates are not identifiable from "
+                             "existing T_gate evidence")
+        grid["replay"] = {"fixed_at": "successes_with >= 3/5 and delta >= +2/5",
+                           "hypothetical_pass": replay_hypothetical["fixed"]}
         grid["ablation"] = ablation_hypothetical
         grid["regression"] = regression_hypothetical
+        grid["interaction_note"] = interaction_note
+        grid["runner_calls"] = 0
         return grid
 
     # -- internals ------------------------------------------------------------------
