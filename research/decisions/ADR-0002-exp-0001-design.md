@@ -42,3 +42,27 @@ Date: 2026-10-02 · Status: REVISED — critic round 1 applied, re-review reques
 |---|---|---|
 | R1 | Global replay/generalization reserves too small for per-trait same-family/in-scope counts → family-indexed banks with guaranteed per-family counts (or pre-registered family-specific maxima) | Global reserves replaced by `replay_bank[family]` (≥ 4 valid unseen instances per family) and `generalization_bank[family]` (≥ 10 per family), disjoint from T_mine/T_reg/ablation/interaction/T_eval; stage 1 draws from `replay_bank[family-of-source-task]`, stage-3 in-scope from `generalization_bank[f]` over the trait's declared families. Feasibility fallback: family-specific **pre-registered maximum** recorded in the split manifest before run start when ALFWorld availability prevents the minimum. Reuse semantics unchanged: cross-trait reuse allowed + logged, within-trait no replacement. Bank construction adds no LLM calls; per-trait counts and total budget unchanged (design §2, §4, §7; manifest `evaluation_banks`) |
 | R2 | State explicitly that `applicability.task_families[]` is stripped from all runtime model inputs in every arm | Runtime input hygiene added (design §3; manifest `genome.runtime_input_policy`): evaluation-only metadata stripped from **all arms'** runtime inputs (A, B, C — not only the strict SkillRL projection); runtime prompt assembly consumes only the projected payload (`name`, `principle`, `when_to_apply`, `procedure`); tests assert absence of evaluation-only fields (checklist for #4/#7) |
+
+
+## Amendment A1 — M0 pairwise interaction contrast (2026-10-12, issue #12)
+
+The prereg worst-case interaction budget is 45 pairs x 10 tasks x 2
+conditions = 900 episodes for 10 traits. To keep M0 deterministic, bounded,
+and ordering-invariant, the interaction contrast is locked as:
+
+- **both traits vs neither trait** on the same 10 frozen interaction tasks;
+- one deterministic execution per task/condition; no single-trait reruns;
+- `delta_pair = mean(success_both - success_neither)`;
+- harmful iff `delta_pair < -0.05` (with n=10 this is a >=10pp observed drop);
+- each unordered pair evaluated exactly once globally; pair evidence shared
+  (same evidence id) between both candidates' stage-4 children;
+- harmful-pair resolution: retain the candidate with the higher stage-2
+  ablation contribution (delta_success); exact tie -> earlier frozen #9
+  candidate rank; ambiguous/missing rank -> fail closed;
+- all pair evidence computed first, eliminations resolved from the complete
+  harmful-pair set (evaluation order cannot change verdicts).
+
+Stage-4 pass iff regression passes AND expression overhead passes AND the
+candidate is not eliminated by interaction. Primary protocol stays locked:
+tau_c=0.05, n_resamples=10000, confidence=95%; threshold sensitivity is
+analysis-only recomputation over existing stage evidence.

@@ -30,7 +30,7 @@ from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
 from runtime.model_adapters import GenerationSettings
 
-CONDITIONS = ("with_trait", "without_trait")
+CONDITIONS = ("with_trait", "without_trait", "both", "neither")
 
 _TRAJECTORY_ID_PATTERN = re.compile(r"^T-[0-9a-zA-Z_-]+$")
 _PARENT_CIG_PATTERN = re.compile(r"^CIG-[0-9]{4,}$")
