@@ -179,7 +179,9 @@ class InteractionEvaluator:
             "delta_pair": delta_pair,
             "harmful": harmful,
             "locked_settings": {"temperature": locked_settings.temperature,
-                                  "max_tokens": locked_settings.max_tokens},
+                                 "max_tokens": locked_settings.max_tokens,
+                                 "seed": locked_settings.seed,
+                                 "stop": list(locked_settings.stop)},
         }
         evidence_sha256 = sha256_hex(canonical_json(evidence_domain).encode("utf-8"))
         return InteractionPairEvidence(
@@ -187,7 +189,9 @@ class InteractionEvaluator:
             _episodes=tuple(copy.deepcopy(episodes)),
             _allocation=allocation_meta, _evidence_sha256=evidence_sha256,
             _locked_settings={"temperature": locked_settings.temperature,
-                               "max_tokens": locked_settings.max_tokens})
+                               "max_tokens": locked_settings.max_tokens,
+                               "seed": locked_settings.seed,
+                               "stop": list(locked_settings.stop)})
 
     def _build_pair_configs(self, envelope_a: dict, envelope_b: dict
                              ) -> tuple[RuntimeConfig, RuntimeConfig, tuple[str, ...]]:
@@ -208,15 +212,19 @@ class InteractionEvaluator:
         if clash:
             raise EvaluationSetupError(
                 f"pair genes {sorted(clash)} already exist in the base config")
-        combined_skills = (configs_a.with_trait.skills[-1],
-                            configs_b.with_trait.skills[-1])
-        regulation = dict(configs_a.with_trait.regulation)
-        regulation.update(configs_b.with_trait.regulation)
+        combined_skills = list(self._base_config.skills)
+        regulation = dict(self._base_config.regulation)
+        for configs, gene in ((configs_a, gene_a), (configs_b, gene_b)):
+            target = [s for s in configs.with_trait.skills
+                       if s.gene_id == gene][0]
+            combined_skills.append(target)
         both = RuntimeConfig(
             genome_id=self._base_config.genome_id,
             policies=self._base_config.policies,
-            skills=combined_skills, regulation=regulation)
+            skills=tuple(combined_skills), regulation=regulation)
         neither = RuntimeConfig(
             genome_id=self._base_config.genome_id,
-            policies=self._base_config.policies, skills=(), regulation={})
+            policies=self._base_config.policies,
+            skills=self._base_config.skills,
+            regulation=dict(self._base_config.regulation))
         return both, neither, (gene_a, gene_b)

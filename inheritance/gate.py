@@ -255,10 +255,12 @@ class CigGateOrchestrator:
                 raise GateInputError(
                     "stage-4B expression overhead requires a TokenCounter; "
                     "no counter was supplied")
+            parent, seed = self._parent_seed_for(inp)
             reg_evaluator = RegressionEvaluator(
                 candidate_envelope=inp.candidate_envelope, registry=self._registry,
                 base_config=self._base_config, runner=self._runner,
-                budgets=self._budgets,
+                budgets=self._budgets, parent_cig_id=parent,
+                mining_seed=seed,
                 target_regulation=self._target_regulation_by_gene.get(gid))
             reg_results[gid] = reg_evaluator.evaluate(inp.regression_allocation)
             target = [s for s in self._configs_by_gene(inp).with_trait.skills

@@ -55,20 +55,55 @@ class TokenCounter(Protocol):
     def count_tokens(self, text: str) -> int: ...
 
 
+def validate_token_counter(counter) -> None:
+    """Fail closed on invalid counter contracts: empty/non-string identity
+    or a non-callable/non-negative count_tokens."""
+    identity = getattr(counter, "identity", None)
+    if not isinstance(identity, str) or not identity.strip():
+        raise RunnerContractError(
+            f"TokenCounter.identity must be a non-empty stable string, got "
+            f"{identity!r}")
+    count = getattr(counter, "count_tokens", None)
+    if not callable(count):
+        raise RunnerContractError("TokenCounter.count_tokens must be callable")
+    probe = count("")
+    if not isinstance(probe, int) or isinstance(probe, bool) or probe < 0:
+        raise RunnerContractError(
+            f"TokenCounter.count_tokens must return a non-negative integer, "
+            f"got {probe!r}")
+
+
+def deep_freeze_json(obj):
+    """Recursive freeze for JSON-like payloads (TRegTask hardening)."""
+    import types
+    if isinstance(obj, dict):
+        import types as _t
+        return _t.MappingProxyType({k: deep_freeze_json(v) for k, v in obj.items()})
+    if isinstance(obj, list):
+        return tuple(deep_freeze_json(v) for v in obj)
+    return obj
+
+
 @dataclass(frozen=True)
 class TRegTask:
     """One frozen T_reg task with immutable baseline provenance: G0 already
     solved it, and ``baseline_trajectory_id`` points at that successful #8
-    trajectory. The baseline is never rerun."""
+    trajectory. The payload is deep-frozen at construction and
+    ``baseline_success`` is explicitly True per task."""
 
     task_id: str
     family: str
     baseline_trajectory_id: str
+    baseline_success: bool = True
     payload: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        import copy as _copy
-        object.__setattr__(self, "payload", _copy.deepcopy(self.payload))
+        object.__setattr__(self, "payload", deep_freeze_json(self.payload))
+        if self.baseline_success is not True:
+            raise ValueError(
+                f"T_reg task {self.task_id!r} must carry baseline_success=True "
+                f"(the original G0 successful trajectory), got "
+                f"{self.baseline_success!r}")
         if not self.baseline_trajectory_id or \
                 not self.baseline_trajectory_id.startswith("T-"):
             raise ValueError(
@@ -84,8 +119,9 @@ class RegressionAllocation:
     tasks: tuple[TRegTask, ...]
 
     def __post_init__(self):
-        import copy as _copy
-        object.__setattr__(self, "tasks", _copy.deepcopy(self.tasks))
+        # TRegTask objects are already deeply immutable; reuse them as-is so
+        # the frozen (mappingproxy) payload trees are never pickled/copied
+        object.__setattr__(self, "tasks", tuple(self.tasks))
         if len(self.tasks) != REGRESSION_TASK_COUNT:
             raise ValueError(
                 f"T_reg allocation requires exactly {REGRESSION_TASK_COUNT} "
@@ -145,15 +181,21 @@ class RegressionEvaluator:
 
     def __init__(self, *, candidate_envelope: dict, registry,
                  base_config: RuntimeConfig, runner: GateEpisodeRunner,
-                 budgets: Budgets, target_regulation=None):
+                 budgets: Budgets, parent_cig_id: str, mining_seed: int,
+                 target_regulation=None):
         self._configs: EvaluationConfigs = build_evaluation_configs(
             base_config, candidate_envelope, registry,
             target_regulation=target_regulation)
         self._candidate_gene_id = self._configs.target_gene_id
         self._runner = runner
         self._budgets = budgets
+        self._parent_cig_id = parent_cig_id
+        self._mining_seed = mining_seed
+        # locked settings derived from the same candidate mining seed +
+        # budgets contract as the other stages
         self._settings = GenerationSettings(
-            temperature=0.0, max_tokens=budgets.max_tokens_per_request)
+            temperature=0.0, max_tokens=budgets.max_tokens_per_request,
+            seed=mining_seed)
 
     def evaluate(self, allocation: RegressionAllocation) -> RegressionEvaluation:
         episodes: list[dict] = []
