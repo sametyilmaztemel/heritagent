@@ -10,11 +10,13 @@ harmful iff delta_pair < -0.05.
 
 Interaction evidence is SHARED between the two candidates of a pair: a
 deterministic evidence id/hash over the CANONICAL (gene-id sorted) pair
-order, the frozen 10-task allocation, paired outcomes + trajectories,
-locked settings, delta_pair and harmful flag. Each candidate's stage-4
-child embeds the same canonical compact evidence record (byte-identical on
-both sides) plus the evidence hash, so the pair evidence is durably
-reconstructable from either child.
+order, the frozen 10-task allocation with COMPLETE per-task provenance
+(task_id, family, bank_id, deterministic payload digest), paired outcomes
+(success, trajectory_id, expressed_gene_ids), exact locked settings
+(temperature/max_tokens/seed/stop), delta_pair and harmful flag. Each
+candidate's stage-4 child embeds the same canonical compact evidence
+record (byte-identical on both sides) plus the evidence hash, so the pair
+evidence is durably reconstructable from either child.
 
 The both-trait overlay preserves the exact base config and adds each
 candidate's target skill WITH its frozen target regulation (candidates
@@ -53,6 +55,17 @@ INTERACTION_TASK_COUNT = 10
 HARMFUL_PAIR_DELTA = -0.05
 
 
+def _plain_json(obj):
+    """Convert frozen (mappingproxy/tuple) payload trees back into plain
+    JSON-serializable structures for canonical hashing."""
+    import types
+    if isinstance(obj, (dict, types.MappingProxyType)):
+        return {k: _plain_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_plain_json(v) for v in obj]
+    return obj
+
+
 @dataclass(frozen=True)
 class InteractionAllocation:
     """The frozen 10-task interaction allocation shared by every evaluated
@@ -72,8 +85,17 @@ class InteractionAllocation:
             raise ValueError("interaction task ids must be distinct")
 
     def allocation_metadata(self) -> dict:
+        """Complete task provenance: per task the id, family, bank id and a
+        deterministic payload digest (benchmark identity)."""
+        from trajectory.storage.canonical import canonical_json, sha256_hex
         return {"task_count": len(self.tasks),
-                 "task_ids": [t.task_id for t in self.tasks]}
+                 "task_ids": [t.task_id for t in self.tasks],
+                 "tasks": [{"task_id": t.task_id, "family": t.family,
+                             "bank_id": t.bank_id,
+                             "payload_sha256": sha256_hex(canonical_json(
+                                 _plain_json(dict(t.payload)))
+                                 .encode("utf-8"))}
+                            for t in self.tasks]}
 
 
 @dataclass(frozen=True)
@@ -192,9 +214,12 @@ class InteractionEvaluator:
             "kind": "heritagent-interaction-pair",
             "gene_ids": list(gene_ids),
             "allocation": allocation_meta,
-            "paired_outcomes": [{"task_id": e["task_id"], "condition": e["condition"],
+            "paired_outcomes": [{"task_id": e["task_id"],
+                                  "condition": e["condition"],
                                   "success": e["success"],
-                                  "trajectory_id": e["trajectory_id"]}
+                                  "trajectory_id": e["trajectory_id"],
+                                  "expressed_gene_ids":
+                                      list(e["expressed_gene_ids"])}
                                  for e in episodes],
             "delta_pair": delta_pair,
             "harmful": harmful,

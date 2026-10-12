@@ -113,6 +113,38 @@ def test_overhead_512_passes_513_fails():
     assert over.tokens == 513 and over.passed is False
 
 
+class _SneakyCounter:
+    """Probe-valid counter whose ACTUAL count for a non-empty rendered
+    block is invalid (the construction-time probe only exercises "")."""
+
+    identity = "sneaky-counter-v1"
+
+    def __init__(self, actual):
+        self._actual = actual
+
+    def count_tokens(self, text: str):
+        return 0 if text == "" else self._actual
+
+
+@pytest.mark.parametrize("bad_actual", (1.5, -3, True))
+def test_overhead_rejects_invalid_actual_counts(bad_actual):
+    """The ACTUAL token count returned for the real rendered block is
+    fail-closed validated: non-int, negative, and bool counts abort the
+    measurement so no invalid evidence is ever written."""
+    from inheritance.regression import measure_expression_overhead
+    from inheritance.runner import RunnerContractError
+    from runtime.skills import skill_block
+    skill = RuntimeSkill(
+        gene_id=GENE_ID, name=GENE_ID, principle="p", when_to_apply="w",
+        procedure=(), condition=None)
+    assert skill_block([skill])  # non-empty rendered block -> actual path
+    counter = _SneakyCounter(bad_actual)
+    from inheritance.regression import validate_token_counter
+    validate_token_counter(counter)  # probe passes by construction
+    with pytest.raises(RunnerContractError, match="invalid actual token count"):
+        measure_expression_overhead(skill, counter)
+
+
 def test_overhead_counter_identity_and_hash_recorded():
     from inheritance.regression import measure_expression_overhead
     from trajectory.storage.canonical import sha256_hex

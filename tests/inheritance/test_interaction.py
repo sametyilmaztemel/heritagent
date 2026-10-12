@@ -98,7 +98,25 @@ def test_canonical_evidence_is_durable_and_hash_domain(world):
     assert len(record["paired_outcomes"]) == 20
     assert record["delta_pair"] == evidence.delta_pair
     assert record["harmful"] == evidence.harmful
-    assert record["locked_settings"]["seed"] == MINING_SEED
+    # complete task provenance: task_id + family + bank_id + payload digest
+    tasks = record["allocation"]["tasks"]
+    assert [t["task_id"] for t in tasks] == \
+        [f"ix-{i}" for i in range(10)]
+    for task in tasks:
+        assert task["family"] == "heat_and_place"
+        assert task["bank_id"] == "interaction_bank"
+        assert len(task["payload_sha256"]) == 64
+    # paired outcomes carry the expression observation
+    for outcome in record["paired_outcomes"]:
+        assert set(outcome) == {"task_id", "condition", "success",
+                                 "trajectory_id", "expressed_gene_ids"}
+    assert record["paired_outcomes"][0]["expressed_gene_ids"] == \
+        ["a_pair", "z_pair"]
+    # EXACT locked settings incl. stop
+    assert record["locked_settings"] == {"temperature": 0.0,
+                                          "max_tokens": 64,
+                                          "seed": MINING_SEED,
+                                          "stop": []}
     # frozen: mutating the returned copy does not corrupt future reads
     record["delta_pair"] = 99.0
     assert evidence.canonical_evidence["delta_pair"] == evidence.delta_pair

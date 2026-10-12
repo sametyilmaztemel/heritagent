@@ -395,11 +395,14 @@ class CigGateOrchestrator:
 
         Per (tau_c, tau_r) cell the hypothetical eligible set is recomposed
         from the frozen stage evidence (replay/generalization/overhead
-        fixed; ablation under tau_c, regression under tau_r). A cell whose
-        hypothetical eligible set would NEWLY include candidates without
-        collected interaction evidence is marked ``not_identifiable``;
-        identifiable cells report the recomposed elimination + promote
-        sets recomputed from the existing pair evidence."""
+        fixed; ablation under tau_c, regression under tau_r). A cell is
+        identifiable iff the interaction pair evidence REQUIRED by its
+        hypothetical eligible set — every unordered pair within that set —
+        was actually collected in the primary run; otherwise the cell is
+        marked ``not_identifiable`` with the exact missing pairs. A single
+        newly eligible candidate requires no pairs and stays
+        identifiable; identifiable cells report the recomposed elimination
+        + promote sets recomputed from the existing pair evidence."""
         run = self._last
         if run is None:
             raise GateInputError("no primary run has been executed yet")
@@ -433,10 +436,11 @@ class CigGateOrchestrator:
         grid["regression"] = {f"tau_r={tau}": reg_drop[gene_id] <= tau
                                for tau in SENSITIVITY_TAU_R_GRID}
         grid["interaction_note"] = (
-            "interaction evidence collected for the primary "
-            "preliminary-eligible set only; cells whose hypothetical "
-            "eligible set would newly include candidates without collected "
-            "pair evidence are marked not_identifiable")
+            "interaction pair evidence exists only for pairs collected in "
+            "the primary preliminary-eligible set; a cell is identifiable "
+            "iff every unordered pair within its hypothetical eligible set "
+            "was collected, otherwise it is marked not_identifiable with "
+            "the exact missing pairs")
         contribution = {gid: ablation_delta[gid] for gid in run.gene_ids}
         rank_by_gene = {inp.candidate_envelope["candidate"]["gene_id"]:
                          inp.frozen_rank for inp in run.inputs}
@@ -450,17 +454,26 @@ class CigGateOrchestrator:
                         and ablation_delta[gid] >= tau_c
                         and ablation_lb[gid] > 0
                         and reg_drop[gid] <= tau_r))
-                newly = sorted(set(hyp_eligible) - set(run.eligible))
+                # identifiability = REQUIRED pair evidence exists: every
+                # unordered pair WITHIN the hypothetical eligible set must
+                # have been collected in the primary run. A single (or
+                # empty) eligible set requires no pairs and stays
+                # identifiable even when its members were newly eligible.
+                required_pairs = sorted(
+                    tuple(sorted(pair))
+                    for pair in combinations(hyp_eligible, 2))
+                missing_pairs = [list(pair) for pair in required_pairs
+                                  if pair not in run.pair_evidence]
                 cell: dict = {"tau_c": tau_c, "tau_r": tau_r,
                                "hypothetical_eligible": hyp_eligible}
-                if newly:
+                if missing_pairs:
                     cell["identifiable"] = False
                     cell["not_identifiable"] = True
-                    cell["newly_eligible_requiring_interaction_evidence"] = newly
+                    cell["missing_interaction_pairs"] = missing_pairs
                     cell["reason"] = (
-                        "looser thresholds would newly make "
-                        f"{newly} preliminary-eligible, but no interaction "
-                        "pair evidence was ever collected for them; the "
+                        "identifying the interaction composition requires "
+                        f"pair evidence for {missing_pairs}, which was "
+                        "never collected in the primary run; the "
                         "composition cannot be identified from existing "
                         "T_gate evidence")
                 else:
@@ -530,7 +543,9 @@ class CigGateOrchestrator:
         own CIG run identity — BEFORE any stage-3/4 episode: structural
         ``load_cig`` validity, candidate match, exact
         ``<parent>/S<seed>-<stage>`` child ids, parent match, seed match,
-        stage names, pass agreement, settings provenance, unique child ids."""
+        stage names, pass agreement, EXACT locked eval settings
+        (temperature 0.0, gate max_tokens, resolved mining seed, empty
+        stop), and unique child ids."""
         gene_id = self._validated_of(inp.candidate_envelope)["candidate"]["gene_id"]
         parent, seed = self._parent_seed_for(inp)
         issues: list[str] = []
@@ -567,9 +582,25 @@ class CigGateOrchestrator:
                 issues.append(f"{stage} result.passed {evaluation.passed!r} != "
                                f"child measurements.stage_pass "
                                f"{m.get('stage_pass')!r}")
-            if "eval_generation_settings" not in m:
+            settings = m.get("eval_generation_settings")
+            if not isinstance(settings, dict):
                 issues.append(f"{stage} child lacks eval_generation_settings "
                                f"provenance")
+            else:
+                # EXACT deterministic-settings contract: the #11 evidence
+                # must have been produced under the locked evaluation
+                # settings this gate would have used — temperature 0, the
+                # gate budgets, the candidate's own mining seed, no stops
+                expected_settings = {"temperature": 0.0,
+                                      "max_tokens":
+                                          self._budgets.max_tokens_per_request,
+                                      "seed": seed,
+                                      "stop": []}
+                for key, expected in expected_settings.items():
+                    if settings.get(key) != expected:
+                        issues.append(
+                            f"{stage} eval_generation_settings.{key} "
+                            f"{settings.get(key)!r} != locked {expected!r}")
         if issues:
             raise EvidenceCoherenceError(sorted(issues))
 

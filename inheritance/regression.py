@@ -283,6 +283,14 @@ def measure_expression_overhead(runtime_skill, counter: TokenCounter) -> Overhea
     rendered = skill_block([runtime_skill])
     rendered_sha256 = sha256_hex(rendered.encode("utf-8"))
     tokens = counter.count_tokens(rendered)
+    # fail closed on the ACTUAL count for the real rendered block (the
+    # construction-time probe cannot cover this input): invalid counts
+    # never reach the evidence
+    if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 0:
+        raise RunnerContractError(
+            f"TokenCounter {counter.identity!r} returned an invalid actual "
+            f"token count {tokens!r} for the rendered block (must be a "
+            f"non-negative int, not bool); no overhead evidence written")
     # no evaluation-only metadata in the rendered block
     lowered = rendered.lower()
     for forbidden in ("applicability", "task_families", "estimated_generality",
