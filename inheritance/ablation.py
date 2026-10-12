@@ -56,8 +56,12 @@ class AblationAllocation:
 
     def __post_init__(self):
         import copy as _copy
+        import types
         object.__setattr__(self, "tasks", _copy.deepcopy(self.tasks))
-        object.__setattr__(self, "frozen_strata", _copy.deepcopy(self.frozen_strata))
+        # frozen_strata is exposed as an immutable mapping: mutation through
+        # the allocation's public surface raises TypeError after validation
+        object.__setattr__(self, "frozen_strata",
+                            types.MappingProxyType(_copy.deepcopy(dict(self.frozen_strata))))
         ids = [t.task_id for t in self.tasks]
         if len(ids) != ABLATION_INSTANCE_COUNT:
             raise ValueError(
@@ -135,6 +139,44 @@ class AblationEvaluation:
     def allocation(self) -> dict:
         return copy.deepcopy(self._allocation)
 
+    def sensitivity_analysis(self, *, tau_c: float, n_resamples: int,
+                              bootstrap_seed: int) -> dict:
+        """Pure threshold-sensitivity recomputation over this evaluation's
+        paired deltas: ZERO runner/model/environment calls, no child record,
+        no stage verdict, primary evidence untouched."""
+        return sensitivity_analysis(self._deltas, tau_c=tau_c,
+                                     n_resamples=n_resamples,
+                                     bootstrap_seed=bootstrap_seed)
+
+
+def sensitivity_analysis(deltas: list[float], *, tau_c: float,
+                          n_resamples: int, bootstrap_seed: int) -> dict:
+    """Pure threshold-sensitivity recomputation over EXISTING paired stage
+    deltas (ADR-0002: sensitivity is secondary recomputation on existing
+    stage evidence). Performs ZERO runner/model/environment calls, emits no
+    child record and no stage verdict, and never touches primary evidence.
+
+    This is the analysis-only counterpart to the LOCKED primary protocol
+    (AblationEvaluator.evaluate): arbitrary tau_c/n_resamples/seed are
+    permitted here because the result never enters the primary gate or the
+    somatic lifecycle."""
+    bootstrap = paired_cluster_bootstrap(
+        deltas, seed=bootstrap_seed, n_resamples=n_resamples)
+    return {
+        "analysis_only": True,
+        "deltas": list(deltas),
+        "bootstrap": {
+            "method": bootstrap.method, "seed": bootstrap.seed,
+            "n_resamples": bootstrap.n_resamples,
+            "lower_bound": bootstrap.lower_bound,
+            "upper_bound": bootstrap.upper_bound,
+        },
+        "tau_c": tau_c,
+        "meets_tau_c": bootstrap.point_estimate >= tau_c,
+        "child_record": None,   # analysis-only: never primary evidence
+        "stage_pass": None,     # analysis-only: never a stage verdict
+    }
+
 
 class AblationEvaluator:
     """Paired ablation evaluation of one somatic candidate over 20 tasks."""
@@ -165,45 +207,6 @@ class AblationEvaluator:
             base_config, candidate_envelope, registry,
             target_regulation=target_regulation)
         self._candidate_gene_id = self._configs.target_gene_id
-
-    def evaluate_analysis(self, allocation: AblationAllocation, *, tau_c: float,
-                           n_resamples: int, bootstrap_seed: int) -> dict:
-        """ANALYSIS-ONLY sensitivity evaluation (ADR-0002: threshold
-        sensitivity is secondary). Runs the same paired episodes but CANNOT
-        emit primary CIG evidence — returns analysis deltas/bootstrap only,
-        with no child record and no stage-pass verdict. Arbitrary tau_c/
-        n_resamples are permitted HERE because the analysis result never
-        enters the primary gate or the somatic lifecycle."""
-        from inheritance.overlay import evaluation_settings
-        settings = evaluation_settings(
-            max_tokens=self._budgets.max_tokens_per_request,
-            seed=self._mining_seed)
-        analysis_deltas: list[float] = []
-        for task in allocation.tasks:
-            outcomes: dict[str, bool] = {}
-            for condition, config in (("with_trait", self._configs.with_trait),
-                                       ("without_trait", self._configs.without_trait)):
-                outcome = self._runner.run_episode(task, config, self._budgets,
-                                                    condition, settings)
-                validate_outcome(outcome, task.task_id, condition, settings=settings)
-                outcomes[condition] = outcome.success
-            analysis_deltas.append(float(outcomes["with_trait"])
-                                    - float(outcomes["without_trait"]))
-        bootstrap = paired_cluster_bootstrap(
-            analysis_deltas, seed=bootstrap_seed, n_resamples=n_resamples)
-        return {
-            "analysis_only": True,
-            "deltas": analysis_deltas,
-            "bootstrap": {
-                "method": bootstrap.method, "seed": bootstrap.seed,
-                "n_resamples": bootstrap.n_resamples,
-                "lower_bound": bootstrap.lower_bound,
-                "upper_bound": bootstrap.upper_bound,
-            },
-            "tau_c": tau_c,
-            "child_record": None,   # analysis-only: never primary evidence
-            "stage_pass": None,     # analysis-only: never a stage verdict
-        }
 
     def evaluate(self, allocation: AblationAllocation) -> AblationEvaluation:
         """Run the paired 20-task ablation; returns immutable stage evidence

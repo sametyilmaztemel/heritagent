@@ -266,11 +266,12 @@ def test_locked_primary_protocol_values(tmp_path, registry, base_config, envelop
     assert m["stage_pass"] is True
 
 
-def test_analysis_only_api_cannot_emit_primary_child(tmp_path, registry, base_config,
-                                                      envelope):
-    """The analysis-only API runs arbitrary tau/n_resamples but returns no
-    child record and no stage verdict — primary evidence is untouchable."""
-    from inheritance.runner import EvaluationTask
+def test_sensitivity_recomputation_zero_runner_calls_and_primary_untouched(
+        tmp_path, registry, base_config, envelope):
+    """Sensitivity analysis is a PURE recomputation over the existing
+    paired deltas: ZERO additional runner calls, primary evidence
+    semantically unchanged, no child record, no stage verdict."""
+    from inheritance.ablation import sensitivity_analysis
     allocation = make_allocation(tmp_path, registry)
     evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
     outcomes = {}
@@ -278,10 +279,26 @@ def test_analysis_only_api_cannot_emit_primary_child(tmp_path, registry, base_co
         outcomes[(f"abl-{i}", "with_trait")] = (True, with_gene(True))
         outcomes[(f"abl-{i}", "without_trait")] = (False, ())
     evaluator._runner.outcomes = outcomes
-    analysis = evaluator.evaluate_analysis(
-        allocation, tau_c=0.10, n_resamples=500, bootstrap_seed=99)
+    result = evaluator.evaluate(allocation)
+    calls_after_primary = len(evaluator._runner.calls)
+    evidence_snapshot = (result.deltas, result.episodes,
+                          result.child_record, result.passed)
+
+    # pure recomputation with alternate thresholds — arbitrary tau/n/seed
+    analysis = sensitivity_analysis(result.deltas, tau_c=0.10, n_resamples=500,
+                                     bootstrap_seed=99)
     assert analysis["analysis_only"] is True
     assert analysis["child_record"] is None
     assert analysis["stage_pass"] is None
-    assert analysis["tau_c"] == 0.10  # analysis-only: arbitrary values allowed
-    assert len(analysis["deltas"]) == 20
+    assert analysis["tau_c"] == 0.10
+    assert analysis["deltas"] == list(result.deltas)
+
+    # ZERO additional runner calls
+    assert len(evaluator._runner.calls) == calls_after_primary
+    assert (result.deltas, result.episodes, result.child_record,
+             result.passed) == evidence_snapshot[:4]
+
+    # convenience on the evaluation object behaves identically
+    via_result = result.sensitivity_analysis(tau_c=0.10, n_resamples=500,
+                                              bootstrap_seed=99)
+    assert via_result == analysis
