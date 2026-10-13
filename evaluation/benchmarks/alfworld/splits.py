@@ -13,7 +13,8 @@ What this module decides and what it does not:
     per family, or a family-specific maximum pre-registered as a
     feasibility fallback where availability prevents the minimum (ADR-0004:
     the family has fewer accepted games than the locked floors through
-    that bank, and the bank takes every game still available);
+    that bank, takes only those floors from earlier pools, and the bank
+    takes every game left);
   - every train-side pool disjoint from every other;
   - T_eval = the whole official unseen split (134), never sampled.
 - It does **not** choose the per-family counts or the sampling seed. Those
@@ -174,9 +175,10 @@ class SplitPlan:
     must equal the declared maximum. The build accepts it only where
     availability prevents the minimum: the family has fewer accepted train
     games than the locked per-family floors of every pool up to and
-    including that bank, so no plan could meet the minimum. The declared
-    maximum must then equal the games of that family still available when
-    the bank is drawn, so the bank takes all of them (ADR-0004)."""
+    including that bank, so no plan could meet the minimum. The plan must
+    then give that family exactly its locked floors in every earlier pool,
+    and the declared maximum must equal the games left, so the bank size
+    follows from the data alone (ADR-0004)."""
 
     seed: int
     t_mine: Mapping[str, int]
@@ -320,10 +322,35 @@ def _locked_floor_through(pool: str) -> int:
     train set too small for every locked count at once (fewer than 174
     accepted games), it can reject a plan whose shortfall is real; that case
     is the owner's decision, not an allocation for the builder to search.
-    ALFWorld's train split is far larger (about 3,300 loader-accepted games;
-    the smallest family has about 300 before filtering), so the case is not
+    ALFWorld's train split is far larger (3,553 games and a smallest family
+    of 308 before loader filtering, per the prior analysis of the ALFWorld
+    split table; filtered counts are not yet verified), so the case is not
     expected there; the manifest records the loader's per-family counts."""
     return sum(POOL_PER_FAMILY_MIN.get(p, 0) for p in POOL_ORDER[:POOL_ORDER.index(pool) + 1])
+
+
+def _fallback_bank_size(plan: SplitPlan, pool: str, family: str, accepted: int) -> int:
+    """The size ADR-0004 fixes for a fallback bank: the family's accepted games
+    minus the locked floors of every earlier pool (T_mine 8, ablation 0,
+    interaction 0, and for the generalization bank replay 4 or the replay
+    fallback). The plan must give the family exactly those floors, so the
+    bank size follows from the data alone and the bank takes every game
+    left. Raises ``SplitError`` naming the first earlier pool that differs."""
+    left = accepted
+    for earlier in POOL_ORDER[:POOL_ORDER.index(pool)]:
+        floor = POOL_PER_FAMILY_MIN.get(earlier, 0)
+        need = min(floor, left) if earlier in FALLBACK_POOLS else floor
+        if need > left:
+            raise SplitError(f"{pool}[{family}]: {accepted} accepted train games cannot meet "
+                             f"the locked {earlier} minimum {floor}, which has no fallback")
+        got = plan.counts(earlier).get(family, 0)
+        if got != need:
+            raise SplitError(
+                f"{pool}[{family}]: a fallback family takes only its locked floors from "
+                f"earlier pools (ADR-0004), so {earlier}[{family}] must be {need}; the plan "
+                f"has {got}")
+        left -= need
+    return left
 
 
 def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
@@ -347,6 +374,14 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
                     f"{accepted[family]} accepted train games, enough for the locked per-family "
                     f"floors through this bank ({floor}), so availability does not prevent "
                     f"the locked minimum {POOL_PER_FAMILY_MIN[pool]}")
+    for pool in POOL_ORDER:  # draw order: an earlier bank's own error comes first
+        for family, maximum in plan.feasibility_fallback.get(pool, {}).items():
+            target = _fallback_bank_size(plan, pool, family, accepted[family])
+            if maximum != target:
+                raise SplitError(
+                    f"{pool}[{family}]: the pre-registered fallback maximum {maximum} must equal "
+                    f"the {target} games the data leaves for this bank ({accepted[family]} "
+                    f"accepted minus the locked floors of the earlier pools; ADR-0004)")
     pools = {}
     for pool in POOL_ORDER:
         games = []
@@ -354,14 +389,8 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
         for family in ALFWORLD_TASK_TYPES:
             k = plan.counts(pool).get(family, 0)
             if family in plan.feasibility_fallback.get(pool, {}):
-                available = len(remaining[family])
-                if k != available:
-                    raise SplitError(
-                        f"{pool}[{family}]: the pre-registered fallback maximum {k} must equal "
-                        f"the {available} games available at the draw (ADR-0004: a fallback "
-                        f"bank takes every remaining game of the family)")
                 fallback_evidence[family] = {
-                    "maximum": k, "available_at_draw": available,
+                    "maximum": k, "available_at_draw": len(remaining[family]),
                     "accepted_in_train": accepted[family],
                     "locked_floor_through_bank": _locked_floor_through(pool),
                     "locked_minimum": POOL_PER_FAMILY_MIN[pool]}
