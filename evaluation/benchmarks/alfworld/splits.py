@@ -11,7 +11,7 @@ What this module decides and what it does not:
   - T_gate pools: ablation 20, interaction 10;
   - family-indexed banks: replay at least 4 and generalization at least 10
     per family, or a family-specific maximum pre-registered as a
-    feasibility fallback;
+    feasibility fallback where availability prevents the minimum;
   - every train-side pool disjoint from every other;
   - T_eval = the whole official unseen split (134), never sampled.
 - It does **not** choose the per-family counts or the sampling seed. Those
@@ -79,7 +79,8 @@ class GameInstance:
     ``game_id`` is the trial directory relative to the split directory
     (POSIX), e.g. ``pick_heat_then_place_in_recep-Egg-None-Fridge-13/trial_T1``.
     ``content_sha256`` covers the bytes of ``traj_data.json`` and
-    ``game.tw-pddl``, so a changed game file changes the manifest."""
+    ``game.tw-pddl``, so a changed file of any game in the manifest changes
+    its pool hash and the manifest hash."""
 
     game_id: str
     family: str
@@ -164,7 +165,9 @@ class SplitPlan:
     ``feasibility_fallback[pool][family]`` declares a family-specific maximum
     below the per-family minimum of a bank (design §2). It is allowed only for
     the replay and generalization banks, and the count used for that family
-    must equal the declared maximum."""
+    must equal the declared maximum. The build accepts it only where
+    availability prevents the minimum: fewer games than the minimum remain
+    for that family when the bank is drawn."""
 
     seed: int
     t_mine: Mapping[str, int]
@@ -205,8 +208,15 @@ def validate_plan(plan: SplitPlan) -> None:
     for pool, fallback in plan.feasibility_fallback.items():
         if pool not in FALLBACK_POOLS:
             raise SplitError(f"feasibility fallback is only allowed for {FALLBACK_POOLS}, not {pool!r}")
+        minimum = POOL_PER_FAMILY_MIN[pool]
         for family, maximum in fallback.items():
-            if plan.counts(pool).get(family) != maximum:
+            if family not in ALFWORLD_TASK_TYPES:
+                raise SplitError(f"{pool}: fallback for unknown family {family!r}")
+            if isinstance(maximum, bool) or not isinstance(maximum, int) \
+                    or not 0 <= maximum < minimum:
+                raise SplitError(f"{pool}[{family}]: fallback maximum must be an int in "
+                                 f"[0, {minimum}), below the locked minimum, got {maximum!r}")
+            if plan.counts(pool).get(family, 0) != maximum:
                 raise SplitError(f"{pool}[{family}]: count must equal the pre-registered "
                                  f"fallback maximum {maximum}")
     for pool in POOL_ORDER:
@@ -303,8 +313,18 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
     pools = {}
     for pool in POOL_ORDER:
         games = []
+        fallback_evidence = {}
         for family in ALFWORLD_TASK_TYPES:
             k = plan.counts(pool).get(family, 0)
+            if family in plan.feasibility_fallback.get(pool, {}):
+                minimum = POOL_PER_FAMILY_MIN[pool]
+                available = len(remaining[family])
+                if available >= minimum:
+                    raise SplitError(f"{pool}[{family}]: a fallback maximum {k} is pre-registered, "
+                                     f"but {available} games remain, so availability does not "
+                                     f"prevent the locked minimum {minimum}")
+                fallback_evidence[family] = {"maximum": k, "available_at_draw": available,
+                                             "locked_minimum": minimum}
             if not k:
                 continue
             drawn = _draw(remaining[family], k, plan.seed, pool, family)
@@ -316,6 +336,8 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
                        "family_counts": {f: sum(g.family == f for g in games)
                                          for f in ALFWORLD_TASK_TYPES if any(g.family == f for g in games)},
                        "games": records, "sha256": _sha256(records)}
+        if fallback_evidence:
+            pools[pool]["feasibility_fallback"] = fallback_evidence
     eval_records = [g.record() for g in unseen.accepted]
     pools["t_eval"] = {"source": "valid_unseen", "sampled": False,
                        "family_counts": {f: len(g) for f, g in unseen.by_family().items() if g},
