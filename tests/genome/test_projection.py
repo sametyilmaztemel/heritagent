@@ -64,7 +64,7 @@ def test_whole_genome_projection_is_clean(registry):
     text = json.dumps(projection)
     for key in EVALUATION_ONLY_KEYS:
         assert f'"{key}"' not in text, f"evaluation-only key {key} leaked into runtime projection"
-    assert projection["genome_id"] == "G-a1b2c3d4"
+    assert projection["genome_id"] == genome["genome_id"]  # canonical content-hash id carried through
     assert projection["genes"]["skills"][0]["procedure"][0]["id"] == "S1"
     assert projection["genes"]["cognition"]["planner"] == {"style": "react", "max_plan_steps": 8}
     assert "regulation" in projection  # regulation is runtime logic, not evaluation metadata

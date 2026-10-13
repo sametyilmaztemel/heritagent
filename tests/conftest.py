@@ -33,8 +33,22 @@ def fake_uri(kind: str, name: str, version: int, digest: str = HEX64) -> str:
     return f"registry://{kind}/{name}@{version}/sha256:{digest}"
 
 
+def finalize_genome(genome: dict) -> dict:
+    """Set the canonical content-hash ``genome_id`` on a fully built genome
+    (ADR-0001 Amendment A2 / issue #22): compute from the heritable
+    functional content, never hard-code."""
+    from genome.validation.identity import compute_genome_id
+    genome["genome_id"] = compute_genome_id(genome)
+    return genome
+
+
 def minimal_genome(**overrides) -> dict:
-    """Grammar-valid genome with placeholder digests (structural tests)."""
+    """Grammar-valid genome with placeholder digests (structural tests).
+
+    The canonical content-hash id is computed over the BASE content unless
+    the caller overrides ``genome_id`` explicitly (rejection tests).
+    Callers that mutate functional CONTENT must recompute via
+    :func:`finalize_genome` before a positive ``load_genome``."""
     genome = {
         "genome_id": "G-deadbeef",
         "schema_version": "0.1",
@@ -62,6 +76,8 @@ def minimal_genome(**overrides) -> dict:
         },
     }
     genome.update(overrides)
+    if "genome_id" not in overrides:
+        finalize_genome(genome)
     return genome
 
 
@@ -81,7 +97,7 @@ def registered_genome(registry: TraitRegistry) -> dict:
             {"id": "S2", "text": "examine affordances"},
         ],
     })
-    return {
+    return finalize_genome({
         "genome_id": "G-a1b2c3d4",
         "schema_version": "0.1",
         "generation": 1,
@@ -114,7 +130,7 @@ def registered_genome(registry: TraitRegistry) -> dict:
                 "express_when": {"all_of": [{"metric": "consecutive_failures", "op": ">=", "value": 2}]}
             }
         },
-    }
+    })
 
 
 def registered_parent_genome(registry: TraitRegistry) -> dict:
@@ -123,7 +139,7 @@ def registered_parent_genome(registry: TraitRegistry) -> dict:
                                {"style": "react", "max_plan_steps": 8})
     retry_uri = registry.put("policy", "retry_backoff_v1", 1,
                              {"max_retries": 3, "backoff": "exponential"})
-    return {
+    return finalize_genome({
         "genome_id": "G-0f1e2d3c",
         "schema_version": "0.1",
         "generation": 0,
@@ -146,7 +162,7 @@ def registered_parent_genome(registry: TraitRegistry) -> dict:
             },
             "skills": [],
         },
-    }
+    })
 
 
 @pytest.fixture
