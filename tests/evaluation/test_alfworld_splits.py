@@ -285,10 +285,45 @@ def test_selection_rule_is_recomputable_for_every_pool(data):
 
 
 def test_not_enough_games_fails_closed(tmp_path, data):
+    """22 games per family meet every floor, but full_plan spends 20 of them
+    before the generalization bank: the draw fails, naming the shortfall."""
     _, _, unseen = data
-    small = collect_games(make_split(tmp_path / "small", "train", {f: 20 for f in F}), "train")
-    with pytest.raises(SplitError, match="remain after earlier pools"):
+    small = collect_games(make_split(tmp_path / "small", "train", {f: 22 for f in F}), "train")
+    with pytest.raises(SplitError, match="needs 10 games, 2 remain after earlier pools"):
         build_split_manifest(small, unseen, full_plan())
+
+
+@pytest.mark.parametrize("size,pool,floor,minimum,target", [
+    (20, "generalization_bank", 22, 10, 8),   # replay can be met, generalization cannot
+    (10, "replay_bank", 12, 4, 2),            # replay already short: its error comes first
+])
+def test_a_shortfall_without_a_fallback_names_the_fallback_to_register(tmp_path, data, size,
+                                                                       pool, floor, minimum,
+                                                                       target):
+    """Review of #50: data too small for a bank's minimum, and no fallback
+    pre-registered: the error names the fallback ADR-0004 requires."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = size
+    train = collect_games(make_split(tmp_path / "nf", "train", sizes), "train")
+    with pytest.raises(SplitError, match=rf"{pool}\[{F[1]}\]: the family has {size} accepted "
+                                         rf"train games, fewer than .*\({floor}\), so no plan "
+                                         rf"meets the locked minimum {minimum}; pre-register a "
+                                         rf"{pool} fallback of {target}"):
+        build_split_manifest(train, unseen, scarce_plan())
+
+
+def test_bank_errors_are_reported_in_draw_order(tmp_path, data):
+    """Review of #50: an invalid replay fallback is reported before an
+    invalid generalization fallback, whatever the plan's key order."""
+    _, _, unseen = data
+    train = collect_games(make_split(tmp_path / "do", "train", {f: 35 for f in F}), "train")
+    plan = full_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[2]: 3},
+                             "generalization_bank": {**{f: 10 for f in F}, F[1]: 9}},
+                     feasibility_fallback={"generalization_bank": {F[1]: 9},
+                                           "replay_bank": {F[2]: 3}})
+    with pytest.raises(SplitError, match=rf"^replay_bank\[{F[2]}\]"):
+        build_split_manifest(train, unseen, plan)
 
 
 def test_feasibility_fallback_builds_with_the_declared_maximum(tmp_path, data):
@@ -545,7 +580,7 @@ def test_generalization_fallback_names_the_missing_replay_fallback(tmp_path, dat
     train = collect_games(make_split(tmp_path / "rm", "train", sizes), "train")
     plan = scarce_plan(counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: 0}},
                        feasibility_fallback={"generalization_bank": {F[1]: 0}})
-    with pytest.raises(SplitError, match=r"the data leaves only 2 games for replay_bank\[.*"
+    with pytest.raises(SplitError, match=r"^replay_bank\[.*10 accepted train games.*"
                                          r"pre-register a replay_bank fallback of 2"):
         build_split_manifest(train, unseen, plan)
 
@@ -622,6 +657,9 @@ def test_family_below_the_t_mine_minimum_fails_closed(tmp_path, data):
     with pytest.raises(SplitError, match="5 accepted train games cannot meet the locked "
                                          "t_mine minimum 8"):
         build_split_manifest(train, unseen, plan)
+    with pytest.raises(SplitError, match="5 accepted train games cannot meet the locked "
+                                         "t_mine minimum 8"):  # not a misleading fallback hint
+        build_split_manifest(train, unseen, scarce_plan())
 
 
 def test_zero_fallback_for_a_family_omitted_from_the_bank_counts(tmp_path, data):
