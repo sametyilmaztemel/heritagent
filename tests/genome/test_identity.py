@@ -19,6 +19,7 @@ from genome.validation.identity import (
 )
 from genome.validation.loader import load_genome
 from tests.conftest import finalize_genome, minimal_genome
+from trajectory.storage.canonical import canonical_json
 
 DIGEST = "ab" * 32
 DIGEST2 = "cd" * 32
@@ -214,6 +215,97 @@ def test_absent_and_empty_regulation_are_equivalent():
     empty = copy.deepcopy(genome)
     empty["regulation"] = {}
     assert compute_genome_id(genome) == compute_genome_id(empty)
+
+
+# -- constitutive regulation canonical equivalence (A2) ----------------------
+
+
+def test_constitutive_regulation_representations_share_identity():
+    """No rule, `{}` and `{"express_when": {}}` are runtime-equivalent
+    (constitutive) — all three MUST produce the SAME identity payload and
+    genome_id; adding a real predicate must change it."""
+    stripped = base_genome()
+    del stripped["regulation"]["look_before_heat_v1"]
+    empty_rule = copy.deepcopy(stripped)
+    empty_rule["regulation"]["look_before_heat_v1"] = {}
+    empty_express = copy.deepcopy(stripped)
+    empty_express["regulation"]["look_before_heat_v1"] = {"express_when": {}}
+    empty_all_of = copy.deepcopy(stripped)
+    empty_all_of["regulation"]["look_before_heat_v1"] = {
+        "express_when": {"all_of": []}}
+    ids = {compute_genome_id(g) for g in
+            (stripped, empty_rule, empty_express, empty_all_of)}
+    assert len(ids) == 1
+    payloads = {canonical_json(canonical_genome_identity_payload(g))
+                 for g in (stripped, empty_rule, empty_express, empty_all_of)}
+    assert len(payloads) == 1
+    # an EFFECTIVE predicate stays in the identity domain
+    effective = copy.deepcopy(stripped)
+    effective["regulation"]["look_before_heat_v1"] = {"express_when": {
+        "all_of": [{"metric": "consecutive_failures", "op": ">=", "value": 2}]}}
+    assert compute_genome_id(effective) != ids.pop()
+    # any_of-only rule also stays in the identity domain
+    any_of_only = copy.deepcopy(stripped)
+    any_of_only["regulation"]["look_before_heat_v1"] = {"express_when": {
+        "any_of": [{"metric": "failing_tools", "op": ">=", "value": 1}]}}
+    assert compute_genome_id(any_of_only) != stripped["genome_id"]
+
+
+def test_constitutive_forms_are_runtime_equivalent():
+    """The three constitutive representations really do behave identically
+    at runtime (always active) before they are canonicalized together."""
+    from runtime.regulation import Condition, constitutive
+    gene = "look_before_heat_v1"
+    # absent from the regulation map
+    assert constitutive(gene, {}) is True
+    # empty condition object
+    assert Condition.from_genome({}).is_constitutive() is True
+    # empty express_when
+    assert Condition.from_genome({"express_when": {}}).is_constitutive() is True
+    config = {"genes": {}, "regulation": {gene: {}}}
+    assert Condition.from_genome(
+        config["regulation"][gene]).evaluate({}) is True
+
+
+# -- strict container typing: PRESENT malformed fields fail closed -----------
+
+
+@pytest.mark.parametrize("mutation", [
+    pytest.param(lambda g: g.update(genes=[]), id="genes list"),
+    pytest.param(lambda g: g["genes"].update(skills={}), id="skills dict"),
+    pytest.param(lambda g: g.update(regulation=[]), id="regulation list"),
+    pytest.param(lambda g: g["genes"].update(cognition=[]), id="policy section list"),
+    pytest.param(lambda g: g["genes"].update(memory=[]), id="memory section list"),
+    pytest.param(lambda g: g["regulation"].update(look_before_heat_v1=[]),
+                  id="condition list"),
+    pytest.param(lambda g: g["regulation"]["look_before_heat_v1"]
+        .update(express_when=[]), id="express_when list"),
+    pytest.param(lambda g: g["regulation"]["look_before_heat_v1"]["express_when"]
+        .update(all_of={}), id="all_of dict"),
+    pytest.param(lambda g: g["regulation"]["look_before_heat_v1"]["express_when"]
+        .update(any_of="metric>=1"), id="any_of string"),
+])
+def test_present_malformed_containers_fail_closed(mutation):
+    genome = base_genome()
+    mutation(genome)
+    with pytest.raises(GenomeValidationError, match="when present"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_absent_field_normalization_still_holds():
+    """ABSENT-field normalization is unchanged: absent policy section ==
+    {}, absent skills == [], absent regulation == {}."""
+    genome = base_genome()
+    del genome["genes"]["execution"]
+    del genome["genes"]["skills"]
+    del genome["regulation"]
+    populated = copy.deepcopy(genome)
+    populated["genes"]["execution"] = {}
+    populated["genes"]["skills"] = []
+    populated["regulation"] = {}
+    assert compute_genome_id(genome) == compute_genome_id(populated)
 
 
 # -- hash contract -----------------------------------------------------------
