@@ -214,9 +214,17 @@ class SplitPlan:
                    feasibility_fallback=data.get("feasibility_fallback", {}))
 
 
+def _fallbacks_in_draw_order(plan: SplitPlan):
+    """The plan's fallbacks by pool, in POOL_ORDER (unknown pool names last),
+    so a replay-bank error is always reported before a generalization one."""
+    rank = {pool: i for i, pool in enumerate(POOL_ORDER)}
+    return sorted(plan.feasibility_fallback.items(),
+                  key=lambda item: (rank.get(item[0], len(rank)), item[0]))
+
+
 def validate_plan(plan: SplitPlan) -> None:
     """Fail closed unless the plan satisfies every locked count rule."""
-    for pool, fallback in plan.feasibility_fallback.items():
+    for pool, fallback in _fallbacks_in_draw_order(plan):
         if pool not in FALLBACK_POOLS:
             raise SplitError(f"feasibility fallback is only allowed for {FALLBACK_POOLS}, not {pool!r}")
         minimum = POOL_PER_FAMILY_MIN[pool]
@@ -329,25 +337,29 @@ def _locked_floor_through(pool: str) -> int:
     return sum(POOL_PER_FAMILY_MIN.get(p, 0) for p in POOL_ORDER[:POOL_ORDER.index(pool) + 1])
 
 
+def _data_bank_size(pool: str, accepted: int) -> int:
+    """Games a family with ``accepted`` games has left for ``pool`` after the
+    locked floors of every earlier pool (ADR-0004), ignoring any plan."""
+    left = accepted
+    for earlier in POOL_ORDER[:POOL_ORDER.index(pool)]:
+        floor = POOL_PER_FAMILY_MIN.get(earlier, 0)
+        left -= min(floor, left) if earlier in FALLBACK_POOLS else floor
+    return max(left, 0)
+
+
 def _fallback_bank_size(plan: SplitPlan, pool: str, family: str, accepted: int) -> int:
     """The size ADR-0004 fixes for a fallback bank: the family's accepted games
     minus the locked floors of every earlier pool (T_mine 8, ablation 0,
     interaction 0, and for the generalization bank replay 4 or the replay
     fallback). The plan must give the family exactly those floors, so the
     bank size follows from the data alone and the bank takes every game
-    left. Raises ``SplitError`` naming the first earlier pool that differs."""
+    left. Raises ``SplitError`` naming the first earlier pool that differs.
+    The caller has already rejected families below the T_mine minimum and
+    shortfalls with no fallback registered."""
     left = accepted
     for earlier in POOL_ORDER[:POOL_ORDER.index(pool)]:
         floor = POOL_PER_FAMILY_MIN.get(earlier, 0)
         need = min(floor, left) if earlier in FALLBACK_POOLS else floor
-        if need > left:
-            raise SplitError(f"{pool}[{family}]: {accepted} accepted train games cannot meet "
-                             f"the locked {earlier} minimum {floor}, which has no fallback")
-        if need < floor and family not in plan.feasibility_fallback.get(earlier, {}):
-            raise SplitError(
-                f"{pool}[{family}]: the data leaves only {need} games for {earlier}[{family}], "
-                f"below its locked minimum {floor}; pre-register a {earlier} fallback of "
-                f"{need} for this family (ADR-0004)")
         got = plan.counts(earlier).get(family, 0)
         if got != need:
             raise SplitError(
@@ -370,17 +382,31 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
                          f"games), the loader accepted {len(unseen.accepted)}")
     remaining = train.by_family()
     accepted = {f: len(g) for f, g in remaining.items()}
-    for pool, fallback in plan.feasibility_fallback.items():
+    t_mine_minimum = POOL_PER_FAMILY_MIN["t_mine"]
+    for family in ALFWORLD_TASK_TYPES:
+        if accepted[family] < t_mine_minimum:
+            raise SplitError(f"t_mine[{family}]: {accepted[family]} accepted train games cannot "
+                             f"meet the locked t_mine minimum {t_mine_minimum}, which has no "
+                             f"fallback")
+    for pool in FALLBACK_POOLS:  # draw order: the replay bank's errors come first
         floor = _locked_floor_through(pool)
-        for family in fallback:
-            if accepted[family] >= floor:
+        minimum = POOL_PER_FAMILY_MIN[pool]
+        for family in ALFWORLD_TASK_TYPES:
+            short = accepted[family] < floor
+            if family in plan.feasibility_fallback.get(pool, {}) and not short:
                 raise SplitError(
                     f"{pool}[{family}]: a fallback is pre-registered, but the family has "
                     f"{accepted[family]} accepted train games, enough for the locked per-family "
                     f"floors through this bank ({floor}), so availability does not prevent "
-                    f"the locked minimum {POOL_PER_FAMILY_MIN[pool]}")
-    for pool in POOL_ORDER:  # draw order: an earlier bank's own error comes first
-        for family, maximum in plan.feasibility_fallback.get(pool, {}).items():
+                    f"the locked minimum {minimum}")
+            if short and family not in plan.feasibility_fallback.get(pool, {}):
+                raise SplitError(
+                    f"{pool}[{family}]: the family has {accepted[family]} accepted train games, "
+                    f"fewer than the locked per-family floors through this bank ({floor}), so "
+                    f"no plan meets the locked minimum {minimum}; pre-register a {pool} "
+                    f"fallback of {_data_bank_size(pool, accepted[family])} for it (ADR-0004)")
+    for pool, fallback in _fallbacks_in_draw_order(plan):
+        for family, maximum in fallback.items():
             target = _fallback_bank_size(plan, pool, family, accepted[family])
             if maximum != target:
                 raise SplitError(

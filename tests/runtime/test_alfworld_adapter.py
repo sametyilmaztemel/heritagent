@@ -72,9 +72,9 @@ def test_task_text_carries_the_initial_admissible_commands():
 class _NoAdmissible(FakeSession):
     """Drops admissible_commands (absent key, or None) at reset or at steps."""
 
-    def __init__(self, script, *, at, missing="absent"):
+    def __init__(self, script, *, at, missing="absent", from_step=1):
         super().__init__(script)
-        self.at, self.missing = at, missing
+        self.at, self.missing, self.from_step = at, missing, from_step
 
     def _strip(self, infos):
         if self.missing == "none":
@@ -87,7 +87,8 @@ class _NoAdmissible(FakeSession):
 
     def step(self, command):
         obs, score, done, infos = super().step(command)
-        return obs, score, done, (self._strip(infos) if self.at == "step" else infos)
+        strip = self.at == "step" and len(self.commands) >= self.from_step
+        return obs, score, done, (self._strip(infos) if strip else infos)
 
 
 @pytest.mark.parametrize("missing", ["absent", "none"])
@@ -112,6 +113,21 @@ def test_missing_admissible_commands_at_a_step_change_no_state(missing, command)
     included, before any counter or flag changes."""
     env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step", missing=missing), game_id=GAME_ID)
     env.start()
+    before = env.record()
+    with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
+        env.call("act", {"command": command})
+    assert env.record() == before
+
+
+@pytest.mark.parametrize("command", ["put egg 1 in/on fridge 1", "fly to the moon"])
+def test_missing_admissible_commands_at_a_later_step_change_no_state(command):
+    """Review of #50: the check runs at every step, not only the first. A
+    good first step changes the record (positive control); a failing second
+    step leaves it as it was."""
+    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step", from_step=2), game_id=GAME_ID)
+    env.start()
+    first = env.call("act", {"command": "go to fridge 1"})
+    assert first.ok and env.record().steps == 1
     before = env.record()
     with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
         env.call("act", {"command": command})
