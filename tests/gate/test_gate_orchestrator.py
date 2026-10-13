@@ -323,8 +323,14 @@ def test_reject_verdicts_when_replay_fails(tmp_path):
     for r in outcome.results:
         assert r.verdict == "reject"
         assert r.stage_results["replay"] is False
-        # stage 3 still produced evidence
-        assert r.aggregate["stages"]["generalization_in_scope"] is not None
+        # stage 3 still produced evidence: both stage-3 children exist
+        stages = r.aggregate["stages"]
+        assert isinstance(stages["generalization_in_scope"]["pass"], bool)
+        assert isinstance(stages["generalization_out_of_scope"]["pass"], bool)
+        assert any(ref.endswith("-generalization_in_scope")
+                   for ref in r.aggregate["child_records"])
+        assert any(ref.endswith("-generalization_out_of_scope")
+                   for ref in r.aggregate["child_records"])
     # somatic decisions: rejected
     for r in outcome.results:
         assert somatic.state(r.gene_id, 1) == "rejected"
