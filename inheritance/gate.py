@@ -68,6 +68,7 @@ from inheritance.regression import (
     RegressionEvaluation,
     RegressionEvaluator,
     TokenCounter,
+    drop_within,
     measure_expression_overhead,
     validate_token_counter,
 )
@@ -410,7 +411,7 @@ class CigGateOrchestrator:
         if gene_id not in run.gene_ids:
             raise GateInputError(f"unknown candidate gene id {gene_id!r}")
         replay_pass, ablation_delta, ablation_lb = {}, {}, {}
-        gen_in, gen_out, overhead_ok, reg_drop = {}, {}, {}, {}
+        gen_in, gen_out, overhead_ok, reg_counts = {}, {}, {}, {}
         for inp, gid in zip(run.inputs, run.gene_ids):
             replay_pass[gid] = inp.replay_evaluation.passed
             ablation_delta[gid] = inp.ablation_evaluation.delta_success
@@ -418,7 +419,8 @@ class CigGateOrchestrator:
             gen_in[gid] = run.gen_results[gid].in_scope_passed
             gen_out[gid] = run.gen_results[gid].out_scope_passed
             overhead_ok[gid] = run.overhead_results[gid]["passed"]
-            reg_drop[gid] = run.reg_results[gid].regression_drop
+            reg_counts[gid] = (run.reg_results[gid].successes_with,
+                               run.reg_results[gid].task_count)
         grid = {"gene_id": gene_id, "tau_c_grid": list(SENSITIVITY_TAU_C_GRID),
                  "tau_r_grid": list(SENSITIVITY_TAU_R_GRID),
                  "analysis_only": True,
@@ -434,7 +436,8 @@ class CigGateOrchestrator:
                              (ablation_delta[gene_id] >= tau
                               and ablation_lb[gene_id] > 0)
                             for tau in SENSITIVITY_TAU_C_GRID}
-        grid["regression"] = {f"tau_r={tau}": reg_drop[gene_id] <= tau
+        grid["regression"] = {f"tau_r={tau}":
+                               drop_within(*reg_counts[gene_id], tau)
                                for tau in SENSITIVITY_TAU_R_GRID}
         grid["interaction_note"] = (
             "interaction pair evidence exists only for pairs collected in "
@@ -454,7 +457,7 @@ class CigGateOrchestrator:
                         and overhead_ok[gid]
                         and ablation_delta[gid] >= tau_c
                         and ablation_lb[gid] > 0
-                        and reg_drop[gid] <= tau_r))
+                        and drop_within(*reg_counts[gid], tau_r)))
                 # identifiability = REQUIRED pair evidence exists: every
                 # unordered pair WITHIN the hypothetical eligible set must
                 # have been collected in the primary run. A single (or
@@ -670,6 +673,7 @@ class CigGateOrchestrator:
                     "allocation": reg_eval.allocation,
                     "episodes": reg_eval.episodes,
                     "successes_with": reg_eval.successes_with,
+                    "task_count": reg_eval.task_count,
                     "regression_drop": reg_eval.regression_drop,
                     "tau_r": 0.03,
                     "regression_pass": regression_pass,
