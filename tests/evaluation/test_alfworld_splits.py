@@ -433,6 +433,40 @@ def test_fallback_one_below_the_locked_floor_builds(tmp_path, data):
                "locked_floor_through_bank": 22, "locked_minimum": 10}}
 
 
+@pytest.mark.parametrize("pool,size,maximum,available", [
+    ("generalization_bank", 21, 0, 1),   # full_plan: 20 drawn first, 1 left
+    ("generalization_bank", 21, 2, 1),
+])
+def test_fallback_maximum_must_equal_the_games_available(tmp_path, data, pool, size,
+                                                        maximum, available):
+    """ADR-0004: a fallback bank takes every game of the family still
+    available at the draw; neither fewer nor more."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = size
+    train = collect_games(make_split(tmp_path / "eq", "train", sizes), "train")
+    plan = full_plan(counts={pool: {**{f: 10 for f in F}, F[1]: maximum}},
+                     feasibility_fallback={pool: {F[1]: maximum}})
+    with pytest.raises(SplitError, match=rf"fallback maximum {maximum} must equal the "
+                                         rf"{available} games available at the draw"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_replay_fallback_below_the_games_available_fails_closed(tmp_path, data):
+    """11 games for F[1]: t_mine 8 leaves 3 for the replay bank, so its
+    fallback maximum must be 3, not 2."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 11
+    train = collect_games(make_split(tmp_path / "rq", "train", sizes), "train")
+    plan = scarce_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[1]: 2},
+                               "generalization_bank": {**{f: 10 for f in F}, F[1]: 0}},
+                       feasibility_fallback={"replay_bank": {F[1]: 2},
+                                             "generalization_bank": {F[1]: 0}})
+    with pytest.raises(SplitError, match=r"replay_bank\[.*fallback maximum 2 must equal the 3 games"):
+        build_split_manifest(train, unseen, plan)
+
+
 def test_zero_fallback_for_a_family_omitted_from_the_bank_counts(tmp_path, data):
     """8 games for F[1], all in T_mine. The banks leave F[1] out of their
     counts (as proportional_counts does for an empty family); a fallback of

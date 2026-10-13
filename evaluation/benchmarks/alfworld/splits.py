@@ -11,7 +11,9 @@ What this module decides and what it does not:
   - T_gate pools: ablation 20, interaction 10;
   - family-indexed banks: replay at least 4 and generalization at least 10
     per family, or a family-specific maximum pre-registered as a
-    feasibility fallback where availability prevents the minimum;
+    feasibility fallback where availability prevents the minimum (ADR-0004:
+    the family has fewer accepted games than the locked floors through
+    that bank, and the bank takes every game still available);
   - every train-side pool disjoint from every other;
   - T_eval = the whole official unseen split (134), never sampled.
 - It does **not** choose the per-family counts or the sampling seed. Those
@@ -172,7 +174,9 @@ class SplitPlan:
     must equal the declared maximum. The build accepts it only where
     availability prevents the minimum: the family has fewer accepted train
     games than the locked per-family floors of every pool up to and
-    including that bank, so no plan could meet the minimum."""
+    including that bank, so no plan could meet the minimum. The declared
+    maximum must then equal the games of that family still available when
+    the bank is drawn, so the bank takes all of them (ADR-0004)."""
 
     seed: int
     t_mine: Mapping[str, int]
@@ -350,8 +354,14 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
         for family in ALFWORLD_TASK_TYPES:
             k = plan.counts(pool).get(family, 0)
             if family in plan.feasibility_fallback.get(pool, {}):
+                available = len(remaining[family])
+                if k != available:
+                    raise SplitError(
+                        f"{pool}[{family}]: the pre-registered fallback maximum {k} must equal "
+                        f"the {available} games available at the draw (ADR-0004: a fallback "
+                        f"bank takes every remaining game of the family)")
                 fallback_evidence[family] = {
-                    "maximum": k, "available_at_draw": len(remaining[family]),
+                    "maximum": k, "available_at_draw": available,
                     "accepted_in_train": accepted[family],
                     "locked_floor_through_bank": _locked_floor_through(pool),
                     "locked_minimum": POOL_PER_FAMILY_MIN[pool]}
