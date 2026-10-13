@@ -28,7 +28,9 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13, in cha
     - replay bank: accepted − 8;
     - generalization bank: max(0, accepted − 12).
   - The bank therefore takes every game the family has left, and its size follows from the loader's count for that family alone.
-  - Any other earlier count or maximum fails closed, before any draw. The check runs in draw order, so an earlier bank's own error is reported first.
+  - Any other earlier count or maximum fails closed, before any draw. The banks are checked in draw order, so a replay-bank fallback's own error is reported before a generalization-bank error.
+  - A family that has a generalization fallback but too few games for the replay minimum must also pre-register a replay fallback; the error names it.
+  - A family with fewer games than the `T_mine` minimum (8) cannot be built at all, since `T_mine` has no fallback.
 - **Recording.** Each fallback is recorded in the split manifest's pool entry, next to the plan's own `feasibility_fallback`. The entry holds:
   - `maximum`
   - `available_at_draw` (equal to `maximum` by construction)
@@ -49,7 +51,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13, in cha
 **Experiment needed.** None. The split manifest built from the real data records the loader's per-family counts, which show whether any fallback was possible.
 
 **Compatibility impact.**
-- Plans without a fallback build byte-identical manifests: no fallback code path runs for them.
+- Plans without a fallback build byte-identical manifests: no fallback code path runs for them. A known-answer test pins the fixture's `manifest_sha256`.
 - A plan with a fallback must now satisfy Q2b, or it fails closed.
 - No manifest has been built yet, because the build sandbox has no ALFWorld data.
 - The locked manifest text is unchanged: this ADR interprets it.
