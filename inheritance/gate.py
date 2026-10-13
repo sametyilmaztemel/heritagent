@@ -21,12 +21,13 @@ Orchestration order (handoff §14) for a frozen candidate set:
    settings persisted, canonical pair evidence embedded durably,
    ``load_cig``-validated before any result is returned);
 9. final aggregate + verdict per candidate;
-10. atomic batch commit when stores are supplied: every bundle and every
-    somatic decision is prevalidated against a staged clone of the
+10. prevalidated batch commit when stores are supplied: every bundle and
+    every somatic decision is prevalidated against a staged clone of the
     CURRENT live CIG store; only after all prevalidations pass are the
     live stores mutated (somatic decision first — with the candidate
     version derived from the evaluated envelope — then the CIG bundle
-    exposed via the live store).
+    exposed via the live store). The mutation phase is not transactional
+    (see ``_commit_results``).
 
 A scientifically valid stage FAIL still produces immutable child evidence
 and later primary stages continue (ADR-0002 sensitivity recomputation
@@ -220,9 +221,9 @@ class GateOutcome:
 
 class CigGateOrchestrator:
     """Evaluates stage 3/4 for every candidate, resolves interactions,
-    builds aggregates/verdicts, and (when stores are supplied) commits
-    atomically: batch-prevalidated somatic decisions first, CIG bundles
-    exposed on the live store only after."""
+    builds aggregates/verdicts, and (when stores are supplied) commits after
+    batch prevalidation: somatic decisions first, CIG bundles exposed on the
+    live store only after."""
 
     def __init__(self, *, registry, base_config: RuntimeConfig,
                  runner, budgets: Budgets,
@@ -249,6 +250,8 @@ class CigGateOrchestrator:
 
     # -- public entry point ---------------------------------------------------
     def run(self, inputs: list[GateCandidateInput]) -> GateOutcome:
+        self._last = None  # sensitivity never answers from an earlier or aborted run
+        inputs = tuple(inputs)  # snapshot: later caller mutation cannot alias the run
         ranks = [i.frozen_rank for i in inputs]
         if len(set(ranks)) != len(ranks) or any(r < 0 for r in ranks):
             raise GateInputError(
@@ -265,6 +268,21 @@ class CigGateOrchestrator:
             raise GateInputError(
                 f"candidates must resolve to UNIQUE aggregate CIG ids (one "
                 f"aggregate per candidate); duplicates: {dupes}")
+        # setup that needs no episode fails BEFORE any episode
+        if self._token_counter is None:
+            raise GateInputError(
+                "stage-4B expression overhead requires a TokenCounter; "
+                "no counter was supplied")
+        if self._cig_record_store is not None:
+            existing = sorted(set(parents) & set(self._cig_record_store.aggregates))
+            if existing:
+                raise GateInputError(
+                    f"aggregate CIG ids already exist in the live store: {existing}")
+        if self._somatic_store is not None:
+            for candidate in (v["candidate"] for v in validated):
+                issue = _somatic_binding_issue(self._somatic_store, candidate)
+                if issue:
+                    raise RecordConsistencyError(issue)
 
         # step 2: consume #11 evidence, fail closed on incoherence —
         # BEFORE any stage-3/4 episode
@@ -287,10 +305,6 @@ class CigGateOrchestrator:
         overhead_results: dict[str, dict] = {}
         for inp, (parent, seed) in zip(inputs, identities):
             gid = inp.candidate_envelope["candidate"]["gene_id"]
-            if self._token_counter is None:
-                raise GateInputError(
-                    "stage-4B expression overhead requires a TokenCounter; "
-                    "no counter was supplied")
             reg_evaluator = RegressionEvaluator(
                 candidate_envelope=inp.candidate_envelope, registry=self._registry,
                 base_config=self._base_config, runner=self._runner,
@@ -377,8 +391,8 @@ class CigGateOrchestrator:
                 },
                 _eliminated_by=eliminated.get(gid), _parent_cig_id=parent))
 
-        # step 10: atomic batch commit when stores are supplied
-        self._last = _LastRun(inputs=inputs, gene_ids=gene_ids,
+        # step 10: prevalidated batch commit when stores are supplied
+        last = _LastRun(inputs=inputs, gene_ids=tuple(gene_ids),
                                gen_results=gen_results,
                                reg_results=reg_results,
                                overhead_results=overhead_results,
@@ -386,10 +400,15 @@ class CigGateOrchestrator:
                                eligible=eligible,
                                eliminated=eliminated, outcome=None)
         committed = False
+        self._last = last  # _bundle_children reads this run's evidence
         if self._somatic_store is not None and self._cig_record_store is not None:
-            self._commit_results(results,
-                                  somatic_store=self._somatic_store,
-                                  cig_record_store=self._cig_record_store)
+            try:
+                self._commit_results(results,
+                                      somatic_store=self._somatic_store,
+                                      cig_record_store=self._cig_record_store)
+            except BaseException:
+                self._last = None  # no sensitivity answers from a failed commit
+                raise
             committed = True
 
         outcome = GateOutcome(_results=tuple(results),
@@ -585,18 +604,23 @@ class CigGateOrchestrator:
             if child["parent_cig_id"] != parent:
                 issues.append(f"{stage} child parent_cig_id "
                                f"{child['parent_cig_id']!r} != {parent!r}")
-            if child["seed"] != seed:
-                issues.append(f"{stage} child seed {child['seed']!r} != "
-                               f"mining seed {seed!r}")
+            child_seed = child["seed"]
+            if isinstance(child_seed, bool) or not isinstance(child_seed, int) \
+                    or child_seed != seed:
+                issues.append(f"{stage} child seed {child_seed!r} != "
+                               f"mining seed {seed!r} (strict int, non-bool)")
             if child["stage"] != stage:
                 issues.append(f"{stage} child has stage {child['stage']!r}")
             if child["cig_id"] in seen_ids:
                 issues.append(f"duplicate child id {child['cig_id']!r}")
             seen_ids.add(child["cig_id"])
-            if evaluation.passed != m.get("stage_pass"):
+            stage_pass = m.get("stage_pass")
+            if not isinstance(stage_pass, bool) \
+                    or not isinstance(evaluation.passed, bool) \
+                    or evaluation.passed is not stage_pass:
                 issues.append(f"{stage} result.passed {evaluation.passed!r} != "
                                f"child measurements.stage_pass "
-                               f"{m.get('stage_pass')!r}")
+                               f"{stage_pass!r} (strict bool on both sides)")
             settings = m.get("eval_generation_settings")
             if not isinstance(settings, dict):
                 issues.append(f"{stage} child lacks eval_generation_settings "
@@ -776,13 +800,20 @@ class CigGateOrchestrator:
     # -- atomic commit (step 10) -----------------------------------------------------
     def _commit_results(self, results: list[CandidateGateResult], *,
                          somatic_store, cig_record_store: CigRecordStore) -> None:
-        """Fail-atomic BATCH commit: every bundle is prevalidated against a
+        """Prevalidated BATCH commit: every bundle is prevalidated against a
         staged clone of the CURRENT live CigRecordStore and every somatic
         candidate (at the version derived from the evaluated envelope) is
-        checked BEFORE any live mutation. Only after all prevalidations
-        pass are the live stores mutated, per candidate: somatic terminal
-        decision first, then the CIG bundle is exposed on the live store.
-        Any failure leaves both live stores untouched."""
+        checked BEFORE any live mutation, so a prevalidation failure leaves
+        both live stores untouched. Only then are the live stores mutated,
+        per candidate: somatic terminal decision first, then the CIG bundle
+        is exposed on the live store.
+
+        The mutation phase itself is not transactional: if a somatic
+        ``decide()`` or a bundle exposure fails part-way (e.g. a journal
+        write error), the candidates before it stay committed. Terminal
+        decisions are never rewritten, so such a batch must be resolved by
+        hand (issue #12 handoff section 13 scopes atomicity to the
+        in-process prevalidation)."""
         staged_cig = cig_record_store.snapshot()
         for result in results:
             staged_cig.add_bundle(result.aggregate,
@@ -790,20 +821,9 @@ class CigGateOrchestrator:
         planned: list[tuple[CandidateGateResult, int]] = []
         for result in results:
             version = result.candidate_version
-            if somatic_store.state(result.gene_id, version) != "candidate":
-                raise RecordConsistencyError(
-                    f"{result.gene_id!r} v{version} is no longer a somatic "
-                    f"candidate")
-            stored = somatic_store.candidate_ref(result.gene_id, version)
-            if stored != result.candidate:
-                evaluated = result.candidate
-                differing = sorted(k for k in set(stored) | set(evaluated)
-                                   if stored.get(k) != evaluated.get(k))
-                raise RecordConsistencyError(
-                    f"{result.gene_id!r} v{version}: the stored somatic "
-                    f"candidate is not the evaluated one (differs in "
-                    f"{', '.join(differing)}); refusing to bind the verdict "
-                    f"to a different reference")
+            issue = _somatic_binding_issue(somatic_store, result.candidate)
+            if issue:
+                raise RecordConsistencyError(issue)
             planned.append((result, version))
         # commit: somatic decision first, then expose the bundle.
         # verdict -> terminal state: promote -> validated,
@@ -831,6 +851,22 @@ class CigGateOrchestrator:
             children.append(gen.out_scope_child)
         by_id = {c["cig_id"]: c for c in children}
         return [by_id[cid] for cid in result.aggregate["child_records"]]
+
+
+def _somatic_binding_issue(somatic_store, evaluated: dict) -> str | None:
+    """None iff the store holds exactly the evaluated candidate reference,
+    still in state ``candidate`` (issue #12 handoff section 13)."""
+    gene_id, version = evaluated["gene_id"], evaluated["version"]
+    if somatic_store.state(gene_id, version) != "candidate":
+        return f"{gene_id!r} v{version} is no longer a somatic candidate"
+    stored = somatic_store.candidate_ref(gene_id, version)
+    if stored != evaluated:
+        differing = sorted(k for k in set(stored) | set(evaluated)
+                           if stored.get(k) != evaluated.get(k))
+        return (f"{gene_id!r} v{version}: the stored somatic candidate is not "
+                f"the evaluated one (differs in {', '.join(differing)}); "
+                f"refusing to bind the verdict to a different reference")
+    return None
 
 
 @dataclass
