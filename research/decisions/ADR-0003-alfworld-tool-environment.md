@@ -1,6 +1,6 @@
 # ADR-0003 — ALFWorld `ToolEnvironment` adapter for EXP-0001
 
-Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
+Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
 
 **Problem.** EXP-0001 runs on ALFWorld, but the repo has no adapter from ALFWorld's text games to the runtime's `ToolEnvironment` boundary. The adapter's protocol choices set G0's success level. Published Qwen2.5-7B-Instruct results span 14.8–45.5 % across protocols, and rendering alone moves 83.6 % to 1.5 %. G0's level in turn sets T_reg feasibility, the expected number of mining pairs and every power number. These choices are therefore pre-registration elements.
 
@@ -25,7 +25,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
   - ALFWorld's `won` at episode end, never the model's text and never the runtime status.
   - The adapter exposes `won`, steps and the game id to the episode runner.
   - Family and game id are evaluation-only and never model-visible.
-- **D7 Task text.** ALFWorld's initial observation minus the `-= Welcome to TextWorld, ALFRED! =-` banner. Nothing is added.
+- **D7 Task text.** ALFWorld's initial observation minus the `-= Welcome to TextWorld, ALFRED! =-` banner. *As amended by A1:* rendered with the initial admissible commands exactly as D2 renders every later observation. Nothing else is added.
 - **D8 Versions and determinism.**
   - `alfworld==0.4.2` and `textworld==1.7.0` in an optional `alfworld` extra.
   - `AlfredDemangler(shuffle=False)` and `AlfredInfos` on every split, no expert.
@@ -56,5 +56,15 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 
 **Implementation status.**
 1. Runtime support (D3 `retryable`, D5 `terminal`, the trajectory terminal kind, the D4 schema maximum): this change.
-2. `runtime/tool_adapters/alfworld.py` (D1, D2, D3, D6, D7, D8), with tests against a scripted fake of TextWorld's single-game gym API (`reset() -> (obs, infos)`, `step(cmd) -> (obs, score, done, infos)`). Real-game integration is not yet run: no ALFWorld data in the build sandbox, and the integration test is skipped unless `ALFWORLD_GAMEFILE` is set. *Open question for Codex:* as written, D7 adds nothing to the task text and D2 applies to observations, so the first admissible-command list reaches the model only after its first action. Should the initial observation also carry the list (D2 applied to the initial state)? Not changed pending review.
+2. `runtime/tool_adapters/alfworld.py` (D1, D2, D3, D6, D7, D8), with tests against a scripted fake of TextWorld's single-game gym API (`reset() -> (obs, infos)`, `step(cmd) -> (obs, score, done, infos)`). Real-game integration is not yet run: no ALFWorld data in the build sandbox, and the integration test is skipped unless `ALFWORLD_GAMEFILE` is set. The open question on the initial admissible list is resolved by amendment A1.
 3. The G0 switch to `planner_react_v2` (D4) and the manifest amendment: after PR #29.
+
+**Amendment A1: the initial observation carries the admissible commands.** The owner chose this in chat on 2026-10-13 ("Evet, göster"). Codex cross-review is requested.
+- *Problem.* As first written, D7 added nothing to the task text and D2 covered only step observations. The model therefore saw the first admissible-command list only after its first action, so that first action was blind.
+- *Decision.* D2 applies to the initial state too. The task text is the initial observation minus the banner, then `Admissible commands:` and the sorted initial `admissible_commands`, rendered exactly like every later observation. It is the same in every arm and part of the frozen G0 prompt.
+- *Reason.*
+  - Every observation the model sees has the same form.
+  - The protocols closest to EXP-0001's anchors show the admissible actions from the first step (the D2 rationale).
+  - A blind first action adds invalid commands that measure the protocol, not the agent.
+- *Research implication.* Like D2, A1 sets G0's level, so it stays frozen through the calibration pilot and the run.
+- *Compatibility.* `AlfworldEnvironment.start()` returns the rendered text. Callers that pass `start()` to `run_agent` need no change.

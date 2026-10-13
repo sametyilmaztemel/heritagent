@@ -58,6 +58,25 @@ def test_observation_lists_sorted_admissible_commands():
     assert rendered == f"You arrive at fridge 1.\n\n{ADMISSIBLE_HEADER}\ngo to fridge 1\nlook"
 
 
+def test_task_text_carries_the_initial_admissible_commands():
+    """ADR-0003 A1: D2 applies to the initial observation too, so the model
+    sees the valid commands before its first action."""
+    env = AlfworldEnvironment(FakeSession(SCRIPT), game_id=GAME_ID)
+    task = env.start()
+    assert task == render_observation(task_text(INITIAL), ["look", "go to fridge 1"])
+    assert task.endswith(f"{ADMISSIBLE_HEADER}\ngo to fridge 1\nlook")
+    assert "Your task is to: put a hot egg in fridge." in task
+    assert BANNER not in task and GAME_ID not in task
+
+
+def test_initial_observation_without_admissible_commands_renders_like_a_step():
+    class NoAdmissible(FakeSession):
+        def reset(self):
+            return INITIAL, {"won": False}
+    task = AlfworldEnvironment(NoAdmissible(SCRIPT), game_id=GAME_ID).start()
+    assert task == render_observation(task_text(INITIAL), None)
+
+
 def test_single_act_tool():
     env = AlfworldEnvironment(FakeSession(SCRIPT), game_id=GAME_ID)
     assert env.list_tools() == [ACT_TOOL]
