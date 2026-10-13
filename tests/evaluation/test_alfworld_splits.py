@@ -448,6 +448,7 @@ def test_fallback_one_below_the_locked_floor_builds(tmp_path, data):
 @pytest.mark.parametrize("pool,size,maximum,target", [
     ("generalization_bank", 21, 8, 9),   # fewer than the data leaves
     ("generalization_bank", 21, 0, 9),
+    ("generalization_bank", 18, 7, 6),   # more than the data leaves (below the minimum 10)
     ("replay_bank", 11, 2, 3),
     ("replay_bank", 11, 0, 3),
 ])
