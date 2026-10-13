@@ -4,6 +4,7 @@ centralized lifecycle validation — tests target lifecycle enforcement, not
 hash mismatches."""
 
 import json
+from pathlib import Path
 
 import pytest
 
