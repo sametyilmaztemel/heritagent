@@ -25,6 +25,7 @@
       "enum": [
         "finished",
         "budget_exhausted",
+        "environment_terminal",
         "incomplete"
       ]
     },
@@ -153,6 +154,7 @@
           "enum": [
             "finished",
             "budget_exhausted",
+            "environment_terminal",
             "incomplete"
           ]
         },

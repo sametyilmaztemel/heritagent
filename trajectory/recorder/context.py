@@ -96,7 +96,8 @@ class TrajectoryContext:
 @dataclass(frozen=True)
 class OutcomeAnnotation:
     """Generic, benchmark-agnostic post-run outcome (issue #8 criterion 9).
-    Runtime status (finished / budget_exhausted) is NOT benchmark success;
+    Runtime status (finished / budget_exhausted / environment_terminal) is NOT
+    benchmark success;
     evaluators attach this annotation at finalization without mutating any
     historical event."""
 
