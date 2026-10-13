@@ -34,6 +34,7 @@ from inheritance.overlay import (
 )
 from inheritance.runner import (
     EvaluationIntegrityError,
+    EvaluationTask,
     GateEpisodeRunner,
     RunnerContractError,
     validate_gate_setup,

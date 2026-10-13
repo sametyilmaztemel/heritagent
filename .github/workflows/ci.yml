@@ -1,5 +1,6 @@
-# Issue #18: tests on every supported Python, plus schema / manifest /
-# Markdown-link checks. Test counts are attested by this workflow, not by
+# Issue #18: tests on every supported Python (editable install), an
+# installed-wheel smoke test, plus schema / manifest / Markdown-link and
+# undefined-name checks. Test counts are attested by this workflow, not by
 # builder reports.
 name: CI
 
@@ -25,8 +26,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -r scripts/ci/requirements-ci.txt
+      - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q -p no:cacheprovider
+
+  package:
+    name: wheel install smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip wheel --no-deps --wheel-dir dist .
+      - run: python -m venv "$RUNNER_TEMP/wheel-venv"
+      - run: '"$RUNNER_TEMP/wheel-venv/bin/python" -m pip install dist/*.whl'
+      # -I and a cwd outside the checkout: imports must come from the wheel
+      - working-directory: ${{ runner.temp }}
+        run: '"$RUNNER_TEMP/wheel-venv/bin/python" -I "$GITHUB_WORKSPACE/scripts/ci/smoke_installed.py" "$GITHUB_WORKSPACE"'
 
   artifacts:
     name: schemas, manifests, links
@@ -36,7 +52,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -r scripts/ci/requirements-ci.txt
+      - run: python -m pip install -e ".[dev]" -r scripts/ci/requirements-ci.txt
       - run: python scripts/ci/check_artifacts.py
       - if: ${{ !cancelled() }}
         run: yamllint --strict -c .yamllint.yaml experiments/manifests .github/workflows
+      - if: ${{ !cancelled() }}
+        run: ruff check --select F821 .
