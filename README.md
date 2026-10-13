@@ -47,6 +47,7 @@ heritagent/
 ├── traits/                      # Trait Miner v0 (differential skill distillation)
 ├── somatic/                     # persistent hash-chained somatic trait store
 ├── inheritance/                 # CIG: replay, ablation, generalization, regression, gate
+├── evaluation/benchmarks/       # ALFWorld split-manifest builder (EXP-0001 splits)
 ├── tests/                       # pytest suite
 ├── scripts/ci/                  # CI checks (schemas, manifests, links, wheel smoke test)
 └── research/
@@ -56,7 +57,7 @@ heritagent/
     └── decisions/               # ADRs (SPEC §31 format)
 ```
 
-Later SPEC §23 components (evolution/, lineage/, evaluation/) are created when their milestones start (SPEC §27).
+Later SPEC §23 components (evolution/, lineage/, the rest of evaluation/) are created when their milestones start (SPEC §27).
 
 ## Development
 

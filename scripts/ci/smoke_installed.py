@@ -14,12 +14,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-PACKAGES = ("genome", "inheritance", "runtime", "somatic", "traits", "trajectory")
+PACKAGES = ("evaluation", "genome", "inheritance", "runtime", "somatic", "traits", "trajectory")
 
 
 def main() -> int:
     repo_root = Path(sys.argv[1]).resolve()
 
+    import evaluation.benchmarks.alfworld.splits  # noqa: F401
     import genome
     import inheritance.gate  # noqa: F401  (imports the whole gate stack)
     import somatic.store
