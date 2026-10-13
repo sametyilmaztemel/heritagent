@@ -68,6 +68,7 @@ from inheritance.regression import (
     RegressionEvaluation,
     RegressionEvaluator,
     TokenCounter,
+    drop_within,
     measure_expression_overhead,
     validate_token_counter,
 )
@@ -133,6 +134,7 @@ class CandidateGateResult:
 
     _gene_id: str
     _candidate_version: int
+    _candidate: dict
     _verdict: str
     _aggregate: dict
     _stage4_child: dict
@@ -148,6 +150,13 @@ class CandidateGateResult:
     def candidate_version(self) -> int:
         """Somatic candidate version, derived from the evaluated envelope."""
         return self._candidate_version
+
+    @property
+    def candidate(self) -> dict:
+        """The evaluated candidate gene reference (gene_id, version, type,
+        content-addressed artifact, origin, provenance) — the commit binds the
+        somatic decision to exactly this reference."""
+        return copy.deepcopy(self._candidate)
 
     @property
     def verdict(self) -> str:
@@ -344,14 +353,17 @@ class CigGateOrchestrator:
         # steps 8-9: stage-4 children + aggregates + verdicts
         results: list[CandidateGateResult] = []
         for inp, gid, (parent, seed) in zip(inputs, gene_ids, identities):
-            version = validated[gene_ids.index(gid)]["candidate"]["version"]
+            evaluated = validated[gene_ids.index(gid)]["candidate"]
+            version = evaluated["version"]
             stage4 = self._build_stage4_child(
                 gid, parent, seed, reg_results[gid], overhead_results[gid],
                 pair_evidence, eliminated)
             aggregate = self._build_aggregate(
-                inp, gid, parent, gen_results.get(gid), stage4)
+                inp, gid, parent, gen_results.get(gid), stage4,
+                evaluated=evaluated)
             results.append(CandidateGateResult(
                 _gene_id=gid, _candidate_version=version,
+                _candidate=copy.deepcopy(evaluated),
                 _verdict=aggregate["verdict"],
                 _aggregate=aggregate, _stage4_child=stage4,
                 _stage_results={
@@ -410,7 +422,7 @@ class CigGateOrchestrator:
         if gene_id not in run.gene_ids:
             raise GateInputError(f"unknown candidate gene id {gene_id!r}")
         replay_pass, ablation_delta, ablation_lb = {}, {}, {}
-        gen_in, gen_out, overhead_ok, reg_drop = {}, {}, {}, {}
+        gen_in, gen_out, overhead_ok, reg_counts = {}, {}, {}, {}
         for inp, gid in zip(run.inputs, run.gene_ids):
             replay_pass[gid] = inp.replay_evaluation.passed
             ablation_delta[gid] = inp.ablation_evaluation.delta_success
@@ -418,7 +430,8 @@ class CigGateOrchestrator:
             gen_in[gid] = run.gen_results[gid].in_scope_passed
             gen_out[gid] = run.gen_results[gid].out_scope_passed
             overhead_ok[gid] = run.overhead_results[gid]["passed"]
-            reg_drop[gid] = run.reg_results[gid].regression_drop
+            reg_counts[gid] = (run.reg_results[gid].successes_with,
+                               run.reg_results[gid].task_count)
         grid = {"gene_id": gene_id, "tau_c_grid": list(SENSITIVITY_TAU_C_GRID),
                  "tau_r_grid": list(SENSITIVITY_TAU_R_GRID),
                  "analysis_only": True,
@@ -434,7 +447,8 @@ class CigGateOrchestrator:
                              (ablation_delta[gene_id] >= tau
                               and ablation_lb[gene_id] > 0)
                             for tau in SENSITIVITY_TAU_C_GRID}
-        grid["regression"] = {f"tau_r={tau}": reg_drop[gene_id] <= tau
+        grid["regression"] = {f"tau_r={tau}":
+                               drop_within(*reg_counts[gene_id], tau)
                                for tau in SENSITIVITY_TAU_R_GRID}
         grid["interaction_note"] = (
             "interaction pair evidence exists only for pairs collected in "
@@ -454,7 +468,7 @@ class CigGateOrchestrator:
                         and overhead_ok[gid]
                         and ablation_delta[gid] >= tau_c
                         and ablation_lb[gid] > 0
-                        and reg_drop[gid] <= tau_r))
+                        and drop_within(*reg_counts[gid], tau_r)))
                 # identifiability = REQUIRED pair evidence exists: every
                 # unordered pair WITHIN the hypothetical eligible set must
                 # have been collected in the primary run. A single (or
@@ -670,6 +684,7 @@ class CigGateOrchestrator:
                     "allocation": reg_eval.allocation,
                     "episodes": reg_eval.episodes,
                     "successes_with": reg_eval.successes_with,
+                    "task_count": reg_eval.task_count,
                     "regression_drop": reg_eval.regression_drop,
                     "tau_r": 0.03,
                     "regression_pass": regression_pass,
@@ -704,7 +719,8 @@ class CigGateOrchestrator:
         return child
 
     def _build_aggregate(self, inp: GateCandidateInput, gene_id: str,
-                          parent: str, gen, stage4: dict) -> dict:
+                          parent: str, gen, stage4: dict, *,
+                          evaluated: dict) -> dict:
         gen_in = gen.in_scope_child
         gen_out = gen.out_scope_child
         stages = {
@@ -746,7 +762,13 @@ class CigGateOrchestrator:
                 "version": THRESHOLD_VERSION,
                 "values": dict(PRIMARY_THRESHOLDS),
             },
-            "artifacts": {},
+            # which artifact this verdict is about (ADR-0001 reason (c): which
+            # CIG record promoted which artifact)
+            "artifacts": {"candidate": {
+                "gene_id": evaluated["gene_id"],
+                "version": evaluated["version"],
+                "artifact": evaluated["artifact"],
+            }},
         }
         load_cig(aggregate)
         return aggregate
@@ -772,6 +794,14 @@ class CigGateOrchestrator:
                 raise RecordConsistencyError(
                     f"{result.gene_id!r} v{version} is no longer a somatic "
                     f"candidate")
+            stored = somatic_store.candidate_ref(result.gene_id, version)
+            if stored != result.candidate:
+                raise RecordConsistencyError(
+                    f"{result.gene_id!r} v{version}: the stored somatic "
+                    f"candidate is not the evaluated one (stored artifact "
+                    f"{stored['artifact']!r}, evaluated "
+                    f"{result.candidate['artifact']!r}); refusing to bind "
+                    f"the verdict to a different reference")
             planned.append((result, version))
         # commit: somatic decision first, then expose the bundle.
         # verdict -> terminal state: promote -> validated,

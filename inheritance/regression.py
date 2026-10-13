@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Protocol
 
 from runtime.expression import RuntimeConfig
@@ -42,6 +43,15 @@ TAU_R = 0.03
 REGRESSION_THRESHOLD_TEXT = "regression_drop = 1 - success_with <= 0.03 (tau_r)"
 TAU_K_TOKENS = 512
 OVERHEAD_THRESHOLD_TEXT = "expression_tokens <= 512 (tau_k)"
+
+
+def drop_within(successes: int, total: int, tau: float) -> bool:
+    """Exact ``1 - successes/total <= tau`` in rational arithmetic.
+
+    A drop of exactly tau must pass: with binary floats 1 - 38/40 is
+    0.050000000000000044, which would make the tau_r = 0.05 sensitivity cell
+    reject 2/40 and collapse it onto the tau_r = 0.03 cell."""
+    return Fraction(total - successes, total) <= Fraction(repr(tau))
 
 
 class TokenCounter(Protocol):
@@ -150,6 +160,7 @@ class RegressionEvaluation:
 
     _passed: bool
     _successes_with: int
+    _task_count: int
     _regression_drop: float
     _episodes: tuple[dict, ...]
     _allocation: dict
@@ -170,7 +181,13 @@ class RegressionEvaluation:
         return self._successes_with
 
     @property
+    def task_count(self) -> int:
+        """Number of T_reg tasks run (the denominator of the drop)."""
+        return self._task_count
+
+    @property
     def regression_drop(self) -> float:
+        """Nearest float to the exact drop; decisions use drop_within()."""
         return self._regression_drop
 
     @property
@@ -228,10 +245,11 @@ class RegressionEvaluator:
                 "trajectory_id": outcome.trajectory_id,
             })
         successes = successes_with
-        drop = 1.0 - successes / len(allocation.tasks)
-        passed = drop <= TAU_R
+        total = len(allocation.tasks)
+        drop = (total - successes) / total
+        passed = drop_within(successes, total, TAU_R)
         return RegressionEvaluation(
-            _passed=passed, _successes_with=successes,
+            _passed=passed, _successes_with=successes, _task_count=total,
             _regression_drop=drop, _episodes=tuple(copy.deepcopy(episodes)),
             _allocation=copy.deepcopy(allocation.allocation_metadata()),
             _locked_settings=copy.deepcopy(self._locked))
