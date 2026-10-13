@@ -361,8 +361,8 @@ def test_t_mine_minimum_boundary(tmp_path, data, size):
 
 
 def test_bank_errors_are_reported_in_draw_order(tmp_path, data):
-    """Review of #50: an invalid replay fallback is reported before an
-    invalid generalization fallback, whatever the plan's key order."""
+    """Review of #50, shortfall check: an inapplicable replay fallback is
+    reported before an inapplicable generalization fallback."""
     _, _, unseen = data
     train = collect_games(make_split(tmp_path / "do", "train", {f: 35 for f in F}), "train")
     plan = full_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[2]: 3},
@@ -370,6 +370,67 @@ def test_bank_errors_are_reported_in_draw_order(tmp_path, data):
                      feasibility_fallback={"generalization_bank": {F[1]: 9},
                                            "replay_bank": {F[2]: 3}})
     with pytest.raises(SplitError, match=rf"^replay_bank\[{F[2]}\]"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_plan_validation_reports_the_replay_bank_first():
+    """Review of #51: validate_plan also checks the banks in draw order
+    (SplitPlan sorts its keys by name, which would put generalization first)."""
+    plan = full_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[2]: 5},
+                             "generalization_bank": {**{f: 10 for f in F}, F[1]: 12}},
+                     feasibility_fallback={"replay_bank": {F[2]: 5},
+                                           "generalization_bank": {F[1]: 12}})
+    with pytest.raises(SplitError, match=rf"^replay_bank\[{F[2]}\]: fallback maximum must be"):
+        validate_plan(plan)
+
+
+def test_a_fallback_for_an_unknown_pool_is_rejected():
+    """Review of #51: a pool name outside POOL_ORDER is ordered last, not
+    dropped, so it is still rejected."""
+    with pytest.raises(SplitError, match="only allowed"):
+        validate_plan(full_plan(feasibility_fallback={"bogus_bank": {F[0]: 0}}))
+
+
+def test_size_check_reports_the_replay_bank_first(tmp_path, data):
+    """Review of #51, size check: wrong maxima in both banks (F[1] replay,
+    F[3] generalization); the replay error comes first."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]], sizes[F[3]] = 11, 21
+    train = collect_games(make_split(tmp_path / "sz", "train", sizes), "train")
+    plan = scarce_plan(F[1], F[3],
+                       counts={"replay_bank": {**{f: 4 for f in F}, F[1]: 2},
+                               "generalization_bank": {**{f: 10 for f in F}, F[1]: 0, F[3]: 8}},
+                       feasibility_fallback={"replay_bank": {F[1]: 2},
+                                             "generalization_bank": {F[1]: 0, F[3]: 8}})
+    with pytest.raises(SplitError, match=rf"^replay_bank\[{F[1]}\]: the pre-registered fallback "
+                                         rf"maximum 2 must equal the 3 games"):
+        build_split_manifest(train, unseen, plan)
+
+
+@pytest.mark.parametrize("offender", F)
+def test_every_family_is_checked_for_a_shortfall(tmp_path, data, offender):
+    """Review of #51: the T_mine and shortfall checks cover every family,
+    not only the one the other tests use."""
+    _, _, unseen = data
+    for size, expected in ((7, rf"^t_mine\[{offender}\]: 7 accepted"),
+                           (10, rf"^replay_bank\[{offender}\]: the family has 10 .*fallback of 2"),
+                           (20, rf"^generalization_bank\[{offender}\]: the family has 20 "
+                                rf".*fallback of 8")):
+        sizes = {f: 35 for f in F}
+        sizes[offender] = size
+        train = collect_games(make_split(tmp_path / f"ev{size}", "train", sizes), "train")
+        with pytest.raises(SplitError, match=expected):
+            build_split_manifest(train, unseen, scarce_plan(offender))
+
+
+@pytest.mark.parametrize("offender", F)
+def test_every_family_is_checked_for_an_inapplicable_fallback(data, offender):
+    _, train, unseen = data   # 35 games per family: no fallback applies
+    plan = full_plan(counts={"replay_bank": {**{f: 4 for f in F}, offender: 3}},
+                     feasibility_fallback={"replay_bank": {offender: 3}})
+    with pytest.raises(SplitError, match=rf"^replay_bank\[{offender}\]: a fallback is "
+                                         rf"pre-registered, but the family has 35"):
         build_split_manifest(train, unseen, plan)
 
 
