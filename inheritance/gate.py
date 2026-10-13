@@ -2,9 +2,12 @@
 somatic terminal decision.
 
 Orchestration order (handoff §14) for a frozen candidate set:
-1. validate inputs; require unique frozen ranks, unique gene ids, and
-   UNIQUE resolved aggregate CIG ids (per-candidate parent/seed identity)
-   — all before any episode;
+1. validate inputs — all before any episode: unique frozen ranks, unique
+   gene ids, UNIQUE resolved aggregate CIG ids (per-candidate parent/seed
+   identity), a supplied TokenCounter, every candidate's evaluation
+   config buildable, and, when both stores are supplied (i.e. the run
+   will commit), no aggregate id already live and every candidate still
+   the stored somatic ``candidate`` with exactly the evaluated reference;
 2. consume #11 replay+ablation children (never rerun): structural
    ``load_cig`` validation + exact ``<parent>/S<seed>-<stage>`` child ids
    + full coherence, failing closed before any stage-3/4 runner call;
@@ -191,7 +194,7 @@ class CandidateGateResult:
 @dataclass(frozen=True)
 class GateOutcome:
     """Immutable full-set orchestration outcome. ``committed`` is True when
-    stores were supplied and the atomic per-candidate commit succeeded."""
+    stores were supplied and the prevalidated batch commit completed."""
 
     _results: tuple[CandidateGateResult, ...]
     _parent_cig_id: str
@@ -248,6 +251,10 @@ class CigGateOrchestrator:
         self._target_regulation_by_gene = dict(target_regulation_by_gene or {})
         self._last: _LastRun | None = None
 
+    def _commits(self) -> bool:
+        """A run commits only when BOTH stores are supplied (step 10)."""
+        return self._somatic_store is not None and self._cig_record_store is not None
+
     # -- public entry point ---------------------------------------------------
     def run(self, inputs: list[GateCandidateInput]) -> GateOutcome:
         self._last = None  # sensitivity never answers from an earlier or aborted run
@@ -269,16 +276,17 @@ class CigGateOrchestrator:
                 f"candidates must resolve to UNIQUE aggregate CIG ids (one "
                 f"aggregate per candidate); duplicates: {dupes}")
         # setup that needs no episode fails BEFORE any episode
-        if self._token_counter is None:
+        if inputs and self._token_counter is None:
             raise GateInputError(
                 "stage-4B expression overhead requires a TokenCounter; "
                 "no counter was supplied")
-        if self._cig_record_store is not None:
+        for inp in inputs:  # overlay validity (e.g. target already in base)
+            self._configs_by_gene(inp)
+        if self._commits():  # the same condition under which step 10 commits
             existing = sorted(set(parents) & set(self._cig_record_store.aggregates))
             if existing:
                 raise GateInputError(
                     f"aggregate CIG ids already exist in the live store: {existing}")
-        if self._somatic_store is not None:
             for candidate in (v["candidate"] for v in validated):
                 issue = _somatic_binding_issue(self._somatic_store, candidate)
                 if issue:
@@ -401,7 +409,7 @@ class CigGateOrchestrator:
                                eliminated=eliminated, outcome=None)
         committed = False
         self._last = last  # _bundle_children reads this run's evidence
-        if self._somatic_store is not None and self._cig_record_store is not None:
+        if self._commits():
             try:
                 self._commit_results(results,
                                       somatic_store=self._somatic_store,
@@ -797,7 +805,7 @@ class CigGateOrchestrator:
         load_cig(aggregate)
         return aggregate
 
-    # -- atomic commit (step 10) -----------------------------------------------------
+    # -- prevalidated batch commit (step 10) ---------------------------------------------
     def _commit_results(self, results: list[CandidateGateResult], *,
                          somatic_store, cig_record_store: CigRecordStore) -> None:
         """Prevalidated BATCH commit: every bundle is prevalidated against a
@@ -821,7 +829,13 @@ class CigGateOrchestrator:
         planned: list[tuple[CandidateGateResult, int]] = []
         for result in results:
             version = result.candidate_version
-            issue = _somatic_binding_issue(somatic_store, result.candidate)
+            candidate = result.candidate
+            if (candidate.get("gene_id"), candidate.get("version")) != (result.gene_id, version):
+                raise RecordConsistencyError(
+                    f"result for {result.gene_id!r} v{version} carries candidate "
+                    f"{candidate.get('gene_id')!r} v{candidate.get('version')!r}; "
+                    f"the checked and the decided reference must be the same")
+            issue = _somatic_binding_issue(somatic_store, candidate)
             if issue:
                 raise RecordConsistencyError(issue)
             planned.append((result, version))
