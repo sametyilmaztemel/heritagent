@@ -81,6 +81,12 @@ def test_sensitivity_tau_r_cell_is_exact_at_two_failures(tmp_path):
     assert outcome.results[0].verdict == "reject"
     assert outcome.results[0].stage4_child["measurements"]["regression"][
         "task_count"] == 40
+    # the per-cell composition (design section 5) uses the same exact rule
+    cells = grid["cells"]
+    assert cells["tau_c=0.05|tau_r=0.05"]["hypothetical_eligible"] == [gene]
+    assert cells["tau_c=0.05|tau_r=0.05"]["hypothetical_promote"] == [gene]
+    for tau_r in ("0.02", "0.03"):
+        assert cells[f"tau_c=0.05|tau_r={tau_r}"]["hypothetical_eligible"] == []
 
 
 def test_no_t_eval_dependency(tmp_path):
