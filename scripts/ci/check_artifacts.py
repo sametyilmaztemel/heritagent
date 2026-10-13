@@ -24,6 +24,7 @@ Requires Python >= 3.11 (tomllib).
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import http.client
 import json
 import re
@@ -47,21 +48,30 @@ REQUIREMENTS_CI = REPO_ROOT / "scripts" / "ci" / "requirements-ci.txt"
 FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\s*\)")
-REF_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?([^\s>]+)", re.M)
+REF_DEFINITION = re.compile(r"^ {0,3}\[(?!\^)[^\]]+\]:\s*<?([^\s>]+)", re.M)  # [^n]: is a footnote
 NON_FILE_TARGET = re.compile(r"^(#|//|[a-zA-Z][a-zA-Z0-9+.-]*:)")
 URL = re.compile(r"https?://[^\s)\]>\"'`*]+")
 ARXIV_ID = re.compile(r"arXiv:\s?(\d{4}\.\d{4,5}(?:v\d+)?)")
-BARE_DOMAIN = re.compile(r"(?<![\w./@:-])((?:[a-z0-9-]+\.)+(?:org|com|ai|io|net|dev|edu)/[^\s)\]>\"'`*]*)")
+FILE_SUFFIXES = "md|py|json|jsonl|yaml|yml|txt|toml|csv|html?|sh|js|ts|out|cfg|ini|lock|log"
+BARE_DOMAIN = re.compile(rf"(?<![\w./@:-])((?:[a-z0-9-]+\.)+(?!(?:{FILE_SUFFIXES})/)[a-z]{{2,}}/[^\s)\]>\"'`*]*)")
 TRAILING_PUNCT = ".,;:_"
 POLITE_DELAY_S = {"arxiv.org": 1.0}
 DEAD_DNS_ERRORS = {getattr(socket, name) for name in ("EAI_NONAME", "EAI_NODATA") if hasattr(socket, name)}
 
 
 def tracked(pattern: str) -> list[Path]:
-    out = subprocess.run(
-        ["git", "ls-files", "-z", "--", pattern],
-        cwd=REPO_ROOT, check=True, capture_output=True, text=True,
-    ).stdout
+    """Files matching a git pathspec glob (``*`` crosses directories). In a
+    tree without git metadata (e.g. a ``git archive`` export) every file
+    under the root counts as tracked."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", pattern],
+            cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(p for p in REPO_ROOT.rglob("*")
+                      if p.is_file() and ".git" not in p.relative_to(REPO_ROOT).parts
+                      and fnmatch.fnmatchcase(rel(p), pattern))
     return [REPO_ROOT / p for p in out.split("\0") if p]
 
 
@@ -196,7 +206,12 @@ def check_external_links() -> list[str]:
             urls.setdefault(url, rel(path))
     errors, unverifiable = [], []
     for url, source in sorted(urls.items()):
-        time.sleep(POLITE_DELAY_S.get(urllib.parse.urlsplit(url).hostname or "", 0.0))
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+        except ValueError as exc:
+            errors.append(f"{source}: dead link {url} (malformed URL: {exc})")
+            continue
+        time.sleep(POLITE_DELAY_S.get(host, 0.0))
         verdict, detail = probe(url)
         if verdict == "dead":
             errors.append(f"{source}: dead link {url} ({detail})")
@@ -224,8 +239,8 @@ def probe(url: str) -> tuple[str, str]:
             with urllib.request.urlopen(urllib.request.Request(url, method=method, headers=headers), timeout=20):
                 return "ok", method
         except urllib.error.HTTPError as exc:
-            if method == "HEAD" and exc.code in (403, 405, 501):
-                continue
+            if method == "HEAD":
+                continue  # some servers mishandle HEAD; GET decides
             return ("dead" if exc.code in (404, 410) else "unverifiable"), f"HTTP {exc.code}"
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, socket.gaierror) and exc.reason.errno in DEAD_DNS_ERRORS:
