@@ -6,11 +6,17 @@ import pytest
 
 from genome.validation.errors import GenomeValidationError
 from runtime.expression import compile_runtime_config
+from tests.conftest import finalize_genome
 from tests.runtime.conftest import config_with_skill, seed_with_skill
 
 
-def test_g0_seed_compiles_to_typed_policies(g0_config):
-    assert g0_config.genome_id == "G-0f1e2d3c"
+def test_g0_seed_compiles_to_typed_policies(g0_config, registry):
+    from runtime.seed_g0 import build_g0_seed_genome
+    # the G0 id is the canonical content hash of the seed genome (A2)
+    assert g0_config.genome_id == build_g0_seed_genome(registry)["genome_id"]
+    from genome.validation.identity import GENOME_ID_PATTERN, compute_genome_id
+    assert GENOME_ID_PATTERN.match(g0_config.genome_id)
+    assert compute_genome_id(build_g0_seed_genome(registry)) == g0_config.genome_id
     planner = g0_config.policies["cognition.planner"]
     retry = g0_config.policies["execution.retry_policy"]
     assert planner.config == {"style": "react", "max_plan_steps": 8}
@@ -34,6 +40,7 @@ def test_malformed_planner_payload_rejected(registry):
     uri = registry.put("policy", "planner_react_v1", 2, {"style": "cot", "max_plan_steps": 4})
     genome["genes"]["cognition"]["planner"]["version"] = 2
     genome["genes"]["cognition"]["planner"]["artifact"] = uri
+    finalize_genome(genome)  # legitimately mutated genome under test
     with pytest.raises(GenomeValidationError, match="cognition.planner"):
         compile_runtime_config(genome, registry)
 
@@ -43,6 +50,7 @@ def test_malformed_retry_payload_rejected(registry):
     uri = registry.put("policy", "retry_backoff_v1", 2, {"max_retries": 3, "backoff": "fibonacci"})
     genome["genes"]["execution"]["retry_policy"]["version"] = 2
     genome["genes"]["execution"]["retry_policy"]["artifact"] = uri
+    finalize_genome(genome)  # legitimately mutated genome under test
     with pytest.raises(GenomeValidationError, match="execution.retry_policy"):
         compile_runtime_config(genome, registry)
 
@@ -55,6 +63,7 @@ def test_skill_procedure_ids_must_be_unique(registry):
         "principle": "p", "when_to_apply": "w",
         "procedure": [{"id": "S1", "text": "a"}, {"id": "S1", "text": "b"}],
     })
+    finalize_genome(genome)  # legitimately mutated genome under test
     with pytest.raises(GenomeValidationError, match="unique"):
         compile_runtime_config(genome, registry)
 
@@ -67,6 +76,7 @@ def test_skill_procedure_id_pattern_enforced(registry):
         "principle": "p", "when_to_apply": "w",
         "procedure": [{"id": "step-one", "text": "a"}],
     })
+    finalize_genome(genome)  # legitimately mutated genome under test
     with pytest.raises(GenomeValidationError,
                         match="does not match"):
         compile_runtime_config(genome, registry)

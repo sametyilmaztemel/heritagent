@@ -63,7 +63,9 @@ def seed_with_skill(registry: TraitRegistry, *, express_when: dict | None = None
     })
     if express_when is not None:
         genome["regulation"] = {SKILL_GENE_ID: {"express_when": express_when}}
-    return genome
+    # functional content changed -> recompute the canonical content-hash id
+    from tests.conftest import finalize_genome
+    return finalize_genome(genome)
 
 
 def config_with_skill(registry: TraitRegistry, **kwargs):

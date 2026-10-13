@@ -76,3 +76,107 @@ wrong and would blur the somatic/germline lifecycle.
 **Consequences.** Mined skills are explicitly marked as unvalidated lifetime
 acquisitions end-to-end; a later somatic→germline promotion is visible in
 provenance as `acquired → assimilation` with the CIG record attached.
+
+## Amendment A2 — canonical `genome_id` hashing (2026-10-13, issue #22)
+
+D6 states `genome_id = G-<content-hash-prefix>` without defining the hash
+domain. Before any lineage experiment (blocks #13, not #4), the identity
+semantics are locked normatively here and implemented once in
+`genome/validation/identity.py`.
+
+**Principle.** `genome_id` is the identity of a genome's HERITABLE
+FUNCTIONAL CONTENT, not a run/lineage bookkeeping id. Lineage identity is
+carried by the separate `lineage_id` / `parent` / `generation` metadata and
+is never mixed into content identity.
+
+**Hash contract (locked).**
+
+- Algorithm: SHA-256, lowercase hex.
+- Domain separation (exact, locked): the hash input is the UTF-8 bytes of
+  `"heritagent:eag-genome-id:v1" + "\n" + <canonical identity JSON>` — the
+  bare JSON is never hashed, so genome identity bytes cannot collide with
+  another artifact type's hash namespace. The separator version
+  (`v1`) identifies THIS identity contract; changing it requires a new ADR.
+- Prefix length (locked): `genome_id = "G-" + digest[:16]` — 16 lowercase
+  hex chars (64 bits). The existing schema pattern `^G-[a-z0-9]{8,}$`
+  admits it (16 ≥ 8; no schema change needed). The prefix is a convenience
+  content identifier; the FULL digest is always reproducible from the
+  canonical payload via `genome_identity_hash_hex()`. On a prefix
+  collision the contract FAILS CLOSED (validation recomputes and compares
+  exact strings); any longer-prefix migration (e.g. 32 hex) requires a new
+  ADR. No collision registry is maintained.
+
+**Identity domain — INCLUDED in the hash:**
+
+- `schema_version` (the manifest format version that fixes functional
+  interpretation);
+- the policy slot structure (`genes.cognition` / `.memory` / `.execution`)
+  with, per slot, the geneRef's functional identity: `gene_id`, `version`,
+  `type`, `artifact` (the content-addressed URI pins artifact bytes by
+  digest);
+- `genes.skills[]` IN ORDER — skill array order is runtime-functional
+  (skill block / prompt rendering order), so order is part of the identity
+  domain and is NEVER sorted;
+- `regulation` — every gene's `express_when` condition (predicates over
+  agent-observable counters are expression-relevant configuration).
+
+**Identity domain — EXCLUDED from the hash:**
+
+- `genome_id` itself (the claimed value is never an input to its own
+  computation);
+- `parent`, `generation`, `lineage_id` (lineage bookkeeping);
+- per-gene `origin` and `provenance` (`born_generation`,
+  `source_trajectory`, `cig_record`, `notes`) — history/audit metadata,
+  not function: re-assimilating the same artifact through a different CIG
+  record is the same functional genome.
+
+**Canonicalization contract (locked).**
+
+- Single authoritative implementation:
+  `canonical_genome_identity_payload(genome)` in
+  `genome/validation/identity.py`; serialization reuses
+  `trajectory.storage.canonical.canonical_json` (sorted object keys,
+  compact separators, UTF-8, non-finite floats and non-JSON values
+  rejected) — no duplicate canonical-JSON implementation.
+- The input is deep-copied; caller mutation cannot influence the payload;
+  the input is never mutated.
+- Semantically ORDERED arrays keep their order (`skills[]`).
+  Semantically UNORDERED collections are normalized: regulation keys are
+  unordered (canonical JSON sorts them) and `all_of`/`any_of` predicate
+  arrays are conjunctions/disjunctions (order-insensitive evaluation), so
+  they are canonically sorted by canonical JSON of each predicate. No
+  other array is ever reordered.
+- Normalization: an absent policy section equals an empty one, and an
+  absent `regulation` equals `{}` (functionally identical → same id).
+- Determinism: identical functional content produces byte-identical
+  canonical JSON regardless of dict insertion order or whitespace.
+
+**Consequences (normative).**
+
+1. The SAME heritable functional content under different `parent` /
+   `generation` / `lineage_id` metadata produces the SAME `genome_id`
+   (descendant lineage bookkeeping must not fork content identity);
+2. ANY heritable functional change — artifact URI/version change, skill
+   add/remove, policy slot change, regulation condition change, or an
+   expression-relevant skill reorder — produces a NEW `genome_id`;
+3. lineage identity lives exclusively in `lineage_id`/`parent`/
+   `generation` metadata.
+
+**Enforcement (single boundary).** `load_genome()` runs the canonical id
+check as the FINAL semantic gate (after structural validation and the
+URI/regulation referential semantics, so each failure class keeps its own
+diagnostic): malformed claimed ids (not `G-` + 16 lowercase hex) and
+claimed ≠ recomputed are rejected fail-closed with expected/actual in the
+message. `project_for_runtime()` inherits the check through its
+`load_genome` boundary; no code path duplicates it.
+
+**G0 production path.** `build_g0_seed_genome()` computes the seed's
+`genome_id` from its functional content via `compute_genome_id()` —
+hard-coded seed ids are removed.
+
+**Compatibility.** Pre-existing ad-hoc ids (`G-0f1e2d3c`,
+`G-a1b2c3d4`, ...) were placeholders and are replaced by computed ids in
+the production seed path, test fixtures, and the schema artifact's example
+instances (updated to self-consistent computed values). CIG aggregate
+records carry `genome_id` as a pattern-checked reference label only —
+they are evidence, not genome documents, and are unaffected.
