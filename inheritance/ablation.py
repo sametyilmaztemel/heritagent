@@ -31,6 +31,7 @@ from inheritance.bootstrap import paired_cluster_bootstrap, stage_passes
 from inheritance.overlay import build_evaluation_configs
 from inheritance.runner import (
     EvaluationIntegrityError,
+    EvaluationTask,
     GateEpisodeRunner,
     RunnerContractError,
     validate_gate_setup,

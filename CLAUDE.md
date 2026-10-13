@@ -31,7 +31,7 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 - Never push directly to `main`: it changes only by merging a reviewed, green PR. Never push to Zcode's `issue-*` branches or to another session's `claude/*` branch.
 - Never edit `SPEC.md`, `research/decisions/ADR-*`, `experiments/manifests/*`, `research/hypotheses/` or `research/novelty-ledger.md` without an accepted ADR or an explicit Critic handoff.
 - Anti-overclaim (SPEC §34): *first / novel / better / causal / general / model-independent / evolutionary improvement / inheritance* only with experimental evidence.
-- Run tests on a `git archive` export in the scratch directory with `pytest -p no:cacheprovider`. `pip install -e .` does not work yet; use `scripts/ci/requirements-ci.txt`.
+- Run tests on a `git archive` export in the scratch directory with `pytest -p no:cacheprovider`. Install with `pip install -e ".[dev]"`, plus `scripts/ci/requirements-ci.txt` for the CI tools.
 
 ## Subagents
 
