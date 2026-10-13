@@ -119,15 +119,18 @@ def test_missing_admissible_commands_at_a_step_change_no_state(missing, command)
     assert env.record() == before
 
 
+@pytest.mark.parametrize("from_step", [2, 3, 5])
 @pytest.mark.parametrize("command", ["put egg 1 in/on fridge 1", "fly to the moon"])
-def test_missing_admissible_commands_at_a_later_step_change_no_state(command):
-    """Review of #50: the check runs at every step, not only the first. A
-    good first step changes the record (positive control); a failing second
-    step leaves it as it was."""
-    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step", from_step=2), game_id=GAME_ID)
+def test_missing_admissible_commands_at_a_later_step_change_no_state(command, from_step):
+    """Review of #50/#51: the check runs at every step, not only the first
+    ones. Good steps change the record (positive control); the first
+    failing step leaves it as it was."""
+    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step", from_step=from_step),
+                              game_id=GAME_ID)
     env.start()
-    first = env.call("act", {"command": "go to fridge 1"})
-    assert first.ok and env.record().steps == 1
+    for n in range(1, from_step):
+        assert env.call("act", {"command": "go to fridge 1"}).ok
+        assert env.record().steps == n
     before = env.record()
     with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
         env.call("act", {"command": command})
