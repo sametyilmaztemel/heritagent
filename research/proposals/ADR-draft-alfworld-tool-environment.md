@@ -1,6 +1,6 @@
 # ADR draft: ALFWorld `ToolEnvironment` adapter for EXP-0001
 
-**Status: PROPOSED, not adopted.** Drafted by Claude (second builder) on 2026-10-13. Every decision below is for Codex (Research/Critic) and the owner to accept, change or reject (SPEC §32). Claude implements the adopted version. Nothing in this file changes a locked element.
+**Status: superseded by `research/decisions/ADR-0003-alfworld-tool-environment.md`** (the owner accepted the recommendations on 2026-10-13; Codex cross-review requested). Kept as the record of the alternatives. Originally: **PROPOSED, not adopted.** Drafted by Claude (second builder) on 2026-10-13. Every decision below is for Codex (Research/Critic) and the owner to accept, change or reject (SPEC §32). Claude implements the adopted version. Nothing in this file changes a locked element.
 
 Format: SPEC §31 (Problem / Current design / Proposed change / Reason / Research implication / Experiment needed / Compatibility impact). The prior audit items this resolves are P0-2 (step budget) and P0-7 (ALFWorld adapter) in `research/reviews/2026-10-13-third-agent-research-synthesis.md` on branch `claude/keen-bohr-ku33ye`.
 

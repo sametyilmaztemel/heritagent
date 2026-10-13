@@ -67,7 +67,7 @@ class StepView:
 class NormalizedTrajectory:
     trajectory_id: str
     task: str
-    status: str                       # finished | budget_exhausted | incomplete
+    status: str                       # finished | budget_exhausted | environment_terminal | incomplete
     answer: str | None
     outcome: dict | None
     steps: tuple[StepView, ...]

@@ -59,8 +59,18 @@ class ToolEnvironment(Protocol):
 
 @dataclass(frozen=True)
 class ToolObservation:
+    """One environment response.
+
+    ``retryable=False`` marks a deterministic failure (e.g. an inadmissible
+    command): the retry policy is not applied, as for a rejected tool call.
+    ``terminal=True`` means the environment ended the episode (e.g. an
+    ALFWorld game reported done); the loop stops with status
+    ``environment_terminal`` (ADR-0003 D3, D5)."""
+
     ok: bool
     content: str
+    terminal: bool = False
+    retryable: bool = True
 
 
 @dataclass(frozen=True)
@@ -101,7 +111,7 @@ class RuntimeCounters:
 
 @dataclass(frozen=True)
 class RunResult:
-    status: str            # "finished" | "budget_exhausted"
+    status: str            # "finished" | "budget_exhausted" | "environment_terminal"
     answer: str | None
     steps: int
     counters: RuntimeCounters
@@ -250,7 +260,7 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
             log.emit("tool_result", step=step, tool=action.name, ok=observation.ok,
                      content=observation.content, latency_ms=tool_latency_ms)
             counters.after_tool(action.name, observation.ok)
-            if observation.ok:
+            if observation.ok or not observation.retryable:
                 break
             tool_attempts += 1
             if retry.should_retry(tool_attempts) and total_retries < budgets.max_total_retries:
@@ -267,6 +277,9 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
         else:
             counters.steps_without_progress += 1
         observations.append(observation.content)
+        if observation.terminal:
+            log.emit("environment_terminal", step=step, tool=action.name)
+            return RunResult("environment_terminal", None, step, counters, log)
 
     exhausted_budget = "planner_max_plan_steps" if effective_max_steps < budgets.max_steps else "max_steps"
     log.emit("budget_exhausted", step=effective_max_steps, budget=exhausted_budget,

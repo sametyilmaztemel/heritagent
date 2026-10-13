@@ -6,7 +6,7 @@
   "required": ["style", "max_plan_steps"],
   "properties": {
     "style": {"const": "react"},
-    "max_plan_steps": {"type": "integer", "minimum": 1, "maximum": 16}
+    "max_plan_steps": {"type": "integer", "minimum": 1, "maximum": 64}
   },
   "additionalProperties": false
 }
