@@ -134,6 +134,7 @@ class CandidateGateResult:
 
     _gene_id: str
     _candidate_version: int
+    _candidate: dict
     _verdict: str
     _aggregate: dict
     _stage4_child: dict
@@ -149,6 +150,13 @@ class CandidateGateResult:
     def candidate_version(self) -> int:
         """Somatic candidate version, derived from the evaluated envelope."""
         return self._candidate_version
+
+    @property
+    def candidate(self) -> dict:
+        """The evaluated candidate gene reference (gene_id, version, type,
+        content-addressed artifact, origin, provenance) — the commit binds the
+        somatic decision to exactly this reference."""
+        return copy.deepcopy(self._candidate)
 
     @property
     def verdict(self) -> str:
@@ -345,14 +353,17 @@ class CigGateOrchestrator:
         # steps 8-9: stage-4 children + aggregates + verdicts
         results: list[CandidateGateResult] = []
         for inp, gid, (parent, seed) in zip(inputs, gene_ids, identities):
-            version = validated[gene_ids.index(gid)]["candidate"]["version"]
+            evaluated = validated[gene_ids.index(gid)]["candidate"]
+            version = evaluated["version"]
             stage4 = self._build_stage4_child(
                 gid, parent, seed, reg_results[gid], overhead_results[gid],
                 pair_evidence, eliminated)
             aggregate = self._build_aggregate(
-                inp, gid, parent, gen_results.get(gid), stage4)
+                inp, gid, parent, gen_results.get(gid), stage4,
+                evaluated=evaluated)
             results.append(CandidateGateResult(
                 _gene_id=gid, _candidate_version=version,
+                _candidate=copy.deepcopy(evaluated),
                 _verdict=aggregate["verdict"],
                 _aggregate=aggregate, _stage4_child=stage4,
                 _stage_results={
@@ -708,7 +719,8 @@ class CigGateOrchestrator:
         return child
 
     def _build_aggregate(self, inp: GateCandidateInput, gene_id: str,
-                          parent: str, gen, stage4: dict) -> dict:
+                          parent: str, gen, stage4: dict, *,
+                          evaluated: dict) -> dict:
         gen_in = gen.in_scope_child
         gen_out = gen.out_scope_child
         stages = {
@@ -750,7 +762,13 @@ class CigGateOrchestrator:
                 "version": THRESHOLD_VERSION,
                 "values": dict(PRIMARY_THRESHOLDS),
             },
-            "artifacts": {},
+            # which artifact this verdict is about (ADR-0001 reason (c): which
+            # CIG record promoted which artifact)
+            "artifacts": {"candidate": {
+                "gene_id": evaluated["gene_id"],
+                "version": evaluated["version"],
+                "artifact": evaluated["artifact"],
+            }},
         }
         load_cig(aggregate)
         return aggregate
@@ -776,6 +794,14 @@ class CigGateOrchestrator:
                 raise RecordConsistencyError(
                     f"{result.gene_id!r} v{version} is no longer a somatic "
                     f"candidate")
+            stored = somatic_store.candidate_ref(result.gene_id, version)
+            if stored != result.candidate:
+                raise RecordConsistencyError(
+                    f"{result.gene_id!r} v{version}: the stored somatic "
+                    f"candidate is not the evaluated one (stored artifact "
+                    f"{stored['artifact']!r}, evaluated "
+                    f"{result.candidate['artifact']!r}); refusing to bind "
+                    f"the verdict to a different reference")
             planned.append((result, version))
         # commit: somatic decision first, then expose the bundle.
         # verdict -> terminal state: promote -> validated,

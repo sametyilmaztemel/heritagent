@@ -370,3 +370,39 @@ def test_failed_commit_leaves_candidate_and_cig_store_unchanged(tmp_path):
     assert somatic.state(result.gene_id, result.candidate_version) == \
         "candidate"
     assert (dict(somatic._envelopes), dict(somatic._history)) == somatic_before
+
+
+def test_aggregate_records_the_evaluated_artifact(tmp_path):
+    """The aggregate names the exact candidate reference its verdict is
+    about (gene_id, version, content-addressed artifact URI)."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    outcome = orch.run(inputs)
+    result = outcome.results[0]
+    evaluated = inputs[0].candidate_envelope["candidate"]
+    expected = {"gene_id": evaluated["gene_id"], "version": evaluated["version"],
+                "artifact": evaluated["artifact"]}
+    assert result.aggregate["artifacts"] == {"candidate": expected}
+    assert cig_store._aggregates[result.aggregate_cig_id]["artifacts"] == {
+        "candidate": expected}
+    assert result.candidate == evaluated
+
+
+def test_commit_refuses_decision_for_a_different_stored_candidate(tmp_path):
+    """The gate evaluated an envelope whose reference differs from the
+    somatic candidate stored under the same (gene_id, version): the verdict
+    must not be bound to the stored candidate, and neither store changes."""
+    import dataclasses
+
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    forged = copy.deepcopy(inputs[0].candidate_envelope)
+    forged["candidate"]["provenance"]["source_trajectory"] = "T-mine000bbbb"
+    inputs = [dataclasses.replace(inputs[0], candidate_envelope=forged)]
+    cig_before = (dict(cig_store._aggregates), dict(cig_store._children))
+    somatic_before = (dict(somatic._envelopes), dict(somatic._history))
+    with pytest.raises(RecordConsistencyError, match="not the evaluated one"):
+        orch.run(inputs)
+    assert (dict(cig_store._aggregates), dict(cig_store._children)) == cig_before
+    assert (dict(somatic._envelopes), dict(somatic._history)) == somatic_before
+    assert somatic.state("a", 1) == "candidate"
