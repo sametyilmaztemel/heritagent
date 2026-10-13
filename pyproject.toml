@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "heritagent"
 version = "0.1.0"
@@ -7,6 +11,17 @@ dependencies = ["jsonschema>=4.18"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+
+# Explicit package list: flat-layout auto-discovery refuses a repo with
+# several top-level directories (research/, experiments/, ...). namespaces
+# picks up somatic/ and the schema directories, which have no __init__.py.
+[tool.setuptools.packages.find]
+include = ["genome*", "runtime*", "traits*", "trajectory*", "inheritance*", "somatic*"]
+namespaces = true
+
+# Modules locate their JSON Schemas and prompts relative to __file__.
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

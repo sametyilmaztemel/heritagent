@@ -1,11 +1,5 @@
-# CI install set (issue #18). `pip install -e .` does not work yet (setuptools
-# flat-layout discovery finds several top-level packages), so CI installs the
-# dependencies directly and runs from the checkout (pytest pythonpath = ".").
-# The first block mirrors pyproject.toml [project].dependencies + [dev];
-# check_artifacts.py fails if the two drift apart.
-jsonschema>=4.18
-pytest>=8
-
-# CI-only tools
+# CI-only tools (issue #18). The project itself and its test dependencies are
+# installed with `pip install -e ".[dev]"` from pyproject.toml.
 pyyaml>=6
 yamllint>=1.35
+ruff==0.6.9

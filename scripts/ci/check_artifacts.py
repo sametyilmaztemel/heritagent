@@ -7,8 +7,7 @@ Default mode (offline, gates PRs):
    doc example in architecture/eag-v0-schema.md and the G0 seed genome;
 3. every tracked experiment manifest parses as a YAML mapping (style lint is
    yamllint's job, see .yamllint.yaml);
-4. every relative Markdown link in a tracked *.md file resolves;
-5. scripts/ci/requirements-ci.txt carries every pyproject dependency.
+4. every relative Markdown link in a tracked *.md file resolves.
 
 --external-links instead checks the citations in research/**/*.md for link
 rot (SPEC section 30): http(s) URLs, `arXiv:<id>` references (checked as
@@ -18,7 +17,6 @@ hosts that do not exist and malformed URLs fail; other HTTP errors, timeouts
 and connection failures are reported as unverifiable and do not fail.
 
 Usage: python scripts/ci/check_artifacts.py [--external-links]
-Requires Python >= 3.11 (tomllib).
 """
 
 from __future__ import annotations
@@ -33,7 +31,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,7 +40,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
-REQUIREMENTS_CI = REPO_ROOT / "scripts" / "ci" / "requirements-ci.txt"
 
 FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
@@ -70,9 +66,25 @@ def tracked(pattern: str) -> list[Path]:
         ).stdout
     except (OSError, subprocess.CalledProcessError):
         return sorted(p for p in REPO_ROOT.rglob("*")
-                      if p.is_file() and ".git" not in p.relative_to(REPO_ROOT).parts
+                      if p.is_file() and not _untracked_by_convention(p)
                       and fnmatch.fnmatchcase(rel(p), pattern))
     return [REPO_ROOT / p for p in out.split("\0") if p]
+
+
+# Directories .gitignore excludes (build output, virtualenvs, caches): without
+# git they would otherwise be scanned, e.g. build/lib copies of every schema.
+# Mirrors .gitignore: the first set matches at any depth, the second only at
+# the root (/results/, /checkpoints/, /runs/, /data/).
+UNTRACKED_DIRS_ANYWHERE = {".git", "build", "dist", ".venv", "venv", "__pycache__",
+                           ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+UNTRACKED_DIRS_AT_ROOT = {"results", "checkpoints", "runs", "data"}
+
+
+def _untracked_by_convention(path: Path) -> bool:
+    dirs = path.relative_to(REPO_ROOT).parts[:-1]
+    if dirs and dirs[0] in UNTRACKED_DIRS_AT_ROOT:
+        return True
+    return any(part in UNTRACKED_DIRS_ANYWHERE or part.endswith(".egg-info") for part in dirs)
 
 
 def rel(path: Path) -> str:
@@ -179,18 +191,6 @@ def check_relative_links() -> list[str]:
     return errors
 
 
-def check_requirements_sync() -> list[str]:
-    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    wanted = list(project.get("dependencies", []))
-    wanted += project.get("optional-dependencies", {}).get("dev", [])
-    have = {
-        line.split("#", 1)[0].replace(" ", "").lower()
-        for line in REQUIREMENTS_CI.read_text(encoding="utf-8").splitlines()
-    }
-    missing = [spec for spec in wanted if spec.replace(" ", "").lower() not in have]
-    return [f"{rel(REQUIREMENTS_CI)}: missing pyproject dependency {spec!r}" for spec in missing]
-
-
 def citation_urls(text: str) -> list[str]:
     """http(s) URLs, arXiv ids and bare-domain links, normalised to https URLs."""
     found = [url.rstrip(TRAILING_PUNCT) for url in URL.findall(text)]
@@ -266,7 +266,7 @@ def main() -> int:
         checks = [check_external_links]
     else:
         checks = [check_schemas, check_example_genomes, check_manifests,
-                  check_relative_links, check_requirements_sync]
+                  check_relative_links]
     errors = [error for check in checks for error in check()]
     for error in errors:
         print(f"FAIL: {error}")
