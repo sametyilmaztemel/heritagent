@@ -64,7 +64,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 - *Decision.* D2 applies to the initial state too. The task text is the initial observation minus the banner, then `Admissible commands:` and the sorted initial `admissible_commands`, rendered exactly like every later observation. It is the same in every arm and part of the frozen G0 prompt.
 - *Reason.*
   - Every observation the model sees has the same form.
-  - The protocols closest to EXP-0001's anchors show the admissible actions from the first step (the D2 rationale).
+  - D2's reason applies equally to the first action. Showing the admissible commands removes most invalid-command failures, which otherwise dominate 7B behaviour (proposal D2). The verl-agent/GiGPO protocol family shows admissible actions, but the anchors do not all document whether they show them from the first step.
   - A blind first action adds invalid commands that measure the protocol, not the agent.
 - *Research implication.* Like D2, A1 sets G0's level, so it stays frozen through the calibration pilot and the run.
-- *Compatibility.* `AlfworldEnvironment.start()` returns the rendered text. Callers that pass `start()` to `run_agent` need no change.
+- *Compatibility.* `AlfworldEnvironment.start()` returns the rendered text, so callers that pass `start()` to `run_agent` need no change. Since the own review of #48, a game whose infos lack `admissible_commands` fails closed at `start()` and at every step. Without that check the model would see an empty command list.
