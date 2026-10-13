@@ -38,4 +38,5 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r scripts/ci/requirements-ci.txt
       - run: python scripts/ci/check_artifacts.py
-      - run: yamllint --strict -c .yamllint.yaml experiments/manifests .github/workflows
+      - if: ${{ !cancelled() }}
+        run: yamllint --strict -c .yamllint.yaml experiments/manifests .github/workflows

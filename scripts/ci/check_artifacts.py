@@ -10,10 +10,12 @@ Default mode (offline, gates PRs):
 4. every relative Markdown link in a tracked *.md file resolves;
 5. scripts/ci/requirements-ci.txt carries every pyproject dependency.
 
---external-links instead checks the http(s) URLs in research/**/*.md for link
-rot (SPEC section 30). It needs network access and is meant for the scheduled
-workflow: 404/410 and unresolvable hosts fail; other HTTP errors, timeouts and
-connection failures are reported as unverifiable and do not fail.
+--external-links instead checks the citations in research/**/*.md for link
+rot (SPEC section 30): http(s) URLs, `arXiv:<id>` references (checked as
+https://arxiv.org/abs/<id>) and bare-domain links such as aclanthology.org/...
+It needs network access and is meant for the scheduled workflow: HTTP 404/410,
+hosts that do not exist and malformed URLs fail; other HTTP errors, timeouts
+and connection failures are reported as unverifiable and do not fail.
 
 Usage: python scripts/ci/check_artifacts.py [--external-links]
 Requires Python >= 3.11 (tomllib).
@@ -22,14 +24,17 @@ Requires Python >= 3.11 (tomllib).
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -39,11 +44,17 @@ sys.path.insert(0, str(REPO_ROOT))
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 REQUIREMENTS_CI = REPO_ROOT / "scripts" / "ci" / "requirements-ci.txt"
 
-FENCED_BLOCK = re.compile(r"^(```|~~~).*?^\1", re.S | re.M)
+FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
-MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
-URL = re.compile(r"https?://[^\s)\]>\"'`]+")
-SKIP_SCHEMES = ("http://", "https://", "mailto:", "#")
+MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\s*\)")
+REF_DEFINITION = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?([^\s>]+)", re.M)
+NON_FILE_TARGET = re.compile(r"^(#|//|[a-zA-Z][a-zA-Z0-9+.-]*:)")
+URL = re.compile(r"https?://[^\s)\]>\"'`*]+")
+ARXIV_ID = re.compile(r"arXiv:\s?(\d{4}\.\d{4,5}(?:v\d+)?)")
+BARE_DOMAIN = re.compile(r"(?<![\w./@:-])((?:[a-z0-9-]+\.)+(?:org|com|ai|io|net|dev|edu)/[^\s)\]>\"'`*]*)")
+TRAILING_PUNCT = ".,;:_"
+POLITE_DELAY_S = {"arxiv.org": 1.0}
+DEAD_DNS_ERRORS = {getattr(socket, name) for name in ("EAI_NONAME", "EAI_NODATA") if hasattr(socket, name)}
 
 
 def tracked(pattern: str) -> list[Path]:
@@ -122,6 +133,8 @@ def check_manifests() -> list[str]:
 
     errors = []
     paths = tracked("experiments/manifests/*.yaml") + tracked("experiments/manifests/*.yml")
+    if not paths:
+        return ["no experiment manifests found"]
     for path in paths:
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -142,11 +155,12 @@ def markdown_text(path: Path) -> str:
 def check_relative_links() -> list[str]:
     errors, count = [], 0
     for path in tracked("*.md"):
-        for target in MD_LINK.findall(markdown_text(path)):
-            if target.startswith(SKIP_SCHEMES):
+        text = markdown_text(path)
+        for target in MD_LINK.findall(text) + REF_DEFINITION.findall(text):
+            if NON_FILE_TARGET.match(target):
                 continue
             count += 1
-            clean = target.split("#", 1)[0].split("?", 1)[0]
+            clean = urllib.parse.unquote(target.split("#", 1)[0].split("?", 1)[0])
             base = REPO_ROOT if clean.startswith("/") else path.parent
             resolved = (base / clean.lstrip("/")).resolve()
             if not resolved.is_relative_to(REPO_ROOT) or not resolved.exists():
@@ -167,13 +181,22 @@ def check_requirements_sync() -> list[str]:
     return [f"{rel(REQUIREMENTS_CI)}: missing pyproject dependency {spec!r}" for spec in missing]
 
 
+def citation_urls(text: str) -> list[str]:
+    """http(s) URLs, arXiv ids and bare-domain links, normalised to https URLs."""
+    found = [url.rstrip(TRAILING_PUNCT) for url in URL.findall(text)]
+    found += [f"https://arxiv.org/abs/{arxiv_id}" for arxiv_id in ARXIV_ID.findall(text)]
+    found += [f"https://{bare.rstrip(TRAILING_PUNCT)}" for bare in BARE_DOMAIN.findall(text)]
+    return found
+
+
 def check_external_links() -> list[str]:
     urls = {}
     for path in tracked("research/*.md"):
-        for url in URL.findall(markdown_text(path)):
-            urls.setdefault(url.rstrip(".,;:"), rel(path))
+        for url in citation_urls(path.read_text(encoding="utf-8")):
+            urls.setdefault(url, rel(path))
     errors, unverifiable = [], []
     for url, source in sorted(urls.items()):
+        time.sleep(POLITE_DELAY_S.get(urllib.parse.urlsplit(url).hostname or "", 0.0))
         verdict, detail = probe(url)
         if verdict == "dead":
             errors.append(f"{source}: dead link {url} ({detail})")
@@ -182,15 +205,18 @@ def check_external_links() -> list[str]:
     for line in unverifiable:
         print(f"warning: {line}")
     print(f"external links: {len(urls)} checked, {len(unverifiable)} unverifiable")
+    if urls and len(unverifiable) == len(urls):
+        print("warning: no link could be verified; check the runner's network access")
     return errors
 
 
 def probe(url: str) -> tuple[str, str]:
     """Return ("ok" | "dead" | "unverifiable", detail).
 
-    Only evidence of rot counts as dead: HTTP 404/410 or a host that no longer
-    resolves. Bot blocking, rate limits, server errors, timeouts and other
-    connection failures are unverifiable.
+    Only evidence of rot counts as dead: HTTP 404/410, a host that does not
+    exist (EAI_NONAME / EAI_NODATA, not the transient EAI_AGAIN) or a
+    malformed URL. Bot blocking, rate limits, server errors, timeouts and
+    other connection failures are unverifiable.
     """
     headers = {"User-Agent": "heritagent-link-check/0.1 (+https://github.com/sametyilmaztemel/heritagent)"}
     for method in ("HEAD", "GET"):
@@ -202,11 +228,17 @@ def probe(url: str) -> tuple[str, str]:
                 continue
             return ("dead" if exc.code in (404, 410) else "unverifiable"), f"HTTP {exc.code}"
         except urllib.error.URLError as exc:
-            if isinstance(exc.reason, socket.gaierror):
-                return "dead", f"host does not resolve: {exc.reason}"
+            if isinstance(exc.reason, socket.gaierror) and exc.reason.errno in DEAD_DNS_ERRORS:
+                return "dead", f"host does not exist: {exc.reason}"
             return "unverifiable", f"connection failed: {exc.reason}"
-        except (TimeoutError, OSError) as exc:
-            return "unverifiable", f"connection failed: {exc}"
+        except http.client.InvalidURL as exc:
+            return "dead", f"malformed URL: {exc}"
+        except UnicodeError as exc:
+            return "unverifiable", f"non-ASCII URL not requested: {exc}"
+        except ValueError as exc:
+            return "dead", f"malformed URL: {exc}"
+        except (TimeoutError, OSError, http.client.HTTPException) as exc:
+            return "unverifiable", f"connection failed: {exc!r}"
     return "unverifiable", "HEAD and GET refused"
 
 
