@@ -343,6 +343,11 @@ def _fallback_bank_size(plan: SplitPlan, pool: str, family: str, accepted: int) 
         if need > left:
             raise SplitError(f"{pool}[{family}]: {accepted} accepted train games cannot meet "
                              f"the locked {earlier} minimum {floor}, which has no fallback")
+        if need < floor and family not in plan.feasibility_fallback.get(earlier, {}):
+            raise SplitError(
+                f"{pool}[{family}]: the data leaves only {need} games for {earlier}[{family}], "
+                f"below its locked minimum {floor}; pre-register a {earlier} fallback of "
+                f"{need} for this family (ADR-0004)")
         got = plan.counts(earlier).get(family, 0)
         if got != need:
             raise SplitError(
