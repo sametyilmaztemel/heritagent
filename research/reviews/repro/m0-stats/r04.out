@@ -1,0 +1,23 @@
+all zero (20)                      point=+0.000 CI=[+0.000, +0.000] pass=False
+all +1 (20)                        point=+1.000 CI=[+1.000, +1.000] pass=True
+all -1 (20)                        point=-1.000 CI=[-1.000, -1.000] pass=False
+single +1 (n=1)                    point=+1.000 CI=[+1.000, +1.000] pass=True
+single 0 (n=1)                     point=+0.000 CI=[+0.000, +0.000] pass=False
+one +1, 19 zero (point == tau_c)   point=+0.050 CI=[+0.000, +0.150] pass=False
+
+point == 0.05 exactness for binary deltas (float sum of ints / 20):
+  sum(int-valued floats)/20 == k/20 for all compositions: True
+  1/20 == 0.05: True;  stage_passes(1/20, 0.01) = True
+
+unvalidated inputs (no finiteness / range / type check):
+  NaN among deltas         accepted: point=nan CI=[1.0, 1.0] pass=False
+  out-of-range delta 5.0   accepted: point=0.25 CI=[0.0, 0.75] pass=False
+  bool deltas              accepted: point=1.0 CI=[1.0, 1.0] pass=True
+  confidence=0.0: rejected (confidence must be in (0, 1))
+  confidence=1.0: rejected (confidence must be in (0, 1))
+  confidence=0.95: ok
+  seed=None accepted (random.Random(None) seeds from OS entropy -> non-deterministic)
+
+evaluator, both succeed everywhere: point=0.0 CI=[0.0, 0.0] passed=False
+
+evaluator, both fail everywhere: point=0.0 CI=[0.0, 0.0] passed=False

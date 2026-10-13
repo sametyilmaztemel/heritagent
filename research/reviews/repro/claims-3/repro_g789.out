@@ -1,0 +1,40 @@
+=== GROUP 7: durable interaction evidence ===
+stage4 child interaction block (a): {"eliminated_by_interaction": false, "pair_count": 1, "pair_evidence": [{"delta_pair": 0.0, "evidence_sha256": "50097661b46e14acfb9da1ac216bf372db8397732ec70882843b0b0033e4d1c2", "harmful": false, "other_gene_id": "b", "retained": true}]}
+persisted pair-evidence keys: ['delta_pair', 'evidence_sha256', 'harmful', 'other_gene_id', 'retained']
+  field 'gene_ids' present in persisted child JSON: False
+  field 'allocation' present in persisted child JSON: True
+  field 'task_ids' present in persisted child JSON: True
+  field 'families' present in persisted child JSON: False
+  field 'bank_id' present in persisted child JSON: False
+  field 'paired_outcomes' present in persisted child JSON: False
+  field 'trajectory_id' present in persisted child JSON: True
+  field 'expressed_gene_ids' present in persisted child JSON: False
+  field 'locked_settings' present in persisted child JSON: False
+  field 'seed' present in persisted child JSON: True
+  field 'stop' present in persisted child JSON: False
+hashes identical across children: True
+children byte-identical pair blocks (excluding other_gene_id/retained): True
+full evidence lives only in orch._last (in-memory _LastRun): _LastRun episodes: 20
+GateOutcome public attrs: ['committed', 'mining_seed', 'parent_cig_id', 'results', 'verdicts']
+allocation_metadata (hash domain): {'task_count': 10, 'task_ids': ['ix-0', 'ix-1', 'ix-2', 'ix-3', 'ix-4', 'ix-5', 'ix-6', 'ix-7', 'ix-8', 'ix-9']}
+hash-domain drops expressed_gene_ids although episodes record them: True
+gene_ids order with candidates=(a,b): ('a', 'b')  with (b,a): ('b', 'a')  hash equal: False
+live CIG store children after commit: 0 aggregates: 0
+
+=== GROUP 8: sensitivity composition ===
+primary verdicts: {'a': 'promote', 'b': 'reject'}  pair evidence keys: []
+grid keys: ['ablation', 'aggregate_verdicts', 'analysis_only', 'child_records', 'gene_id', 'interaction_note', 'regression', 'replay', 'runner_calls', 'somatic_states', 'tau_c_grid', 'tau_r_grid']
+ablation flags (b): {'tau_c=0.03': True, 'tau_c=0.05': False, 'tau_c=0.08': False}
+regression flags (b): {'tau_r=0.02': True, 'tau_r=0.03': True, 'tau_r=0.05': True}
+has per-cell (tau_c,tau_r) entries: False
+any key with 'eligible'/'composition'/'not_identifiable': ['interaction evidence collected for the primary preliminary-eligible set only; looser-sensitivity compositions that would newly include previously ineligible candidates are not identifiable from existing T_gate evidence']
+interaction_note is static string: True
+
+=== GROUP 9: hardening/tests ===
+blank identity + float count ACCEPTED; persisted: {'tokens': 3.5, 'tau_k_tokens': 512, 'overhead_pass': True, 'counter_identity': '   ', 'rendered_sha256': '6871eac0542736bbaf320b4073a50327b187041fb0ca9c6cb3ff66f3e9afad6b'}
+constructor accepts BadCounter (validate_token_counter not called)
+vacuous single-candidate interaction block: {'pair_evidence': [], 'pair_count': 0, 'eliminated_by_interaction': False}
+harmful-pair actual verdicts: {'a': 'promote', 'b': 'reject'} a stages: {'replay': True, 'ablation': True, 'generalization_in_scope': True, 'generalization_out_of_scope': True, 'regression': True, 'overhead': True, 'eliminated': False}
+committed: True somatic state: validated gate_reports: ['CIG-0007']
+live CIG aggregates: [] children: []
+require_consistent() passes vacuously on EMPTY live store

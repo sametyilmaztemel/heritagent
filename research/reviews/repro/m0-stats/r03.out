@@ -1,0 +1,25 @@
+(a) index arithmetic used by bootstrap.py:57-59
+  conf=0.95 B=10000: alpha/2*B=250.00000000000023 -> lower_index=250 (251th smallest); (1-alpha/2)*B=9750.0 -> upper_index=9750 (250th largest)
+  conf=0.95 B=1000: alpha/2*B=25.00000000000002 -> lower_index=25 (26th smallest); (1-alpha/2)*B=975.0 -> upper_index=975 (25th largest)
+  conf=0.95 B=500: alpha/2*B=12.50000000000001 -> lower_index=12 (13th smallest); (1-alpha/2)*B=487.5 -> upper_index=487 (13th largest)
+  conf=0.9 B=10000: alpha/2*B=499.9999999999999 -> lower_index=499 (500th smallest); (1-alpha/2)*B=9500.0 -> upper_index=9500 (500th largest)
+  conf=0.99 B=10000: alpha/2*B=50.00000000000004 -> lower_index=50 (51th smallest); (1-alpha/2)*B=9950.0 -> upper_index=9950 (50th largest)
+
+    conf=0.95, B=10000: lower = means[250] (251st smallest), upper = means[9750] (250th largest) -> 250 resample means strictly inside-below LB vs 249 above UB
+
+(b0) boundary where the index choice decides the verdict:
+  seed=64: count(resample mean <= 0) = 250
+  type-1 2.5th percentile (means[249]) = 0.0  -> LB>0: False
+  merged code LB (means[250])          = 0.05  -> LB>0: True
+  numpy-default type-7 (pos 249.975)   = 0.04875 -> LB>0: True
+  stage_passes(point=0.35, code LB) = True
+
+(b) same 20 deltas, same seed 0, different task order:
+  order=pos,neg,zero  point=0.35 LB=+0.00 verdict=FAIL
+  order=zero,neg,pos  point=0.35 LB=+0.00 verdict=FAIL
+  order=shuffle0      point=0.35 LB=+0.05 verdict=PASS
+  order=shuffle1      point=0.35 LB=+0.00 verdict=FAIL
+  order=shuffle2      point=0.35 LB=+0.05 verdict=PASS
+  order=shuffle3      point=0.35 LB=+0.00 verdict=FAIL
+  order=shuffle4      point=0.35 LB=+0.05 verdict=PASS
+  order=shuffle5      point=0.35 LB=+0.05 verdict=PASS

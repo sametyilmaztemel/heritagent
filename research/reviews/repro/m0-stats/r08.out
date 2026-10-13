@@ -1,0 +1,8 @@
+(a) AblationAllocation with T_eval-labelled  bank_id='T_eval': ACCEPTED (metadata keys: ['frozen_strata', 'observed_family_counts', 'task_count', 'task_ids'])
+(a) AblationAllocation with no provenance    bank_id=None: ACCEPTED (metadata keys: ['frozen_strata', 'observed_family_counts', 'task_count', 'task_ids'])
+(a) AblationAllocation with replay bank id   bank_id='replay_bank[heat_and_place]': ACCEPTED (metadata keys: ['frozen_strata', 'observed_family_counts', 'task_count', 'task_ids'])
+
+(b) trait has NO effect (both arms succeed everywhere) but 6 control-arm episodes hit status='adapter_error':
+    statuses accepted: ['adapter_error', 'finished']
+    deltas=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    point=0.3 LB=0.1 passed=True

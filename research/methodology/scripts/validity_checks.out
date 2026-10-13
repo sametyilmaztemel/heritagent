@@ -1,0 +1,98 @@
+== 1. effective integer thresholds ==
+  in-scope  delta>=0.0: passes iff net (wins-losses) >= 0
+  out-scope delta>=-0.05: passes iff net (wins-losses) >= 0
+  harmful pair (n=10, delta<-0.05): harmful iff net <= -1  (one net loss)
+  replay (n=5): successes_with>=3 and net>=2 (integer rule in inheritance/replay.py:44-46)
+
+== 2. float boundary: PR #28 inheritance/regression.py:231 `drop = 1.0 - successes / len(tasks)` ==
+  tau_r=0.02: failures allowed (code float) <= 0 ; exact rational <= 0  drop(38/40)=0.050000000000000044
+  tau_r=0.03: failures allowed (code float) <= 1 ; exact rational <= 1  drop(38/40)=0.050000000000000044
+  tau_r=0.05: failures allowed (code float) <= 1 ; exact rational <= 2  drop(38/40)=0.050000000000000044
+
+== 3. stage-2 pass region (repo bootstrap, seed 0, 10k) ==
+  minimum passing point estimate: 0.20
+  losses=0: passes iff wins >= 4
+  losses=1: passes iff wins >= 7
+  losses=2: passes iff wins >= 9
+  losses=3: passes iff wins >= 11
+
+== 4. model-based gate pass probabilities ==
+Model (assumption-laden, NOT data): each task independently falls in one of four
+paired cells: both succeed, both fail, win (with=1,without=0), loss (with=0,without=1).
+G0 success p; discordance d = P(win)+P(loss); net effect e = P(win)-P(loss).
+win=(d+e)/2, loss=(d-e)/2. Out-of-scope tasks: e=0, same d. T_reg tasks are G0
+successes, so per-task with-trait failure prob f = loss/p. Stages treated as
+independent (disjoint task sets). Interaction stage ignored (single eligible).
+
+  P(T_reg pass, <=1 failure of 40) by per-task flip-to-fail prob f:
+    f=0.005  P=0.983
+    f=0.01   P=0.939
+    f=0.02   P=0.810
+    f=0.03   P=0.662
+    f=0.05   P=0.399
+    f=0.075  P=0.188
+    f=0.1    P=0.080
+    f=0.15   P=0.012
+    f=0.2    P=0.001
+
+  G0 success p=0.4
+  e      d     win   loss  f=loss/p | replay  stage2  in>=0  out>=0  T_reg | P(promote)  E[|C|] of K=10
+  0.00  0.10  0.050 0.050 0.125    |  0.015   0.007  0.725  0.725  0.032 |    0.0000   0.000
+  0.00  0.20  0.100 0.100 0.250    |  0.047   0.022  0.647  0.647  0.000 |    0.0000   0.000
+  0.00  0.30  0.150 0.150 0.375    |  0.083   0.024  0.616  0.616  0.000 |    0.0000   0.000
+  0.05  0.05  0.050 0.000 0.000    |  0.018   0.016  1.000  0.818  1.000 |    0.0002   0.002
+  0.05  0.15  0.100 0.050 0.125    |  0.057   0.056  0.813  0.675  0.032 |    0.0001   0.001
+  0.05  0.25  0.150 0.100 0.250    |  0.101   0.061  0.743  0.629  0.000 |    0.0000   0.000
+  0.05  0.35  0.200 0.150 0.375    |  0.140   0.050  0.706  0.607  0.000 |    0.0000   0.000
+  0.10  0.10  0.100 0.000 0.000    |  0.069   0.133  1.000  0.725  1.000 |    0.0066   0.066
+  0.10  0.20  0.150 0.050 0.125    |  0.121   0.148  0.875  0.647  0.032 |    0.0003   0.003
+  0.10  0.30  0.200 0.100 0.250    |  0.169   0.114  0.815  0.616  0.000 |    0.0000   0.000
+  0.10  0.40  0.250 0.150 0.375    |  0.208   0.090  0.778  0.599  0.000 |    0.0000   0.000
+  0.20  0.20  0.200 0.000 0.000    |  0.237   0.589  1.000  0.647  1.000 |    0.0902   0.902
+  0.20  0.30  0.250 0.050 0.125    |  0.291   0.377  0.946  0.616  0.032 |    0.0021   0.021
+  0.20  0.40  0.300 0.100 0.250    |  0.330   0.270  0.908  0.599  0.000 |    0.0000   0.000
+  0.20  0.50  0.350 0.150 0.375    |  0.360   0.218  0.878  0.588  0.000 |    0.0000   0.000
+  0.30  0.30  0.300 0.000 0.000    |  0.447   0.893  1.000  0.616  1.000 |    0.2461   2.461
+  0.30  0.40  0.350 0.050 0.125    |  0.480   0.603  0.978  0.599  0.032 |    0.0055   0.055
+  0.30  0.50  0.400 0.100 0.250    |  0.498   0.472  0.956  0.588  0.000 |    0.0000   0.000
+  0.30  0.60  0.450 0.150 0.375    |  0.509   0.395  0.936  0.580  0.000 |    0.0000   0.000
+
+  G0 success p=0.667
+  e      d     win   loss  f=loss/p | replay  stage2  in>=0  out>=0  T_reg | P(promote)  E[|C|] of K=10
+  0.00  0.10  0.050 0.050 0.075    |  0.019   0.007  0.725  0.725  0.188 |    0.0000   0.000
+  0.00  0.20  0.100 0.100 0.150    |  0.058   0.022  0.647  0.647  0.012 |    0.0000   0.000
+  0.00  0.30  0.150 0.150 0.225    |  0.102   0.024  0.616  0.616  0.000 |    0.0000   0.000
+  0.05  0.05  0.050 0.000 0.000    |  0.022   0.016  1.000  0.818  1.000 |    0.0003   0.003
+  0.05  0.15  0.100 0.050 0.075    |  0.069   0.056  0.813  0.675  0.188 |    0.0004   0.004
+  0.05  0.25  0.150 0.100 0.150    |  0.120   0.061  0.743  0.629  0.012 |    0.0000   0.000
+  0.05  0.35  0.200 0.150 0.225    |  0.165   0.050  0.706  0.607  0.000 |    0.0000   0.000
+  0.10  0.10  0.100 0.000 0.000    |  0.080   0.133  1.000  0.725  1.000 |    0.0077   0.077
+  0.10  0.20  0.150 0.050 0.075    |  0.140   0.148  0.875  0.647  0.188 |    0.0022   0.022
+  0.10  0.30  0.200 0.100 0.150    |  0.193   0.114  0.815  0.616  0.012 |    0.0001   0.001
+  0.10  0.40  0.250 0.150 0.225    |  0.235   0.090  0.778  0.599  0.000 |    0.0000   0.000
+  0.20  0.20  0.200 0.000 0.000    |  0.262   0.589  1.000  0.647  1.000 |    0.0996   0.996
+  0.20  0.30  0.250 0.050 0.075    |  0.317   0.377  0.946  0.616  0.188 |    0.0131   0.131
+  0.20  0.40  0.300 0.100 0.150    |  0.355   0.270  0.908  0.599  0.012 |    0.0006   0.006
+  0.30  0.30  0.300 0.000 0.000    |  0.472   0.893  1.000  0.616  1.000 |    0.2595   2.595
+
+  Null traits (e=0): per-candidate false promotion and P(>=1 of 10 null promoted)
+    d=0.05  P(promote)=7.29e-07  FWER(10)=7.29e-06  stage2-only=0.0009
+    d=0.1   P(promote)=1.74e-06  FWER(10)=1.74e-05  stage2-only=0.0068
+    d=0.2   P(promote)=6.30e-08  FWER(10)=6.30e-07  stage2-only=0.0222
+    d=0.3   P(promote)=1.29e-10  FWER(10)=1.29e-09  stage2-only=0.0241
+    d=0.4   P(promote)=3.37e-14  FWER(10)=3.38e-13  stage2-only=0.0218
+
+== 5. budget recount ==
+  mining=180 cig=3900 final_eval=1746 interaction_worst_per_seed=900
+  total without interaction = 5826
+  total with interaction counted once (design) = 6726
+  total with interaction per seed (x3)        = 8526
+  interaction if the identical deterministic 'neither' arm ran once per seed: 460 per seed
+  arm A deterministic duplicates across 3 seeds (same G0, temp 0): 388 episodes
+  stage-2 'without' arm = identical G0 on the same 20 tasks for all K candidates: 180 duplicate episodes/seed (usable as a free determinism audit)
+  T_reg feasibility: needs >=40 G0 successes in 60 T_mine tasks (>= 66.7%)
+    G0 success 0.300: P(>=40/60 solved) = 0.0000
+    G0 success 0.450: P(>=40/60 solved) = 0.0006
+    G0 success 0.600: P(>=40/60 solved) = 0.1786
+    G0 success 0.667: P(>=40/60 solved) = 0.5625
+    G0 success 0.750: P(>=40/60 solved) = 0.9459

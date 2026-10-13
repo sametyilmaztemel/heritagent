@@ -1,0 +1,15 @@
+M1_rank_only_harmful: 443 passed in 18.46s
+M4a_overhead_not_in_stage4_pass: 443 passed in 18.63s
+M4b_overhead_not_gating_anywhere: 443 passed in 18.61s
+M4c_overhead_not_in_eligibility: 443 passed in 18.26s
+M5_gen_not_in_eligibility: 443 passed in 18.87s
+T1_no_ablation_preflight: 443 passed in 18.79s
+T1b_no_preflight_at_all: 9 failed, 434 passed in 19.38s
+T2_regulation_dropped_all: 443 passed in 19.50s
+T2a_regulation_dropped_gen: 443 passed in 18.87s
+T2b_regulation_dropped_reg: 443 passed in 19.59s
+T2c_regulation_dropped_interaction: 443 passed in 18.76s
+T3a_add_bundle_nonatomic: 3 failed, 440 passed in 19.34s
+T3b_add_bundle_children_first_nonatomic: 443 passed in 19.45s
+T3c_stage3_hidden_from_runner_on_replay_fail: 443 passed in 19.03s
+baseline: 443 passed in 18.32s

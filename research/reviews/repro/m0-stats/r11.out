@@ -1,0 +1,8 @@
+replay: two evaluate() calls on the same evaluator + allocation
+  runner calls: 20 (one-per-pair contract would allow 10)
+  child ids: CIG-0007/S11-replay / CIG-0007/S11-replay (identical)
+  stage_pass: first=False second=True  (both children schema-valid)
+ablation: two evaluate() calls on the same evaluator + allocation
+  runner calls: 80 (contract: 40)
+  child ids identical: True
+  first: point=0.15 LB=0.0 pass=False; second: point=0.2 LB=0.05 pass=True

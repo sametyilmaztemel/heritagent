@@ -1,0 +1,16 @@
+| mixture | f | replay | ablation | gen_in | gen_out | regression | all5 |
+|---|---|---|---|---|---|---|---|
+| baseline 20/50/30 | 0.0 | 0.50 | 1.18 | 8.05 | 8.05 | 7.00 | 0.30 |
+| baseline 20/50/30 | 0.05 | 0.52 | 0.82 | 7.18 | 7.18 | 2.79 | 0.07 |
+| baseline 20/50/30 | 0.1 | 0.59 | 0.61 | 6.74 | 6.74 | 0.56 | 0.01 |
+| optimistic 50/30/20 | 0.0 | 1.26 | 2.94 | 8.70 | 8.70 | 8.00 | 0.74 |
+| optimistic 50/30/20 | 0.05 | 1.24 | 2.04 | 8.05 | 8.05 | 3.19 | 0.18 |
+| optimistic 50/30/20 | 0.1 | 1.25 | 1.45 | 7.64 | 7.64 | 0.64 | 0.03 |
+| pessimistic 10/60/30 | 0.0 | 0.25 | 0.59 | 8.05 | 8.05 | 7.00 | 0.15 |
+| pessimistic 10/60/30 | 0.05 | 0.28 | 0.41 | 7.03 | 7.03 | 2.79 | 0.04 |
+| pessimistic 10/60/30 | 0.1 | 0.38 | 0.33 | 6.54 | 6.54 | 0.56 | 0.01 |
+P(empty per seed)=0.245: P(empty in >=2/3 seeds | independent)=0.151; all 3=0.015
+P(empty per seed)=0.47: P(empty in >=2/3 seeds | independent)=0.455; all 3=0.104
+P(empty per seed)=0.739: P(empty in >=2/3 seeds | independent)=0.831; all 3=0.404
+P(empty per seed)=0.927: P(empty in >=2/3 seeds | independent)=0.985; all 3=0.797
+P(empty per seed)=0.98: P(empty in >=2/3 seeds | independent)=0.999; all 3=0.941

@@ -1,0 +1,20 @@
+compositions with exact P(mean<=0) in [0.018, 0.032]:
+  pos=10 neg=3 point=0.35 exactP=0.0258
+  pos=12 neg=4 point=0.40 exactP=0.0220
+  pos=6 neg=1 point=0.25 exactP=0.0284
+  pos=8 neg=2 point=0.30 exactP=0.0289
+  pos=13 neg=5 point=0.40 exactP=0.0303
+  pos=14 neg=5 point=0.45 exactP=0.0187
+
+pass rate of the LOCKED rule over bootstrap seeds 0..199 (merged code):
+  pos=10 neg=3 point=0.35: passes for 61/200 seeds; seed0=FAIL
+  pos=12 neg=4 point=0.40: passes for 197/200 seeds; seed0=PASS
+  pos=6 neg=1 point=0.25: passes for 4/200 seeds; seed0=FAIL
+  pos=8 neg=2 point=0.30: passes for 3/200 seeds; seed0=FAIL
+  pos=13 neg=5 point=0.40: passes for 0/200 seeds; seed0=FAIL
+  pos=14 neg=5 point=0.45: passes for 200/200 seeds; seed0=PASS
+
+flip example: pos=10 neg=3; seed 1 -> PASS, seed 0 -> FAIL
+  AblationEvaluator(bootstrap_seed=1): deltas sum=+7 point=0.35 LB=0.05 tau_c=0.05 n=10000 stage_pass=True (child CIG-0007/S11-ablation schema-valid)
+  AblationEvaluator(bootstrap_seed=0): deltas sum=+7 point=0.35 LB=0.00 tau_c=0.05 n=10000 stage_pass=False (child CIG-0007/S11-ablation schema-valid)
+=> identical episode evidence, identical locked tau_c/n_resamples, opposite primary verdicts

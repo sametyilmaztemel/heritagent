@@ -1,0 +1,10 @@
+[constitutive (M0 default)]
+  target gene expressed in with-trait episodes: [True, True, True, True, True]
+  successes_with=3 delta_count=2 expression_ok=True passed=True
+  skill text in with-trait prompts: True; in without-trait prompts: False
+  model output in BOTH arms is the same scripted reply 'Thought: Done.\nFinal Answer: placed.' (the skill never changed behaviour)
+[regulated: consecutive_failures >= 2]
+  target gene expressed in with-trait episodes: [False, False, False, False, False]
+  successes_with=3 delta_count=2 expression_ok=False passed=False
+  skill text in with-trait prompts: False; in without-trait prompts: False
+  model output in BOTH arms is the same scripted reply 'Thought: Done.\nFinal Answer: placed.' (the skill never changed behaviour)

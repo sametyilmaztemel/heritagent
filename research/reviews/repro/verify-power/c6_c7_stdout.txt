@@ -1,0 +1,51 @@
+=== C6: regression component power P[reg(B)-reg(C) > 0 with LB>0] ===
+   r_B    r_C   diff    rho=0    rho=1   study(rho0/rho1)
+  0.05    0.0  0.050    0.839    0.138   (0.857, 0.135)
+  0.05  0.025  0.025    0.165    0.054   (0.161, 0.041)
+ 0.075    0.0  0.075    0.980    0.353   ('', '')
+ 0.075  0.025  0.050    0.419    0.147   ('', '')
+ 0.075   0.05  0.025    0.112    0.060   ('', '')
+   0.1    0.0  0.100    0.998    0.577   (0.995, 0.601)
+   0.1  0.025  0.075    0.680    0.266   (0.679, 0.263)
+   0.1   0.05  0.050    0.302    0.120   (0.343, 0.12)
+  0.15    0.0  0.150    1.000    0.870   ('', '')
+  0.15  0.025  0.125    0.951    0.518   ('', '')
+  0.15   0.05  0.100    0.734    0.295   (0.744, 0.291)
+   0.2    0.0  0.200    1.000    0.972   ('', '')
+   0.2  0.025  0.175    0.996    0.734   ('', '')
+   0.2   0.05  0.150    0.952    0.514   (0.951, 0.535)
+   0.3    0.0  0.300    1.000    0.999   ('', '')
+   0.3  0.025  0.275    1.000    0.954   ('', '')
+   0.3   0.05  0.250    1.000    0.860   (1.0, 0.872)
+
+Cells with BOTH arms <= 10pp and true diff in [5, 7.5]pp:
+  (r_B,r_C)=(0.05,0.0): rho0=0.839 rho1=0.138
+  (r_B,r_C)=(0.075,0.0): rho0=0.980 rho1=0.353
+  (r_B,r_C)=(0.075,0.025): rho0=0.419 rho1=0.147
+  (r_B,r_C)=(0.1,0.025): rho0=0.680 rho1=0.266
+  (r_B,r_C)=(0.1,0.05): rho0=0.302 rho1=0.120
+  range rho=0: 0.302-0.980;  rho=1: 0.120-0.353
+
+Coupling sensitivity (rho=1; P(B fails | C fails)):
+  (0.1,0.025): c=0.0: 0.266, c=0.5: 0.311, c=1.0: 0.353
+  (0.15,0.05): c=0.0: 0.295, c=0.5: 0.397, c=1.0: 0.577
+  (0.2,0.05): c=0.0: 0.514, c=0.5: 0.639, c=1.0: 0.870
+
+Selection/circularity case: arm C empty (C=G0 reproduces the G0 baseline -> r_C=0) or one gene that
+already passed stage 4 on the SAME 40 T_reg tasks (<=1 failure, deterministic rerun -> r_C<=1/40):
+  r_B=0.025: r_C=0 -> rho0=0.337 rho1=0.017 | closed form rho1 P(Bin(40,rB)>=4)=0.017
+  r_B=0.05: r_C=0 -> rho0=0.845 rho1=0.138 | closed form rho1 P(Bin(40,rB)>=4)=0.138
+  r_B=0.075: r_C=0 -> rho0=0.981 rho1=0.353 | closed form rho1 P(Bin(40,rB)>=4)=0.353
+  r_B=0.1: r_C=0 -> rho0=0.998 rho1=0.577 | closed form rho1 P(Bin(40,rB)>=4)=0.577
+   m=1 failing B tasks, 0 C failures: tail=(1-m/40)^40=0.3632 -> pass prob 0.000
+   m=2 failing B tasks, 0 C failures: tail=(1-m/40)^40=0.1285 -> pass prob 0.000
+   m=3 failing B tasks, 0 C failures: tail=(1-m/40)^40=0.0442 -> pass prob 0.000
+   m=4 failing B tasks, 0 C failures: tail=(1-m/40)^40=0.0148 -> pass prob 1.000
+   m=5 failing B tasks, 0 C failures: tail=(1-m/40)^40=0.0048 -> pass prob 1.000
+   m=6 failing B tasks, 0 C failures: tail=(1-m/40)^40=0.0015 -> pass prob 1.000
+
+=== C7: P(direction C-B > 0 in >= 2 of 3 seeds) under the null ===
+continuous/no ties, independent symmetric seeds: P = 3*(1/2)^3 + (1/2)^3 = 0.5
+  f_arm=0.1: P(tie)=0.0814, P(seed>0)=0.4593, P(>=2/3, rho=0)=0.4391, P(>=2/3, rho=1)=0.4593
+  f_arm=0.2: P(tie)=0.0609, P(seed>0)=0.4695, P(>=2/3, rho=0)=0.4544, P(>=2/3, rho=1)=0.4695
+  f_arm=0.3: P(tie)=0.0531, P(seed>0)=0.4734, P(>=2/3, rho=0)=0.4602, P(>=2/3, rho=1)=0.4734

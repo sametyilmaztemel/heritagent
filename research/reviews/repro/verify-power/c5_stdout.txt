@@ -1,0 +1,61 @@
+[sym] rho=1 exact f=0.1: MDE80 nominal=0.15924300061667754 realized=0.12739440049334205; null full=0.0219 lb=0.0219
+[sym] rho0_indepRescue f=0.1: MDE80 nominal=0.0908336782882457 realized=0.07260040677776532; null full=0.0063 dir(null)=0.446
+[sym] rho0_sharedRescue f=0.1: MDE80 nominal=0.10296236000065573 realized=0.08241647787282773; null full=0.0090 dir(null)=0.445
+[sym] rho=1 exact f=0.2: MDE80 nominal=0.2582842285952557 realized=0.1549705371571534; null full=0.0224 lb=0.0224
+[sym] rho0_indepRescue f=0.2: MDE80 nominal=0.14429605589026198 realized=0.0861203395815381; null full=0.0241 dir(null)=0.445
+[sym] rho0_sharedRescue f=0.2: MDE80 nominal=0.15721125378277573 realized=0.09445042029034854; null full=0.0197 dir(null)=0.447
+[sym] rho=1 exact f=0.3: MDE80 nominal=0.42135227495006766 realized=0.16854090998002705; null full=0.0227 lb=0.0227
+[sym] rho0_indepRescue f=0.3: MDE80 nominal=0.2391644510667349 realized=0.09621825133100496; null full=0.0233 dir(null)=0.464
+[sym] rho0_sharedRescue f=0.3: MDE80 nominal=0.25051476497121844 realized=0.10085383075909661; null full=0.0239 dir(null)=0.441
+[redraw] rho=1 exact f=0.1: MDE80 nominal=0.09930927349836038 realized=0.09930927349836038; null full=0.0183 lb=0.0209
+[redraw] rho0_indepRescue f=0.1: MDE80 nominal=0.06989247311827958 realized=0.06993912159631949; null full=0.0000 dir(null)=0.431
+[redraw] rho0_sharedRescue f=0.1: MDE80 nominal=0.07490052183820536 realized=0.0745932988483944; null full=0.0007 dir(null)=0.413
+[redraw] rho=1 exact f=0.2: MDE80 nominal=0.12240434624232685 realized=0.1224043462423268; null full=0.0218 lb=0.0218
+[redraw] rho0_indepRescue f=0.2: MDE80 nominal=0.07265159168354379 realized=0.0727516519026387; null full=0.0050 dir(null)=0.446
+[redraw] rho0_sharedRescue f=0.2: MDE80 nominal=0.0777744911619419 realized=0.07796341992467888; null full=0.0067 dir(null)=0.452
+[redraw] rho=1 exact f=0.3: MDE80 nominal=0.13759016038734237 realized=0.1375901603873424; null full=0.0222 lb=0.0222
+[redraw] rho0_indepRescue f=0.3: MDE80 nominal=0.07694337783353049 realized=0.0768923871803692; null full=0.0191 dir(null)=0.443
+[redraw] rho0_sharedRescue f=0.3: MDE80 nominal=0.08555181000941549 realized=0.08471657512030871; null full=0.0147 dir(null)=0.443
+rho1 cross-check d=0.1 f=0.1: MC full=0.4539 exact full=0.4512; MC lb=0.4539 exact lb=0.4512
+rho1 cross-check d=0.15 f=0.1: MC full=0.7638 exact full=0.7572; MC lb=0.7638 exact lb=0.7572
+rho1 cross-check d=0.2 f=0.2: MC full=0.5770 exact full=0.5939; MC lb=0.5770 exact lb=0.5939
+
+Study spot cells (sym):
+  rho0_indepRescue nominal=0.1 f=0.1: mine=0.878 study=0.877
+  rho0_sharedRescue nominal=0.1 f=0.1: mine=0.786 study=0.877
+  rho0_indepRescue nominal=0.15 f=0.2: mine=0.828 study=0.841
+  rho0_sharedRescue nominal=0.15 f=0.2: mine=0.755 study=0.841
+  rho1 nominal=0.1 f=0.1: mine=0.451 study=0.444
+  rho1 nominal=0.15 f=0.1: mine=0.757 study=0.741
+  rho1 nominal=0.2 f=0.2: mine=0.594 study=0.592
+
+Normal approximation (seed-averaged per-task variance; LB>0 power; full = also point>=5pp):
+  [sym] rho1               f=0.1: realized MDE full=0.1245 lb=0.1245 (nominal 0.155)
+  [sym] rho1               f=0.2: realized MDE full=0.151 lb=0.151 (nominal 0.25)
+  [sym] rho1               f=0.3: realized MDE full=0.164 lb=0.164 (nominal 0.41)
+  [sym] rho0_indepRescue   f=0.1: realized MDE full=0.0707 lb=0.068 (nominal 0.088)
+  [sym] rho0_indepRescue   f=0.2: realized MDE full=0.0852 lb=0.0852 (nominal 0.14)
+  [sym] rho0_indepRescue   f=0.3: realized MDE full=0.0948 lb=0.0948 (nominal 0.234)
+  [sym] rho0_sharedRescue  f=0.1: realized MDE full=0.084 lb=0.084 (nominal 0.105)
+  [sym] rho0_sharedRescue  f=0.2: realized MDE full=0.0952 lb=0.0952 (nominal 0.159)
+  [sym] rho0_sharedRescue  f=0.3: realized MDE full=0.0998 lb=0.0998 (nominal 0.249)
+  [redraw] rho1               f=0.1: realized MDE full=0.0985 lb=0.0985 (nominal 0.1)
+  [redraw] rho1               f=0.2: realized MDE full=0.1196 lb=0.1196 (nominal 0.121)
+  [redraw] rho1               f=0.3: realized MDE full=0.1341 lb=0.1341 (nominal 0.135)
+  [redraw] rho0_indepRescue   f=0.1: realized MDE full=0.0667 lb=0.0514 (nominal 0.066)
+  [redraw] rho0_indepRescue   f=0.2: realized MDE full=0.0698 lb=0.0657 (nominal 0.07)
+  [redraw] rho0_indepRescue   f=0.3: realized MDE full=0.0752 lb=0.0752 (nominal 0.075)
+  [redraw] rho0_sharedRescue  f=0.1: realized MDE full=0.0715 lb=0.07 (nominal 0.072)
+  [redraw] rho0_sharedRescue  f=0.2: realized MDE full=0.0786 lb=0.0786 (nominal 0.079)
+  [redraw] rho0_sharedRescue  f=0.3: realized MDE full=0.0846 lb=0.0846 (nominal 0.085)
+
+Alt reading: 402 pooled rows as independent (normal approx, sym, LB only):
+  f=0.1: realized MDE(LB) ~ 0.0680 (nominal 0.085)
+  f=0.2: realized MDE(LB) ~ 0.0870 (nominal 0.145)
+  f=0.3: realized MDE(LB) ~ 0.0940 (nominal 0.235)
+
+real	2m18.915s
+user	2m21.368s
+sys	0m20.231s
+
+[exited with code 0]

@@ -1,0 +1,5 @@
+12 primary evaluations on IDENTICAL evidence with bootstrap_seed=None:
+  stage_pass=False LB=0.0: 5 runs
+  stage_pass=True LB=0.05: 7 runs
+  recorded bootstrap seed(s) in child records: ['None']
+  all 12 child records passed load_cig (schema-valid)

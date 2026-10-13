@@ -1,0 +1,86 @@
+=== C2: all-five-stage pass of a helpful GENERALIST trait (symmetric model, e=1) ===
+  p0  delta     f   replay     abl  gen_in gen_out     reg     ALL falseRej
+ 0.3   0.05  0.00   0.0157  0.0159  1.0000  1.0000  1.0000  0.0003    1.000
+ 0.3   0.05  0.05   0.0367  0.0547  0.9308  0.9308  0.3991  0.0007    0.999
+ 0.3   0.05  0.10   0.0633  0.1017  0.8956  0.8956  0.0805  0.0004    1.000
+ 0.3   0.10  0.00   0.0599  0.1330  1.0000  1.0000  1.0000  0.0080    0.992
+ 0.3   0.10  0.05   0.0857  0.1814  0.9545  0.9545  0.3991  0.0057    0.994
+ 0.3   0.10  0.10   0.1132  0.2106  0.9268  0.9268  0.0805  0.0016    0.998
+ 0.3   0.20  0.00   0.2127  0.5886  1.0000  1.0000  1.0000  0.1252    0.875
+ 0.3   0.20  0.05   0.2284  0.5144  0.9814  0.9814  0.3991  0.0451    0.955
+ 0.3   0.20  0.10   0.2429  0.4488  0.9651  0.9651  0.0805  0.0082    0.992
+ 0.3   0.30  0.00   0.4142  0.8929  1.0000  1.0000  1.0000  0.3698    0.630
+ 0.3   0.30  0.05   0.4049  0.7580  0.9930  0.9930  0.3991  0.1208    0.879
+ 0.3   0.30  0.10   0.3956  0.6485  0.9842  0.9842  0.0805  0.0200    0.980
+ 0.3   0.40  0.00   0.6198  0.9840  1.0000  1.0000  1.0000  0.6099    0.390
+ 0.3   0.40  0.05   0.5849  0.8936  0.9976  0.9976  0.3991  0.2076    0.792
+ 0.3   0.40  0.10   0.5512  0.7992  0.9933  0.9933  0.0805  0.0350    0.965
+ 0.5   0.05  0.00   0.0203  0.0159  1.0000  1.0000  1.0000  0.0003    1.000
+ 0.5   0.05  0.05   0.0355  0.0308  0.8761  0.8761  0.3991  0.0003    1.000
+ 0.5   0.05  0.10   0.0523  0.0416  0.7982  0.7982  0.0805  0.0001    1.000
+ 0.5   0.10  0.00   0.0751  0.1330  1.0000  1.0000  1.0000  0.0100    0.990
+ 0.5   0.10  0.05   0.0893  0.1243  0.9167  0.9167  0.3991  0.0037    0.996
+ 0.5   0.10  0.10   0.1025  0.1077  0.8531  0.8531  0.0805  0.0006    0.999
+ 0.5   0.20  0.00   0.2519  0.5886  1.0000  1.0000  1.0000  0.1483    0.852
+ 0.5   0.20  0.05   0.2428  0.4083  0.9640  0.9640  0.3991  0.0368    0.963
+ 0.5   0.20  0.10   0.2336  0.2845  0.9241  0.9241  0.0805  0.0046    0.995
+ 0.5   0.30  0.00   0.4646  0.8929  1.0000  1.0000  1.0000  0.4148    0.585
+ 0.5   0.30  0.05   0.4225  0.6531  0.9854  0.9854  0.3991  0.1069    0.893
+ 0.5   0.30  0.10   0.3835  0.4711  0.9622  0.9622  0.0805  0.0135    0.987
+ 0.5   0.40  0.00   0.6614  0.9840  1.0000  1.0000  1.0000  0.6509    0.349
+ 0.5   0.40  0.05   0.5937  0.8211  0.9945  0.9945  0.3991  0.1924    0.808
+ 0.5   0.40  0.10   0.5298  0.6479  0.9820  0.9820  0.0805  0.0266    0.973
+
+Closed-form f=0 cross-check: ablation = P(Bin(20,delta)>=4) (no breaks at f=0)
+  delta=0.1: 0.1330
+  delta=0.2: 0.5886
+  delta=0.3: 0.8929
+  delta=0.4: 0.9840
+
+=== C2 adversarial sensitivities (f=0) ===
+(i) replay source instance is a G0 failure deterministically rescued by its own mined trait
+  p0=0.3 delta=0.1: replay 0.2575 (vs 0.0599), ALL 0.0342, falseRej 0.966
+  p0=0.3 delta=0.2: replay 0.4904 (vs 0.2127), ALL 0.2886, falseRej 0.711
+  p0=0.3 delta=0.3: replay 0.6831 (vs 0.4142), ALL 0.6099, falseRej 0.390
+  p0=0.3 delta=0.4: replay 0.8272 (vs 0.6198), ALL 0.8140, falseRej 0.186
+  p0=0.5 delta=0.1: replay 0.3183 (vs 0.0751), ALL 0.0423, falseRej 0.958
+  p0=0.5 delta=0.2: replay 0.5688 (vs 0.2519), ALL 0.3348, falseRej 0.665
+  p0=0.5 delta=0.3: replay 0.7503 (vs 0.4646), ALL 0.6700, falseRej 0.330
+  p0=0.5 delta=0.4: replay 0.8688 (vs 0.6614), ALL 0.8549, falseRej 0.145
+
+(ii) stage-2 alone vs replay alone at f=0, p0=0.5
+  delta=0.1: replay=0.0751 ablation=0.1330
+  delta=0.2: replay=0.2519 ablation=0.5886
+
+=== C3: regression stage (40 T_reg, baseline=1 not rerun, pass iff <=1 failure) ===
+  h=0.0   : P(pass)=1.0000  [0 fails: 1.0000; <=2 fails: 1.0000]
+  h=0.01  : P(pass)=0.9393  [0 fails: 0.6690; <=2 fails: 0.9925]
+  h=0.02  : P(pass)=0.8095  [0 fails: 0.4457; <=2 fails: 0.9543]
+  h=0.025 : P(pass)=0.7358  [0 fails: 0.3632; <=2 fails: 0.9221]
+  h=0.03  : P(pass)=0.6615  [0 fails: 0.2957; <=2 fails: 0.8822]
+  h=0.05  : P(pass)=0.3991  [0 fails: 0.1285; <=2 fails: 0.6767]
+  h=0.075 : P(pass)=0.1877  [0 fails: 0.0442; <=2 fails: 0.4144]
+  h=0.1   : P(pass)=0.0805  [0 fails: 0.0148; <=2 fails: 0.2228]
+  symmetric-model neutral trait: h_reg = h(1-f)+(1-h)f with h=0 -> f; f=0.05 -> 0.3991
+  redraw-model neutral trait (study's alt): h_reg = f(1-p0); f=0.05, p0=0.3/0.5 -> 0.5894 0.7358
+  h_reg giving P(pass)=0.5: 0.0416
+  h_reg giving P(pass)=0.8: 0.0207
+  h_reg giving P(pass)=0.9: 0.0134
+  h_reg giving P(pass)=0.95: 0.0090
+  P(pass | h=0.03) = 0.6615
+  deterministic reading: a trait that breaks exactly k fixed T_reg tasks passes iff k<=1 (prob 1 or 0)
+
+=== C4: float/integer boundaries (exact code expressions) ===
+  out-of-scope: smallest passing delta_out = 0.0 ; largest failing = -0.1
+  => delta_out >= -0.05  <=>  net >= 0 at n=10: True
+  in-scope rule delta_in >= 0.0 <=> net >= 0: True
+  s_with=40: drop=0.0  <=0.02:True <=0.03:True <=0.05:True
+  s_with=39: drop=0.025000000000000022  <=0.02:False <=0.03:True <=0.05:True
+  s_with=38: drop=0.050000000000000044  <=0.02:False <=0.03:False <=0.05:False
+  s_with=37: drop=0.07499999999999996  <=0.02:False <=0.03:False <=0.05:False
+  1.0-38/40 = 0.050000000000000044 ; == 0.050000000000000044: True
+  max failures tolerated per tau_r cell (as coded): {0.02: 0, 0.03: 1, 0.05: 1}
+  stage-2 point net=0: 0.0 >=0.03:False >=0.05:False >=0.08:False
+  stage-2 point net=1: 0.05 >=0.03:True >=0.05:True >=0.08:False
+  stage-2 point net=2: 0.1 >=0.03:True >=0.05:True >=0.08:True
+  interaction harmful iff delta_pair < -0.05: net=-1 -> True ; net=0 -> False

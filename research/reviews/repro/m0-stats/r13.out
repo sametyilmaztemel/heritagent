@@ -1,0 +1,8 @@
+(a) deltas=1x(+1),19x0 tau_c=0.03: meets_tau_c=True LB=0.0 -> actual gate decision=False; keys=['analysis_only', 'bootstrap', 'child_record', 'deltas', 'meets_tau_c', 'stage_pass', 'tau_c']
+(a) deltas=1x(+1),19x0 tau_c=0.05: meets_tau_c=True LB=0.0 -> actual gate decision=False; keys=['analysis_only', 'bootstrap', 'child_record', 'deltas', 'meets_tau_c', 'stage_pass', 'tau_c']
+(a) deltas=1x(+1),19x0 tau_c=0.08: meets_tau_c=False LB=0.0 -> actual gate decision=False; keys=['analysis_only', 'bootstrap', 'child_record', 'deltas', 'meets_tau_c', 'stage_pass', 'tau_c']
+
+(b) primary (seed 0, 10k): LB=0.0 pass=False
+    sensitivity tau_c=0.05 seed=1 n=10000: LB=0.05 meets_tau_c=True -> implied gate=True
+    sensitivity tau_c=0.05 seed=0 n=500: LB=0.0 meets_tau_c=True -> implied gate=False
+    sensitivity tau_c=0.05 seed=3 n=2000: LB=0.0 meets_tau_c=True -> implied gate=False

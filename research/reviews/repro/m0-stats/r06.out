@@ -1,0 +1,6 @@
+evaluations: 2048; mismatches vs prereg reference: 0
+passing patterns: E1=166/1024, E2=0/1024
+len(result.episodes) distribution: {10: 1056, 11: 992}  (10 = 5 tasks x 2 conditions)
+
+expression failure: len(episodes)=11; last 'episode' keys=['expression_violations']
+  episodes with a 'task_id' key: 10

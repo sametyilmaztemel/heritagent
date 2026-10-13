@@ -1,0 +1,12 @@
+true effect = a - b; tau_c = 0.05
+  P(+1)=0.05 P(-1)=0.00 true effect=+0.05: P(pass stage 2) = 0.016
+  P(+1)=0.10 P(-1)=0.00 true effect=+0.10: P(pass stage 2) = 0.133
+  P(+1)=0.10 P(-1)=0.05 true effect=+0.05: P(pass stage 2) = 0.056
+  P(+1)=0.15 P(-1)=0.05 true effect=+0.10: P(pass stage 2) = 0.148
+  P(+1)=0.20 P(-1)=0.00 true effect=+0.20: P(pass stage 2) = 0.589
+  P(+1)=0.20 P(-1)=0.10 true effect=+0.10: P(pass stage 2) = 0.114
+  P(+1)=0.25 P(-1)=0.05 true effect=+0.20: P(pass stage 2) = 0.377
+  P(+1)=0.30 P(-1)=0.00 true effect=+0.30: P(pass stage 2) = 0.893
+  P(+1)=0.30 P(-1)=0.10 true effect=+0.20: P(pass stage 2) = 0.270
+  P(+1)=0.40 P(-1)=0.10 true effect=+0.30: P(pass stage 2) = 0.472
+  null (a=b=0.10): P(pass) = 0.0222; null (a=b=0.25): 0.0211
