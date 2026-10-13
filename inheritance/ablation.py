@@ -28,7 +28,7 @@ from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
 
 from inheritance.bootstrap import paired_cluster_bootstrap, stage_passes
-from inheritance.overlay import build_evaluation_configs
+from inheritance.overlay import EvaluationSetupError, build_evaluation_configs
 from inheritance.runner import (
     EvaluationIntegrityError,
     EvaluationTask,
@@ -190,6 +190,9 @@ class AblationEvaluator:
         # central preflight BEFORE any episode (zero runner calls on invalid
         # setup): parent grammar, seed representation, child coherence
         validate_gate_setup(parent_cig_id, mining_seed)
+        if isinstance(bootstrap_seed, bool) or not isinstance(bootstrap_seed, int):
+            raise EvaluationSetupError(
+                f"bootstrap seed must be an explicit int, got {bootstrap_seed!r}")
         self._registry = registry
         self._base_config = base_config
         self._runner = runner

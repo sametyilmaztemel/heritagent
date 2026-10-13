@@ -30,6 +30,16 @@ def make_evaluator(tmp_path, registry, base_config, envelope, **kwargs):
         parent_cig_id=PARENT_CIG, mining_seed=MINING_SEED, **kwargs)
 
 
+@pytest.mark.parametrize("seed", [None, True, 1.0, "0"])
+def test_invalid_bootstrap_seed_rejected_before_any_episode(tmp_path, registry, base_config,
+                                                             envelope, seed):
+    """Rejected at construction: no ablation episode is spent on a run whose
+    bootstrap would then fail."""
+    from inheritance.overlay import EvaluationSetupError
+    with pytest.raises(EvaluationSetupError, match="bootstrap seed"):
+        make_evaluator(tmp_path, registry, base_config, envelope, bootstrap_seed=seed)
+
+
 def with_gene(express: bool):
     return ((GENE_ID,) if express else ())
 
