@@ -216,8 +216,8 @@ class SplitPlan:
 
 def _fallbacks_in_draw_order(plan: SplitPlan):
     """The plan's fallbacks by pool, in POOL_ORDER (unknown pool names last,
-    so validate_plan still rejects them). Within one check, a replay-bank
-    error is then reported before a generalization-bank one."""
+    so validate_plan still rejects them), so a loop over them meets the
+    replay bank before the generalization bank."""
     rank = {pool: i for i, pool in enumerate(POOL_ORDER)}
     return sorted(plan.feasibility_fallback.items(),
                   key=lambda item: (rank.get(item[0], len(rank)), item[0]))
