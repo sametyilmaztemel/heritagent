@@ -105,6 +105,52 @@ def test_content_hash_tracks_the_game_files(tmp_path):
     assert after.game_id == before.game_id and after.content_sha256 != before.content_sha256
 
 
+def test_content_hash_framing_is_pinned(tmp_path):
+    """Known answer: both files, labelled and length-prefixed, in this order."""
+    trial = tmp_path / "train" / "pick_and_place_simple-A-None-B-1" / "trial_T1"
+    trial.mkdir(parents=True)
+    (trial / "traj_data.json").write_bytes(b'{"task_type": "pick_and_place_simple"}')
+    (trial / "game.tw-pddl").write_bytes(b'{"solvable": true}')
+    expected = hashlib.sha256(
+        b"traj_data.json\0" + b"38\0" + b'{"task_type": "pick_and_place_simple"}'
+        + b"game.tw-pddl\0" + b"18\0" + b'{"solvable": true}').hexdigest()
+    [game] = collect_games(tmp_path / "train", "train").accepted
+    assert game.content_sha256 == expected
+
+
+@pytest.mark.parametrize("edited", ["traj_data.json", "game.tw-pddl"])
+def test_an_edited_game_file_changes_the_manifest(tmp_path, data, edited):
+    """Review of PR #34: the hash must cover both runtime inputs, and it must
+    reach the manifest (pool hash and manifest hash), not only GameInstance."""
+    root, train, unseen = data
+    before = build_split_manifest(train, unseen, full_plan())
+    for pool in ("t_mine", "t_eval"):
+        game_id = before["pools"][pool]["games"][0]["game_id"]
+        split = root / ("train" if pool == "t_mine" else "valid_unseen")
+        path = split / game_id / edited
+        path.write_text(json.dumps({**json.loads(path.read_text()), "edited": True}))
+    after = build_split_manifest(collect_games(root / "train", "train"),
+                                 collect_games(root / "valid_unseen", "valid_unseen"), full_plan())
+    for pool in ("t_mine", "t_eval"):
+        old, new = before["pools"][pool], after["pools"][pool]
+        assert [g["game_id"] for g in old["games"]] == [g["game_id"] for g in new["games"]]
+        assert old["games"][0]["content_sha256"] != new["games"][0]["content_sha256"]
+        assert old["games"][1:] == new["games"][1:]
+        assert old["sha256"] != new["sha256"]
+    assert before["manifest_sha256"] != after["manifest_sha256"]
+
+
+def test_manifest_records_carry_each_games_content_hash(data):
+    _, train, unseen = data
+    manifest = build_split_manifest(train, unseen, full_plan())
+    by_id = {g.game_id: g for g in (*train.accepted, *unseen.accepted)}
+    for pool in (*POOL_ORDER, "t_eval"):
+        for record in manifest["pools"][pool]["games"]:
+            game = by_id[record["game_id"]]
+            assert record == {"game_id": game.game_id, "family": game.family,
+                              "content_sha256": game.content_sha256}
+
+
 # -- plan validation enforces the locked counts -----------------------------------
 
 @pytest.mark.parametrize("pool,counts,match", [
@@ -239,6 +285,59 @@ def test_feasibility_fallback_builds_with_the_declared_maximum(tmp_path, data):
     manifest = build_split_manifest(train, unseen, plan)
     assert manifest["pools"]["generalization_bank"]["family_counts"][F[1]] == 3
     assert manifest["plan"]["feasibility_fallback"] == {"generalization_bank": {F[1]: 3}}
+    assert manifest["pools"]["generalization_bank"]["feasibility_fallback"] == {
+        F[1]: {"maximum": 3, "available_at_draw": 3, "locked_minimum": 10}}
+    assert "feasibility_fallback" not in manifest["pools"]["replay_bank"]
+
+
+# -- review of PR #34: a fallback only where availability prevents the minimum -----
+
+@pytest.mark.parametrize("maximum", [3, 0])
+def test_fallback_without_an_availability_shortfall_fails_closed(data, maximum):
+    """35 games per family: 15 remain for the generalization bank, so the
+    locked minimum of 10 is available and no fallback may waive it."""
+    _, train, unseen = data
+    plan = full_plan(counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: maximum}},
+                     feasibility_fallback={"generalization_bank": {F[1]: maximum}})
+    with pytest.raises(SplitError, match="15 games remain.*does not prevent the locked minimum 10"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_zero_fallback_builds_when_nothing_remains(tmp_path, data):
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 16  # t_mine 10 + ablation 4 + interaction 2: nothing left for the banks
+    train = collect_games(make_split(tmp_path / "z", "train", sizes), "train")
+    plan = full_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[1]: 0},
+                             "generalization_bank": {**{f: 10 for f in F}, F[1]: 0}},
+                     feasibility_fallback={"replay_bank": {F[1]: 0},
+                                           "generalization_bank": {F[1]: 0}})
+    manifest = build_split_manifest(train, unseen, plan)
+    for pool, minimum in (("replay_bank", 4), ("generalization_bank", 10)):
+        assert F[1] not in manifest["pools"][pool]["family_counts"]
+        assert manifest["pools"][pool]["feasibility_fallback"] == {
+            F[1]: {"maximum": 0, "available_at_draw": 0, "locked_minimum": minimum}}
+
+
+@pytest.mark.parametrize("pool,maximum", [
+    ("generalization_bank", 10),   # not below the minimum
+    ("generalization_bank", 12),
+    ("replay_bank", 4),
+    ("replay_bank", -1),
+    ("replay_bank", True),
+    ("replay_bank", 2.0),
+])
+def test_fallback_maximum_must_be_an_int_below_the_minimum(pool, maximum):
+    base = {"replay_bank": 4, "generalization_bank": 10}[pool]
+    plan = full_plan(counts={pool: {**{f: base for f in F}, F[2]: maximum}},
+                     feasibility_fallback={pool: {F[2]: maximum}})
+    with pytest.raises(SplitError, match="fallback maximum must be an int"):
+        validate_plan(plan)
+
+
+def test_fallback_for_an_unknown_family_fails_closed():
+    with pytest.raises(SplitError, match="unknown family"):
+        validate_plan(full_plan(feasibility_fallback={"replay_bank": {"made_up_family": 0}}))
 
 
 def test_verify_manifest_detects_tampering(data):
