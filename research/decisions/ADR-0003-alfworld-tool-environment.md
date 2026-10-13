@@ -56,5 +56,5 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 
 **Implementation status.**
 1. Runtime support (D3 `retryable`, D5 `terminal`, the trajectory terminal kind, the D4 schema maximum): this change.
-2. `runtime/tool_adapters/alfworld.py` (D1, D2, D3, D6, D7, D8), with tests against a scripted fake of TextWorld's single-game gym API (`reset() -> (obs, infos)`, `step(cmd) -> (obs, score, done, infos)`): next change.
+2. `runtime/tool_adapters/alfworld.py` (D1, D2, D3, D6, D7, D8), with tests against a scripted fake of TextWorld's single-game gym API (`reset() -> (obs, infos)`, `step(cmd) -> (obs, score, done, infos)`). Real-game integration is not yet run: no ALFWorld data in the build sandbox, and the integration test is skipped unless `ALFWORLD_GAMEFILE` is set. *Open question for Codex:* as written, D7 adds nothing to the task text and D2 applies to observations, so the first admissible-command list reaches the model only after its first action. Should the initial observation also carry the list (D2 applied to the initial state)? Not changed pending review.
 3. The G0 switch to `planner_react_v2` (D4) and the manifest amendment: after PR #29.
