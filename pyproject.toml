@@ -16,7 +16,7 @@ dev = ["pytest>=8"]
 # several top-level directories (research/, experiments/, ...). namespaces
 # picks up somatic/ and the schema directories, which have no __init__.py.
 [tool.setuptools.packages.find]
-include = ["genome*", "runtime*", "traits*", "trajectory*", "inheritance*", "somatic*"]
+include = ["genome*", "runtime*", "traits*", "trajectory*", "inheritance*", "somatic*", "evaluation*"]
 namespaces = true
 
 # Modules locate their JSON Schemas and prompts relative to __file__.
