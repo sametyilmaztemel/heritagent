@@ -358,6 +358,60 @@ def test_fallback_at_the_locked_floor_fails_closed(tmp_path, data, pool, size, f
         build_split_manifest(train, unseen, plan)
 
 
+@pytest.mark.parametrize("pool,size,floor,maximum", [
+    ("generalization_bank", 22, 22, 2),
+    ("replay_bank", 12, 12, 3),
+])
+def test_fallback_at_the_floor_fails_closed_whatever_the_plan_draws_first(
+        tmp_path, data, pool, size, floor, maximum):
+    """Review of #43: with full_plan the family spends more than its floors in
+    t_mine (10), ablation (4) and interaction (2), so a check relative to the
+    plan's allocation would see a shortfall. The family could still meet the
+    minimum, so the fallback must fail closed."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = size
+    train = collect_games(make_split(tmp_path / "p", "train", sizes), "train")
+    base = {"replay_bank": 4, "generalization_bank": 10}[pool]
+    plan = full_plan(counts={pool: {**{f: base for f in F}, F[1]: maximum}},
+                     feasibility_fallback={pool: {F[1]: maximum}})
+    with pytest.raises(SplitError, match=rf"{size} accepted train games.*\({floor}\)"):
+        build_split_manifest(train, unseen, plan)
+
+
+@pytest.mark.parametrize("valid,invalid", [(F[1], F[3]), (F[5], F[0])])
+def test_every_fallback_family_is_checked(tmp_path, data, valid, invalid):
+    """One family is genuinely short (21 games), the other is not (35); the
+    invalid one sorts after, then before, the valid one."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[valid] = 21  # full_plan draws 20 first, 1 left for the bank
+    train = collect_games(make_split(tmp_path / "f", "train", sizes), "train")
+    plan = full_plan(counts={"generalization_bank": {**{f: 10 for f in F}, valid: 1, invalid: 3}},
+                     feasibility_fallback={"generalization_bank": {valid: 1, invalid: 3}})
+    with pytest.raises(SplitError, match=rf"generalization_bank\[{invalid}\].*35 accepted"):
+        build_split_manifest(train, unseen, plan)
+
+
+@pytest.mark.parametrize("invalid_pool", ["replay_bank", "generalization_bank"])
+def test_every_fallback_pool_is_checked(tmp_path, data, invalid_pool):
+    """F[1] (11 games) is short in both banks; F[2] (35) is not. The invalid
+    fallback sits in the later, then the earlier, pool of the plan."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 11
+    train = collect_games(make_split(tmp_path / "q", "train", sizes), "train")
+    counts = {"replay_bank": {**{f: 4 for f in F}, F[1]: 3},
+              "generalization_bank": {**{f: 10 for f in F}, F[1]: 0}}
+    fallback = {"replay_bank": {F[1]: 3}, "generalization_bank": {F[1]: 0}}
+    bad = {"replay_bank": 2, "generalization_bank": 3}[invalid_pool]
+    counts[invalid_pool] = {**counts[invalid_pool], F[2]: bad}
+    fallback[invalid_pool] = {**fallback[invalid_pool], F[2]: bad}
+    plan = scarce_plan(counts=counts, feasibility_fallback=fallback)
+    with pytest.raises(SplitError, match=rf"{invalid_pool}\[{F[2]}\].*35 accepted"):
+        build_split_manifest(train, unseen, plan)
+
+
 def test_fallback_one_below_the_locked_floor_builds(tmp_path, data):
     """11 games for F[1]: t_mine 8 leaves 3 for the replay bank (minimum 4)
     and none for the generalization bank."""
