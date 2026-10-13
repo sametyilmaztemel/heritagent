@@ -287,6 +287,8 @@ class CigGateOrchestrator:
             if existing:
                 raise GateInputError(
                     f"aggregate CIG ids already exist in the live store: {existing}")
+            # a closed or stale journal handle would refuse the step-10 appends
+            self._somatic_store.check_appendable()
             for candidate in (v["candidate"] for v in validated):
                 issue = _somatic_binding_issue(self._somatic_store, candidate)
                 if issue:

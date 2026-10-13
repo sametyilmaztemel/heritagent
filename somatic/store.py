@@ -281,6 +281,13 @@ class SomaticStore:
         if issues:
             raise RecordConsistencyError(sorted(issues))
 
+    def check_appendable(self) -> None:
+        """Raise ``RecorderError`` now if an append would be refused: a closed
+        store, or a stale/diverged handle (the same guard every append runs).
+        Lets a caller that appends only after a long computation fail before
+        it starts. The guard still runs on each append."""
+        self._append_guard()
+
     def close(self) -> None:
         """Idempotent resource cleanup. After close, mutation APIs raise a
         typed error; read APIs remain usable."""
