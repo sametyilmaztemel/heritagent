@@ -158,7 +158,8 @@ def test_atomic_bundle_failure_leaves_stores_unchanged(tmp_path):
                             [corrupt] + [c for c in
                               orch._bundle_children(outcome.results[0])
                               if c["cig_id"] != corrupt["cig_id"]])
-    # live stores unchanged
+    # the store add_bundle ran on is unchanged (atomic), and so are the live ones
+    assert scratch._aggregates == {} and scratch._children == {}
     assert (dict(cig_store._aggregates), dict(cig_store._children)) == cig_before
     assert (dict(somatic._envelopes), dict(somatic._history)) == somatic_before
 
