@@ -287,8 +287,6 @@ class CigGateOrchestrator:
             if existing:
                 raise GateInputError(
                     f"aggregate CIG ids already exist in the live store: {existing}")
-            # a closed or stale journal handle would refuse the step-10 appends
-            self._somatic_store.check_appendable()
             for candidate in (v["candidate"] for v in validated):
                 issue = _somatic_binding_issue(self._somatic_store, candidate)
                 if issue:
@@ -298,6 +296,10 @@ class CigGateOrchestrator:
         # BEFORE any stage-3/4 episode
         for inp in inputs:
             self._consume_stage12_evidence(inp)
+        # last setup check: a closed or stale journal handle would refuse the
+        # step-10 appends (an empty batch appends nothing)
+        if inputs and self._commits():
+            self._somatic_store.check_appendable()
 
         # step 3: stage-3 generalization for ALL candidates
         gen_results: dict[str, GeneralizationEvaluation] = {}
