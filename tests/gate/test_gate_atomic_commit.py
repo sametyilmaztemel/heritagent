@@ -406,3 +406,47 @@ def test_commit_refuses_decision_for_a_different_stored_candidate(tmp_path):
     assert (dict(cig_store._aggregates), dict(cig_store._children)) == cig_before
     assert (dict(somatic._envelopes), dict(somatic._history)) == somatic_before
     assert somatic.state("a", 1) == "candidate"
+
+
+def test_commit_refuses_a_stored_candidate_with_a_different_artifact(tmp_path):
+    """Same gene and version, different content-addressed artifact (a store
+    bound to another registry): the verdict must not be bound to it."""
+    from genome.validation.registry import TraitRegistry
+    from tests.gate.helpers import proposal
+
+    world = build_world(tmp_path, candidates=("a",), commit_stores=False)
+    orch, somatic, cig_store, runner, inputs, registry = world
+    result = orch.run(inputs).results[0]
+    other_registry = TraitRegistry(tmp_path / "other-registry")
+    other_payload = dict(proposal("a"), principle="a different principle")
+    other_uri = other_registry.put("skill", "a", 1, other_payload)
+    assert other_uri != result.candidate["artifact"]
+    other_store = SomaticStore.create(tmp_path / "other.jsonl", other_registry)
+    envelope = copy.deepcopy(inputs[0].candidate_envelope)
+    envelope["candidate"]["artifact"] = other_uri
+    other_store.add_candidate(envelope)
+    live = CigRecordStore()
+    with pytest.raises(RecordConsistencyError, match="differs in artifact"):
+        orch._commit_results([result], somatic_store=other_store, cig_record_store=live)
+    assert other_store.state("a", 1) == "candidate"
+    assert live._aggregates == {} and live._children == {}
+
+
+def test_aggregate_artifacts_carry_the_evaluated_version(tmp_path):
+    """A version-2 candidate: the aggregate names version 2, and only v2 is
+    decided in the somatic store."""
+    import dataclasses
+    from tests.gate.helpers import proposal
+
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    v2 = copy.deepcopy(inputs[0].candidate_envelope)
+    v2["candidate"]["version"] = 2
+    v2["candidate"]["artifact"] = registry.put("skill", "a", 2, proposal("a"))
+    somatic.add_candidate(v2)
+    outcome = orch.run([dataclasses.replace(inputs[0], candidate_envelope=v2)])
+    result = outcome.results[0]
+    assert result.aggregate["artifacts"]["candidate"]["version"] == 2
+    assert result.aggregate["artifacts"]["candidate"]["artifact"] == v2["candidate"]["artifact"]
+    assert somatic.state("a", 2) in ("validated", "rejected")
+    assert somatic.state("a", 1) == "candidate"
