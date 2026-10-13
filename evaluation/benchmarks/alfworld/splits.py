@@ -42,6 +42,7 @@ import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -151,6 +152,9 @@ def collect_games(split_dir: Path, source: str) -> CollectionReport:
             continue
         accepted.append(GameInstance(game_id, family, source,
                                      _content_sha256(traj_bytes, game_bytes)))
+    # Path order compares components (and ignores case on Windows), which can
+    # differ from game-id order; the T_eval record order feeds its pool hash.
+    accepted.sort(key=lambda g: g.game_id)
     return CollectionReport(source, tuple(accepted), MappingProxyType(skipped))
 
 
@@ -256,7 +260,7 @@ def proportional_counts(availability: Mapping[str, int], total: int,
     if remaining > sum(spare.values()):
         raise SplitError("not enough games for the requested total")
     pool = sum(spare.values())
-    shares = {f: remaining * spare[f] / pool if pool else 0 for f in families}
+    shares = {f: Fraction(remaining * spare[f], pool) if pool else Fraction(0) for f in families}
     extra = {f: min(int(shares[f]), spare[f]) for f in families}
     order = sorted(families, key=lambda f: (-(shares[f] - int(shares[f])), f))
     left = remaining - sum(extra.values())

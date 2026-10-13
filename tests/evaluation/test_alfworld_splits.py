@@ -96,6 +96,17 @@ def test_collection_is_independent_of_creation_order(tmp_path):
     assert [g.record() for g in ra.accepted] == [g.record() for g in rb.accepted]
 
 
+def test_games_are_ordered_by_game_id_not_by_path(tmp_path):
+    """Path order compares components: '<task>-x' sorts before '<task>-x-y',
+    while the game-id strings sort the other way ('-' < '/')."""
+    split = tmp_path / "train"
+    short = write_game(split, F[0], 1, prefix=f"{F[0]}-x")
+    long = write_game(split, F[0], 2, prefix=f"{F[0]}-x-y")
+    assert sorted([split / short, split / long]) == [split / short, split / long]
+    ids = [g.game_id for g in collect_games(split, "train").accepted]
+    assert ids == [long, short] == sorted(ids)
+
+
 def test_content_hash_tracks_the_game_files(tmp_path):
     split = make_split(tmp_path, "train", {F[0]: 2})
     before = collect_games(split, "train").accepted[0]
@@ -373,6 +384,13 @@ def test_proportional_counts_respects_floor_and_total():
     assert sum(counts.values()) == 60 and min(counts.values()) >= 8
     assert counts == proportional_counts(dict(reversed(list(availability.items()))), 60, 8)
     assert counts[F[0]] >= counts[F[1]]
+
+
+def test_proportional_counts_breaks_exact_ties_by_family_name():
+    """Shares 4/3, 1/3, 1/3: equal remainders. In floats 4/3 - 1 is the
+    smallest, so float shares would give the extra game to the wrong family."""
+    availability = {F[1]: 4, F[0]: 1, F[2]: 1}  # F[1] sorts first by name
+    assert proportional_counts(availability, 2) == {F[1]: 2, F[0]: 0, F[2]: 0}
 
 
 def test_proportional_counts_infeasible():
