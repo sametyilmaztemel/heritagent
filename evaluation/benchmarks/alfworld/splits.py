@@ -42,6 +42,7 @@ import hashlib
 import json
 import sys
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
@@ -151,6 +152,9 @@ def collect_games(split_dir: Path, source: str) -> CollectionReport:
             continue
         accepted.append(GameInstance(game_id, family, source,
                                      _content_sha256(traj_bytes, game_bytes)))
+    # Path order compares components (and ignores case on Windows), which can
+    # differ from game-id order; the T_eval record order feeds its pool hash.
+    accepted.sort(key=lambda g: g.game_id)
     return CollectionReport(source, tuple(accepted), MappingProxyType(skipped))
 
 
@@ -166,8 +170,9 @@ class SplitPlan:
     below the per-family minimum of a bank (design §2). It is allowed only for
     the replay and generalization banks, and the count used for that family
     must equal the declared maximum. The build accepts it only where
-    availability prevents the minimum: fewer games than the minimum remain
-    for that family when the bank is drawn."""
+    availability prevents the minimum: the family has fewer accepted train
+    games than the locked per-family floors of every pool up to and
+    including that bank, so no plan could meet the minimum."""
 
     seed: int
     t_mine: Mapping[str, int]
@@ -256,7 +261,7 @@ def proportional_counts(availability: Mapping[str, int], total: int,
     if remaining > sum(spare.values()):
         raise SplitError("not enough games for the requested total")
     pool = sum(spare.values())
-    shares = {f: remaining * spare[f] / pool if pool else 0 for f in families}
+    shares = {f: Fraction(remaining * spare[f], pool) if pool else Fraction(0) for f in families}
     extra = {f: min(int(shares[f]), spare[f]) for f in families}
     order = sorted(families, key=lambda f: (-(shares[f] - int(shares[f])), f))
     left = remaining - sum(extra.values())
@@ -299,6 +304,24 @@ def _draw(available: list[GameInstance], k: int, seed: int, pool: str, family: s
     return sorted(sorted(available, key=rank)[:k], key=lambda g: g.game_id)
 
 
+def _locked_floor_through(pool: str) -> int:
+    """Sum of the locked per-family minima of every pool drawn up to and
+    including ``pool`` (t_mine 8, replay 4, generalization 10). A family with
+    fewer accepted games cannot meet this bank's minimum under any plan;
+    with at least this many, some plan meets it, so a shortfall at the draw
+    would be the plan's own allocation, not availability.
+
+    Deliberately narrow and fail-closed: the rule is per family and ignores
+    the fixed pool totals (T_mine 60, ablation 20, interaction 10). On a
+    train set too small for every locked count at once (fewer than 174
+    accepted games), it can reject a plan whose shortfall is real; that case
+    is the owner's decision, not an allocation for the builder to search.
+    ALFWorld's train split is far larger (about 3,300 loader-accepted games;
+    the smallest family has about 300 before filtering), so the case is not
+    expected there; the manifest records the loader's per-family counts."""
+    return sum(POOL_PER_FAMILY_MIN.get(p, 0) for p in POOL_ORDER[:POOL_ORDER.index(pool) + 1])
+
+
 def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
                          plan: SplitPlan) -> dict:
     """Draw every train-side pool from ``train`` and take all of ``unseen``
@@ -310,6 +333,16 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
         raise SplitError(f"T_eval must be the full official unseen split ({T_EVAL_SIZE} "
                          f"games), the loader accepted {len(unseen.accepted)}")
     remaining = train.by_family()
+    accepted = {f: len(g) for f, g in remaining.items()}
+    for pool, fallback in plan.feasibility_fallback.items():
+        floor = _locked_floor_through(pool)
+        for family in fallback:
+            if accepted[family] >= floor:
+                raise SplitError(
+                    f"{pool}[{family}]: a fallback is pre-registered, but the family has "
+                    f"{accepted[family]} accepted train games, enough for the locked per-family "
+                    f"floors through this bank ({floor}), so availability does not prevent "
+                    f"the locked minimum {POOL_PER_FAMILY_MIN[pool]}")
     pools = {}
     for pool in POOL_ORDER:
         games = []
@@ -317,14 +350,11 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
         for family in ALFWORLD_TASK_TYPES:
             k = plan.counts(pool).get(family, 0)
             if family in plan.feasibility_fallback.get(pool, {}):
-                minimum = POOL_PER_FAMILY_MIN[pool]
-                available = len(remaining[family])
-                if available >= minimum:
-                    raise SplitError(f"{pool}[{family}]: a fallback maximum {k} is pre-registered, "
-                                     f"but {available} games remain, so availability does not "
-                                     f"prevent the locked minimum {minimum}")
-                fallback_evidence[family] = {"maximum": k, "available_at_draw": available,
-                                             "locked_minimum": minimum}
+                fallback_evidence[family] = {
+                    "maximum": k, "available_at_draw": len(remaining[family]),
+                    "accepted_in_train": accepted[family],
+                    "locked_floor_through_bank": _locked_floor_through(pool),
+                    "locked_minimum": POOL_PER_FAMILY_MIN[pool]}
             if not k:
                 continue
             drawn = _draw(remaining[family], k, plan.seed, pool, family)
