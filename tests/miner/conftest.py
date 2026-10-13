@@ -10,6 +10,7 @@ from genome.validation.registry import TraitRegistry
 from runtime.loop import Budgets, ToolObservation, run_agent
 from runtime.model_adapters import ScriptedAdapter
 from runtime.seed_g0 import g0_runtime_config
+from traits.miner.inputs import MiningPair
 from trajectory.normalization import load_normalized
 from trajectory.recorder.context import OutcomeAnnotation, TrajectoryContext
 from tests.runtime.conftest import ScriptedEnv
