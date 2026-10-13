@@ -79,3 +79,32 @@ def test_uses_explicit_rng_not_hidden_defaults():
     assert result.point_estimate == sum(deltas) / 20  # point always exact mean
     assert result.lower_bound == pytest.approx(expected_mean)
     assert result.upper_bound == pytest.approx(expected_mean)
+
+
+@pytest.mark.parametrize("seed", [None, True, False, 1.0, "0"])
+def test_seed_must_be_an_explicit_int(seed):
+    """seed=None would seed from the OS: identical evidence could pass or
+    fail between runs."""
+    with pytest.raises(ValueError, match="explicit int"):
+        paired_cluster_bootstrap([1, 0, 1, 0], seed=seed, n_resamples=10)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), 2, -1.5, True, "1", None])
+def test_deltas_must_be_finite_numbers_in_unit_range(bad):
+    with pytest.raises(ValueError, match=r"finite number in \[-1, 1\]"):
+        paired_cluster_bootstrap([1, 0, bad], seed=0, n_resamples=10)
+
+
+@pytest.mark.parametrize("n_resamples", [True, 1.5, 0])
+def test_n_resamples_must_be_a_positive_int(n_resamples):
+    with pytest.raises(ValueError, match="positive int"):
+        paired_cluster_bootstrap([1, 0], seed=0, n_resamples=n_resamples)
+
+
+def test_valid_inputs_unchanged():
+    """Ints, floats and the boundary values -1 and 1 stay accepted and give
+    the same result as before the validation."""
+    a = paired_cluster_bootstrap([1, 0, -1, 1.0, 0.0], seed=7, n_resamples=200)
+    b = paired_cluster_bootstrap([1, 0, -1, 1, 0], seed=7, n_resamples=200)
+    assert (a.point_estimate, a.lower_bound, a.upper_bound) == \
+        (b.point_estimate, b.lower_bound, b.upper_bound)
