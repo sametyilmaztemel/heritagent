@@ -796,12 +796,14 @@ class CigGateOrchestrator:
                     f"candidate")
             stored = somatic_store.candidate_ref(result.gene_id, version)
             if stored != result.candidate:
+                evaluated = result.candidate
+                differing = sorted(k for k in set(stored) | set(evaluated)
+                                   if stored.get(k) != evaluated.get(k))
                 raise RecordConsistencyError(
                     f"{result.gene_id!r} v{version}: the stored somatic "
-                    f"candidate is not the evaluated one (stored artifact "
-                    f"{stored['artifact']!r}, evaluated "
-                    f"{result.candidate['artifact']!r}); refusing to bind "
-                    f"the verdict to a different reference")
+                    f"candidate is not the evaluated one (differs in "
+                    f"{', '.join(differing)}); refusing to bind the verdict "
+                    f"to a different reference")
             planned.append((result, version))
         # commit: somatic decision first, then expose the bundle.
         # verdict -> terminal state: promote -> validated,
