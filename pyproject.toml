@@ -11,6 +11,8 @@ dependencies = ["jsonschema>=4.18"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# ADR-0003 D8: pinned versions the adapter was checked against
+alfworld = ["alfworld==0.4.2", "textworld==1.7.0"]
 
 # Explicit package list: flat-layout auto-discovery refuses a repo with
 # several top-level directories (research/, experiments/, ...). namespaces
