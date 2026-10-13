@@ -313,6 +313,53 @@ def test_a_shortfall_without_a_fallback_names_the_fallback_to_register(tmp_path,
         build_split_manifest(train, unseen, scarce_plan())
 
 
+@pytest.mark.parametrize("size,target", [(8, 0), (10, 2), (11, 3)])
+@pytest.mark.parametrize("replay_count", [4, 5, 12])
+def test_replay_shortfall_names_its_size_whatever_the_count(tmp_path, data, size, target,
+                                                             replay_count):
+    """Review of #50: the remedy depends on the data only, not on the plan's
+    replay count, and names the family (8 games leave a fallback of 0)."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = size
+    train = collect_games(make_split(tmp_path / "rs", "train", sizes), "train")
+    plan = scarce_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[1]: replay_count}})
+    with pytest.raises(SplitError, match=rf"^replay_bank\[{F[1]}\]: the family has {size} "
+                                         rf"accepted .*pre-register a replay_bank fallback of "
+                                         rf"{target} for it"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_another_familys_fallback_does_not_cover_a_shortfall(tmp_path, data):
+    """Review of #50: F[3] is short and has its fallbacks; F[1] is short
+    without any, and is still named."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]], sizes[F[3]] = 10, 11
+    train = collect_games(make_split(tmp_path / "of", "train", sizes), "train")
+    plan = scarce_plan(F[1], F[3],
+                       counts={"replay_bank": {**{f: 4 for f in F}, F[3]: 3},
+                               "generalization_bank": {**{f: 10 for f in F}, F[3]: 0}},
+                       feasibility_fallback={"replay_bank": {F[3]: 3},
+                                             "generalization_bank": {F[3]: 0}})
+    with pytest.raises(SplitError, match=rf"^replay_bank\[{F[1]}\]: the family has 10 "):
+        build_split_manifest(train, unseen, plan)
+
+
+@pytest.mark.parametrize("size", [7, 8])
+def test_t_mine_minimum_boundary(tmp_path, data, size):
+    """7 games cannot meet T_mine 8; 8 can, and then only the bank
+    fallbacks are missing."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = size
+    train = collect_games(make_split(tmp_path / "tb", "train", sizes), "train")
+    expected = (rf"^t_mine\[{F[1]}\]: 7 accepted train games cannot meet" if size == 7
+                else rf"^replay_bank\[{F[1]}\]: the family has 8 .*fallback of 0")
+    with pytest.raises(SplitError, match=expected):
+        build_split_manifest(train, unseen, scarce_plan())
+
+
 def test_bank_errors_are_reported_in_draw_order(tmp_path, data):
     """Review of #50: an invalid replay fallback is reported before an
     invalid generalization fallback, whatever the plan's key order."""
