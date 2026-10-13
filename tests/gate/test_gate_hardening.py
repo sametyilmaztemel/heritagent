@@ -9,7 +9,9 @@ import pytest
 
 from genome.validation.errors import RecordConsistencyError
 from inheritance.gate import EvidenceCoherenceError, GateInputError
+from somatic.store import SomaticStore
 from tests.gate.test_gate_orchestrator import _replay_with_child, build_world
+from trajectory.recorder.errors import RecorderError
 
 
 @pytest.mark.parametrize("field,bad_value", [
@@ -208,3 +210,36 @@ def test_terminal_first_of_two_candidates_fails_before_any_episode(tmp_path):
     with pytest.raises(RecordConsistencyError, match="'a' v1 is no longer a somatic candidate"):
         orch.run(inputs)
     assert runner.calls == []
+
+
+# -- review of PR #36, open item: journal state checked before any episode ----------
+
+def test_closed_somatic_store_fails_before_any_episode(tmp_path):
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    somatic.close()
+    with pytest.raises(RecorderError, match="closed"):
+        orch.run(inputs)
+    assert runner.calls == []
+
+
+def test_stale_somatic_handle_fails_before_any_episode(tmp_path):
+    """Another handle appends to the same journal: the gate's handle is
+    stale, so its step-10 appends would be refused after every episode."""
+    world = build_world(tmp_path, candidates=("a", "b"))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    other = SomaticStore.open(somatic.path, registry)
+    other.decide("b", 1, "rejected", ["CIG-0099"])
+    with pytest.raises(RecorderError, match="stale somatic store handle"):
+        orch.run(inputs[:1])
+    assert runner.calls == []
+    assert somatic.state("a", 1) == "candidate"
+
+
+def test_dry_run_does_not_require_an_appendable_store(tmp_path):
+    """One store only: nothing is committed, so a closed journal is fine."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    somatic.close()
+    orch._cig_record_store = None
+    assert orch.run(inputs).committed is False and runner.calls
