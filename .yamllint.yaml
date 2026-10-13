@@ -1,0 +1,15 @@
+# yamllint config for experiments/manifests (issue #18).
+# Locked manifests use aligned values and long comment lines, so the
+# line-length and colon-spacing style rules are off. Syntax errors,
+# duplicate keys, indentation and truthy values still fail.
+extends: default
+
+rules:
+  line-length: disable
+  colons: disable
+  comments:
+    min-spaces-from-content: 1
+  document-start: disable
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
