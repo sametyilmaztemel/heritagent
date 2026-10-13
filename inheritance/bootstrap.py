@@ -15,6 +15,7 @@ utility, inheritance, or H2 support (those require #12 + EXP-0001).
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 
@@ -35,11 +36,25 @@ class BootstrapResult:
 def paired_cluster_bootstrap(deltas: list[float], *, seed: int,
                               n_resamples: int = N_RESAMPLES,
                               confidence: float = CONFIDENCE) -> BootstrapResult:
-    """Percentile paired cluster bootstrap over task-level deltas."""
+    """Percentile paired cluster bootstrap over task-level deltas.
+
+    Fails closed on inputs that would make the locked statistic silently
+    non-deterministic or meaningless: the seed must be an explicit int
+    (``random.Random(None)`` seeds from the OS), and every paired delta of
+    binary outcomes must be a finite real number in [-1, 1] (bool rejected)."""
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(f"bootstrap seed must be an explicit int, got {seed!r}")
     if not deltas:
         raise ValueError("bootstrap requires at least one paired delta")
-    if n_resamples <= 0:
-        raise ValueError("n_resamples must be positive")
+    for index, delta in enumerate(deltas):
+        if isinstance(delta, bool) or not isinstance(delta, (int, float)) \
+                or not math.isfinite(delta) or not -1 <= delta <= 1:
+            raise ValueError(
+                f"paired delta {index} must be a finite number in [-1, 1], "
+                f"got {delta!r}")
+    if isinstance(n_resamples, bool) or not isinstance(n_resamples, int) \
+            or n_resamples <= 0:
+        raise ValueError("n_resamples must be a positive int")
     if not 0 < confidence < 1:
         raise ValueError("confidence must be in (0, 1)")
 
