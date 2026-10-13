@@ -309,7 +309,16 @@ def _locked_floor_through(pool: str) -> int:
     including ``pool`` (t_mine 8, replay 4, generalization 10). A family with
     fewer accepted games cannot meet this bank's minimum under any plan;
     with at least this many, some plan meets it, so a shortfall at the draw
-    would be the plan's own allocation, not availability."""
+    would be the plan's own allocation, not availability.
+
+    Deliberately narrow and fail-closed: the rule is per family and ignores
+    the fixed pool totals (T_mine 60, ablation 20, interaction 10). On a
+    train set too small for every locked count at once (fewer than 174
+    accepted games), it can reject a plan whose shortfall is real; that case
+    is the owner's decision, not an allocation for the builder to search.
+    ALFWorld's train split is far larger (about 3,300 loader-accepted games;
+    the smallest family has about 300 before filtering), so the case is not
+    expected there; the manifest records the loader's per-family counts."""
     return sum(POOL_PER_FAMILY_MIN.get(p, 0) for p in POOL_ORDER[:POOL_ORDER.index(pool) + 1])
 
 
