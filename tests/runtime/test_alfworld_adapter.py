@@ -69,12 +69,47 @@ def test_task_text_carries_the_initial_admissible_commands():
     assert BANNER not in task and GAME_ID not in task
 
 
-def test_initial_observation_without_admissible_commands_renders_like_a_step():
-    class NoAdmissible(FakeSession):
-        def reset(self):
-            return INITIAL, {"won": False}
-    task = AlfworldEnvironment(NoAdmissible(SCRIPT), game_id=GAME_ID).start()
-    assert task == render_observation(task_text(INITIAL), None)
+class _NoAdmissible(FakeSession):
+    def __init__(self, script, *, at):
+        super().__init__(script)
+        self.at = at
+
+    def reset(self):
+        obs, infos = super().reset()
+        return obs, ({k: v for k, v in infos.items() if k != "admissible_commands"}
+                     if self.at == "reset" else infos)
+
+    def step(self, command):
+        obs, score, done, infos = super().step(command)
+        if self.at == "step":
+            infos = {**infos, "admissible_commands": None}
+        return obs, score, done, infos
+
+
+def test_missing_admissible_commands_at_reset_fail_closed():
+    """Review of #48: a game opened without admissible commands would show
+    the model an empty command list; fail instead (D2), and stay unstarted."""
+    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="reset"), game_id=GAME_ID)
+    with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
+        env.start()
+    with pytest.raises(AlfworldAdapterError, match="before start"):
+        env.call("act", {"command": "look"})
+
+
+def test_missing_admissible_commands_at_a_step_fail_closed():
+    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step"), game_id=GAME_ID)
+    env.start()
+    with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
+        env.call("act", {"command": "go to fridge 1"})
+    assert env.record().steps == 0
+
+
+def test_the_admissible_header_is_the_frozen_literal():
+    """D2 / A1 are part of the frozen G0 prompt: pin the exact text."""
+    assert ADMISSIBLE_HEADER == "Admissible commands:"
+    assert render_observation("You see a fridge 1.", ["b", "a"]) == (
+        "You see a fridge 1.\n\nAdmissible commands:\na\nb")
+    assert render_observation("Done.", []) == "Done.\n\nAdmissible commands:\n"
 
 
 def test_single_act_tool():
