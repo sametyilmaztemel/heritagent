@@ -70,38 +70,52 @@ def test_task_text_carries_the_initial_admissible_commands():
 
 
 class _NoAdmissible(FakeSession):
-    def __init__(self, script, *, at):
+    """Drops admissible_commands (absent key, or None) at reset or at steps."""
+
+    def __init__(self, script, *, at, missing="absent"):
         super().__init__(script)
-        self.at = at
+        self.at, self.missing = at, missing
+
+    def _strip(self, infos):
+        if self.missing == "none":
+            return {**infos, "admissible_commands": None}
+        return {k: v for k, v in infos.items() if k != "admissible_commands"}
 
     def reset(self):
         obs, infos = super().reset()
-        return obs, ({k: v for k, v in infos.items() if k != "admissible_commands"}
-                     if self.at == "reset" else infos)
+        return obs, (self._strip(infos) if self.at == "reset" else infos)
 
     def step(self, command):
         obs, score, done, infos = super().step(command)
-        if self.at == "step":
-            infos = {**infos, "admissible_commands": None}
-        return obs, score, done, infos
+        return obs, score, done, (self._strip(infos) if self.at == "step" else infos)
 
 
-def test_missing_admissible_commands_at_reset_fail_closed():
+@pytest.mark.parametrize("missing", ["absent", "none"])
+def test_missing_admissible_commands_at_reset_fail_closed(missing):
     """Review of #48: a game opened without admissible commands would show
     the model an empty command list; fail instead (D2), and stay unstarted."""
-    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="reset"), game_id=GAME_ID)
+    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="reset", missing=missing), game_id=GAME_ID)
     with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
         env.start()
     with pytest.raises(AlfworldAdapterError, match="before start"):
         env.call("act", {"command": "look"})
 
 
-def test_missing_admissible_commands_at_a_step_fail_closed():
-    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step"), game_id=GAME_ID)
+@pytest.mark.parametrize("missing", ["absent", "none"])
+@pytest.mark.parametrize("command", [
+    "go to fridge 1",              # ordinary step
+    "put egg 1 in/on fridge 1",    # the winning, terminal step
+    "fly to the moon",             # inadmissible: "Nothing happens."
+])
+def test_missing_admissible_commands_at_a_step_change_no_state(missing, command):
+    """Review of #49: the check runs at every step, the terminal one
+    included, before any counter or flag changes."""
+    env = AlfworldEnvironment(_NoAdmissible(SCRIPT, at="step", missing=missing), game_id=GAME_ID)
     env.start()
+    before = env.record()
     with pytest.raises(AlfworldAdapterError, match="admissible_commands"):
-        env.call("act", {"command": "go to fridge 1"})
-    assert env.record().steps == 0
+        env.call("act", {"command": command})
+    assert env.record() == before
 
 
 def test_the_admissible_header_is_the_frozen_literal():

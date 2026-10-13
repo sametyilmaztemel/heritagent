@@ -475,8 +475,9 @@ def test_fallback_maximum_must_equal_what_the_data_leaves(tmp_path, data, pool, 
 @pytest.mark.parametrize("pool,value", [
     ("t_mine", 9), ("ablation", 1), ("interaction", 1), ("replay_bank", 5)])
 def test_fallback_family_takes_only_its_floors_from_earlier_pools(tmp_path, data, pool, value):
-    """Review of #48 (owner decision): a plan must not shrink a fallback bank
-    by giving the family more than its floors earlier. F[0] absorbs the
+    """Review of #48 (owner decision): a plan must not shrink a generalization
+    fallback bank by giving the family more than its floors in any earlier
+    pool (T_mine, ablation, interaction or replay). F[0] absorbs the
     difference so every locked total still holds."""
     _, _, unseen = data
     sizes = {f: 35 for f in F}
@@ -493,6 +494,70 @@ def test_fallback_family_takes_only_its_floors_from_earlier_pools(tmp_path, data
     with pytest.raises(SplitError, match=rf"so {pool}\[{F[1]}\] must be {need}; "
                                          rf"the plan has {value}"):
         build_split_manifest(train, unseen, plan)
+
+
+@pytest.mark.parametrize("pool,value", [("t_mine", 9), ("ablation", 1), ("interaction", 1)])
+def test_replay_fallback_family_takes_only_its_floors_too(tmp_path, data, pool, value):
+    """Review of #49: the same rule for a replay-bank fallback (11 games: the
+    replay bank takes the 3 left after T_mine 8)."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 11
+    train = collect_games(make_split(tmp_path / "rp", "train", sizes), "train")
+    base = scarce_plan()
+    counts = {pool: {**dict(base.counts(pool)), F[1]: value}}
+    counts[pool][F[0]] -= value - dict(base.counts(pool))[F[1]]
+    plan = scarce_plan(counts={**counts,
+                               "replay_bank": {**{f: 4 for f in F}, F[1]: 3},
+                               "generalization_bank": {**{f: 10 for f in F}, F[1]: 0}},
+                       feasibility_fallback={"replay_bank": {F[1]: 3},
+                                             "generalization_bank": {F[1]: 0}})
+    need = {"t_mine": 8, "ablation": 0, "interaction": 0}[pool]
+    with pytest.raises(SplitError, match=rf"replay_bank\[{F[1]}\]: .*so {pool}\[{F[1]}\] must be "
+                                         rf"{need}; the plan has {value}"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_fallback_family_may_be_omitted_from_earlier_pools(tmp_path, data):
+    """Review of #49: a fallback family left out of the ablation and
+    interaction counts has the floor 0 there; the build reads it as 0."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 21
+    train = collect_games(make_split(tmp_path / "oe", "train", sizes), "train")
+    base = scarce_plan()
+    plan = scarce_plan(counts={
+        "ablation": {f: n for f, n in base.counts("ablation").items() if f != F[1]},
+        "interaction": {f: n for f, n in base.counts("interaction").items() if f != F[1]},
+        "generalization_bank": {**{f: 10 for f in F}, F[1]: 9}},
+        feasibility_fallback={"generalization_bank": {F[1]: 9}})
+    manifest = build_split_manifest(train, unseen, plan)
+    assert manifest["pools"]["generalization_bank"]["family_counts"][F[1]] == 9
+
+
+def test_generalization_fallback_names_the_missing_replay_fallback(tmp_path, data):
+    """Review of #49: 10 games leave 2 for the replay bank, below its minimum
+    4. With a replay count of 4 and no replay fallback, the error names the
+    fallback to pre-register, not an impossible replay count."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 10
+    train = collect_games(make_split(tmp_path / "rm", "train", sizes), "train")
+    plan = scarce_plan(counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: 0}},
+                       feasibility_fallback={"generalization_bank": {F[1]: 0}})
+    with pytest.raises(SplitError, match=r"the data leaves only 2 games for replay_bank\[.*"
+                                         r"pre-register a replay_bank fallback of 2"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_manifest_hash_of_the_fixture_is_pinned(data):
+    """Known answer for a plan without a fallback (review of #49): any change
+    to collection, selection, records or hashing changes it. ADR-0004's
+    'plans without a fallback build byte-identical manifests' rests on it."""
+    _, train, unseen = data
+    manifest = build_split_manifest(train, unseen, full_plan())
+    assert manifest["manifest_sha256"] == (
+        "b3ace1f608db4a73e0a1b14b0b44a4bacc55d19440f2b26a543edce299222d69")
 
 
 def test_full_plan_allocation_cannot_shrink_a_fallback_bank(tmp_path, data):
