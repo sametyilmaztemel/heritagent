@@ -215,8 +215,9 @@ class SplitPlan:
 
 
 def _fallbacks_in_draw_order(plan: SplitPlan):
-    """The plan's fallbacks by pool, in POOL_ORDER (unknown pool names last),
-    so a replay-bank error is always reported before a generalization one."""
+    """The plan's fallbacks by pool, in POOL_ORDER (unknown pool names last,
+    so validate_plan still rejects them). Within one check, a replay-bank
+    error is then reported before a generalization-bank one."""
     rank = {pool: i for i, pool in enumerate(POOL_ORDER)}
     return sorted(plan.feasibility_fallback.items(),
                   key=lambda item: (rank.get(item[0], len(rank)), item[0]))
@@ -388,7 +389,7 @@ def build_split_manifest(train: CollectionReport, unseen: CollectionReport,
             raise SplitError(f"t_mine[{family}]: {accepted[family]} accepted train games cannot "
                              f"meet the locked t_mine minimum {t_mine_minimum}, which has no "
                              f"fallback")
-    for pool in FALLBACK_POOLS:  # draw order: the replay bank's errors come first
+    for pool in FALLBACK_POOLS:  # replay bank first, within this check
         floor = _locked_floor_through(pool)
         minimum = POOL_PER_FAMILY_MIN[pool]
         for family in ALFWORLD_TASK_TYPES:
