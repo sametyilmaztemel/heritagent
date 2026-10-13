@@ -18,7 +18,7 @@ from trajectory.storage.canonical import (
     content_digest,
 )
 
-TERMINAL_KINDS = ("finished", "budget_exhausted")
+TERMINAL_KINDS = ("finished", "budget_exhausted", "environment_terminal")
 
 # event kinds that must reference a step that has already started
 _STEP_BOUND_KINDS = frozenset({
@@ -92,7 +92,7 @@ def validate_event_stream(events: list[dict], *, require_terminal: bool) -> list
 
     if require_terminal and terminal_seen_at is None:
         issues.append("completed trajectory requires exactly one terminal event "
-                      "(finished or budget_exhausted)")
+                      "(finished, budget_exhausted or environment_terminal)")
     return issues
 
 
@@ -138,7 +138,7 @@ def verify_document(document: dict) -> None:
                       f"status={status!r}")
     if status == "incomplete" and not document["finalization"].get("incomplete_reason"):
         issues.append("incomplete trajectory must carry an incomplete_reason")
-    if status in ("finished", "budget_exhausted"):
+    if status in TERMINAL_KINDS:
         terminal = next((e for e in events if e["kind"] in TERMINAL_KINDS), None)
         if terminal is not None and terminal["kind"] != status:
             issues.append(f"finalization status {status!r} disagrees with terminal event "
