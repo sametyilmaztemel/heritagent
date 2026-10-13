@@ -46,28 +46,37 @@ INLINE_CODE = re.compile(r"`[^`\n]*`")
 MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\s*\)")
 REF_DEFINITION = re.compile(r"^ {0,3}\[(?!\^)[^\]]+\]:\s*<?([^\s>]+)", re.M)  # [^n]: is a footnote
 NON_FILE_TARGET = re.compile(r"^(#|//|[a-zA-Z][a-zA-Z0-9+.-]*:)")
-URL = re.compile(r"https?://[^\s)\]>\"'`*]+")
-ARXIV_ID = re.compile(r"arXiv:\s?(\d{4}\.\d{4,5}(?:v\d+)?)")
-FILE_SUFFIXES = "md|py|json|jsonl|yaml|yml|txt|toml|csv|html?|sh|js|ts|out|cfg|ini|lock|log"
-BARE_DOMAIN = re.compile(rf"(?<![\w./@:-])((?:[a-z0-9-]+\.)+(?!(?:{FILE_SUFFIXES})/)[a-z]{{2,}}/[^\s)\]>\"'`*]*)")
+URL_CHARS = r"[^\s()\[\]<>\"'`*]"  # '[' too: a footnote marker glued to a URL is not part of it
+URL = re.compile(rf"https?://{URL_CHARS}+")
+ARXIV_ID = re.compile(r"arXiv:\s?(\d{4}\.\d{4,5}(?:v\d+)?)", re.I)
+# Bare-domain citations (aclanthology.org/..., proceedings.mlr.press/...). A
+# list of real TLDs, not "any letters": code names such as llama.cpp/vLLM or
+# os.path/pathlib must not become hosts that the weekly job reports dead.
+CITATION_TLDS = ("com|org|net|edu|gov|int|io|ai|dev|app|co|me|info|press|science|"
+                 "tech|cloud|page|site|uk|us|eu|de|fr|nl|ch|cn|jp|kr|ca|au|it|es|"
+                 "se|no|fi|dk|pl|ru|br|il|sg|hk|tw|at|be|cz|pt|ie|nz|in")
+BARE_DOMAIN = re.compile(
+    rf"(?<![A-Za-z0-9./@:-])((?:[a-z0-9-]+\.)+(?:{CITATION_TLDS})/{URL_CHARS}*)", re.I)
 TRAILING_PUNCT = ".,;:_"
 POLITE_DELAY_S = {"arxiv.org": 1.0}
 DEAD_DNS_ERRORS = {getattr(socket, name) for name in ("EAI_NONAME", "EAI_NODATA") if hasattr(socket, name)}
 
 
 def tracked(pattern: str) -> list[Path]:
-    """Files matching a git pathspec glob (``*`` crosses directories). In a
-    tree without git metadata (e.g. a ``git archive`` export) every file
-    under the root counts as tracked."""
-    try:
-        out = subprocess.run(
-            ["git", "ls-files", "-z", "--", pattern],
-            cwd=REPO_ROOT, check=True, capture_output=True, text=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
+    """Files matching a git pathspec glob (``*`` crosses directories).
+
+    Only a tree with no git metadata at the root (e.g. a ``git archive``
+    export) falls back to a filesystem walk that skips what .gitignore
+    excludes. In a git work tree a failing ``git ls-files`` is an error, not
+    a reason to scan untracked files."""
+    if not (REPO_ROOT / ".git").exists():
         return sorted(p for p in REPO_ROOT.rglob("*")
                       if p.is_file() and not _untracked_by_convention(p)
                       and fnmatch.fnmatchcase(rel(p), pattern))
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", pattern],
+        cwd=REPO_ROOT, check=True, capture_output=True, text=True,
+    ).stdout
     return [REPO_ROOT / p for p in out.split("\0") if p]
 
 
@@ -220,7 +229,9 @@ def check_external_links() -> list[str]:
     for line in unverifiable:
         print(f"warning: {line}")
     print(f"external links: {len(urls)} checked, {len(unverifiable)} unverifiable")
-    if urls and len(unverifiable) == len(urls):
+    if not urls:
+        errors.append("no citations found in research/; the extraction is broken")
+    elif len(unverifiable) == len(urls):
         print("warning: no link could be verified; check the runner's network access")
     return errors
 
@@ -228,33 +239,50 @@ def check_external_links() -> list[str]:
 def probe(url: str) -> tuple[str, str]:
     """Return ("ok" | "dead" | "unverifiable", detail).
 
-    Only evidence of rot counts as dead: HTTP 404/410, a host that does not
-    exist (EAI_NONAME / EAI_NODATA, not the transient EAI_AGAIN) or a
+    Only evidence of rot counts as dead: HTTP 404/410 on GET, a host that does
+    not exist (EAI_NONAME / EAI_NODATA, not the transient EAI_AGAIN) or a
     malformed URL. Bot blocking, rate limits, server errors, timeouts and
-    other connection failures are unverifiable.
-    """
+    other connection failures are unverifiable. HEAD is only a shortcut: any
+    HEAD failure other than a dead host or a malformed URL falls through to
+    GET, which decides."""
     headers = {"User-Agent": "heritagent-link-check/0.1 (+https://github.com/sametyilmaztemel/heritagent)"}
-    for method in ("HEAD", "GET"):
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, method=method, headers=headers), timeout=20):
-                return "ok", method
-        except urllib.error.HTTPError as exc:
-            if method == "HEAD":
-                continue  # some servers mishandle HEAD; GET decides
-            return ("dead" if exc.code in (404, 410) else "unverifiable"), f"HTTP {exc.code}"
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, socket.gaierror) and exc.reason.errno in DEAD_DNS_ERRORS:
-                return "dead", f"host does not exist: {exc.reason}"
-            return "unverifiable", f"connection failed: {exc.reason}"
-        except http.client.InvalidURL as exc:
-            return "dead", f"malformed URL: {exc}"
-        except UnicodeError as exc:
-            return "unverifiable", f"non-ASCII URL not requested: {exc}"
-        except ValueError as exc:
-            return "dead", f"malformed URL: {exc}"
-        except (TimeoutError, OSError, http.client.HTTPException) as exc:
-            return "unverifiable", f"connection failed: {exc!r}"
-    return "unverifiable", "HEAD and GET refused"
+    try:
+        _request(url, "HEAD", headers)
+        return "ok", "HEAD"
+    except urllib.error.HTTPError as exc:
+        if exc.code in (429, 503):
+            time.sleep(1.0)
+    except Exception as exc:  # noqa: BLE001 - classified below, then GET decides
+        verdict = _classify_failure(exc)
+        if verdict[0] == "dead":
+            return verdict
+    try:
+        _request(url, "GET", headers)
+        return "ok", "GET"
+    except urllib.error.HTTPError as exc:
+        return ("dead" if exc.code in (404, 410) else "unverifiable"), f"HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return _classify_failure(exc)
+
+
+def _request(url: str, method: str, headers: dict) -> None:
+    with urllib.request.urlopen(urllib.request.Request(url, method=method, headers=headers),
+                                timeout=20):
+        pass
+
+
+def _classify_failure(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, urllib.error.URLError):
+        if isinstance(exc.reason, socket.gaierror) and exc.reason.errno in DEAD_DNS_ERRORS:
+            return "dead", f"host does not exist: {exc.reason}"
+        return "unverifiable", f"connection failed: {exc.reason}"
+    if isinstance(exc, UnicodeError):
+        return "unverifiable", f"non-ASCII URL not requested: {exc}"
+    if isinstance(exc, (ValueError, http.client.InvalidURL)):  # InvalidURL is an HTTPException
+        return "dead", f"malformed URL: {exc}"
+    if isinstance(exc, (TimeoutError, OSError, http.client.HTTPException)):
+        return "unverifiable", f"connection failed: {exc!r}"
+    raise exc
 
 
 def main() -> int:
