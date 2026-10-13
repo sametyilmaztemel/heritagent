@@ -1,18 +1,19 @@
-"""ALFWorld ``ToolEnvironment`` adapter (ADR-0003 D1-D3, D6-D8).
+"""ALFWorld ``ToolEnvironment`` adapter (ADR-0003 D1-D3, D6-D8, amendment A1).
 
 One ALFWorld game per episode behind the runtime's provider-neutral tool
 boundary:
 
 - D1: a single tool, ``act``, taking one free-text ``command``;
-- D2: every observation is ALFWorld's text followed by
-  ``Admissible commands:`` and the sorted admissible commands;
+- D2: every observation, the initial one included (A1), is ALFWorld's text
+  followed by ``Admissible commands:`` and the sorted admissible commands;
 - D3: "Nothing happens." (an inadmissible command) is ``ok=False`` and
   ``retryable=False``, so the loop counts it as a failure without retrying;
 - D5/D6: when the game reports done, the observation is ``terminal`` and the
   episode record carries ALFWorld's ``won`` flag, which is the benchmark
   success. The model's text and the runtime status never decide it;
-- D7: the task text is the initial observation minus the TextWorld banner,
-  with nothing added;
+- D7 (as amended by A1): the task text is the initial observation minus the
+  TextWorld banner, rendered with the initial admissible commands as in D2,
+  so the model sees the valid commands before its first action;
 - D8: real games are opened with alfworld's own wrappers,
   ``AlfredDemangler(shuffle=False)`` and ``AlfredInfos``, without expert
   plans (``open_game``; needs the optional ``alfworld`` extra).
@@ -100,13 +101,15 @@ class AlfworldEnvironment:
         self._invalid = 0
 
     def start(self) -> str:
-        """Reset the game and return the task text for ``run_agent``."""
+        """Reset the game and return the task text for ``run_agent``: the
+        initial observation without the banner, with the initial admissible
+        commands (D7 as amended by A1)."""
         if self._started:
             raise AlfworldAdapterError("episode already started; use a new environment")
         observation, infos = self._session.reset()
         self._started = True
         self._won = bool(infos.get("won", False))
-        return task_text(observation)
+        return render_observation(task_text(observation), infos.get("admissible_commands"))
 
     def list_tools(self) -> list[ToolSpec]:
         return [ACT_TOOL]
