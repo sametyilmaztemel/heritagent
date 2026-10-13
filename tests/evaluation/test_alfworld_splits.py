@@ -374,8 +374,9 @@ def test_bank_errors_are_reported_in_draw_order(tmp_path, data):
 
 
 def test_plan_validation_reports_the_replay_bank_first():
-    """Review of #51: validate_plan also checks the banks in draw order
-    (SplitPlan sorts its keys by name, which would put generalization first)."""
+    """Review of #51: validate_plan checks the fallback declarations replay
+    bank first (SplitPlan sorts its keys by name, which would put
+    generalization first). Count errors are checked in a later pass."""
     plan = full_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[2]: 5},
                              "generalization_bank": {**{f: 10 for f in F}, F[1]: 12}},
                      feasibility_fallback={"replay_bank": {F[2]: 5},
