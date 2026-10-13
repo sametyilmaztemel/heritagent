@@ -101,10 +101,19 @@ is never mixed into content identity.
   hex chars (64 bits). The existing schema pattern `^G-[a-z0-9]{8,}$`
   admits it (16 ≥ 8; no schema change needed). The prefix is a convenience
   content identifier; the FULL digest is always reproducible from the
-  canonical payload via `genome_identity_hash_hex()`. On a prefix
-  collision the contract FAILS CLOSED (validation recomputes and compares
-  exact strings); any longer-prefix migration (e.g. 32 hex) requires a new
-  ADR. No collision registry is maintained.
+  canonical payload via `genome_identity_hash_hex()`.
+- Prefix-collision semantics (CORRECTED): `validate_genome_id()` guarantees
+  ONLY per-document integrity — the claimed prefix equals THIS genome's own
+  full-digest prefix. M0 keeps NO global collision registry, so a genuine
+  prefix collision (two distinct full SHA-256 digests sharing the first 16
+  hex chars, both yielding `G-<same-16hex>`) is NOT detectable by
+  single-document validation: each document individually recomputes and
+  passes. Detection is therefore deferred to the future lineage/genome
+  store: if a store ever observes two DIFFERENT full digests under one
+  `genome_id`, it MUST fail closed, and resolving such a collision requires
+  a longer-prefix / new-ADR migration (e.g. 32 hex). No collision registry
+  is maintained in this issue; `genome_identity_hash_hex()` keeps the full
+  digest reproducible/auditable so stores can perform that check.
 
 **Identity domain — INCLUDED in the hash:**
 
@@ -146,8 +155,19 @@ is never mixed into content identity.
   arrays are conjunctions/disjunctions (order-insensitive evaluation), so
   they are canonically sorted by canonical JSON of each predicate. No
   other array is ever reordered.
-- Normalization: an absent policy section equals an empty one, and an
-  absent `regulation` equals `{}` (functionally identical → same id).
+- Normalization (ABSENT fields only): an absent policy section equals an
+  empty one, and an absent `regulation` equals `{}` (functionally
+  identical → same id). A PRESENT container of the wrong type (e.g.
+  `genes: []`, `skills: {}`, `all_of: {}`) FAILS CLOSED — the identity
+  API never silently normalizes malformed typed content into empty valid
+  content.
+- Constitutive regulation equivalence: a rule carrying NO effective
+  predicate — the gene absent from `regulation`, `{}`,
+  `{"express_when": {}}`, or empty `all_of`/`any_of` — is
+  runtime-equivalent to constitutive expression; all such forms are
+  DROPPED from the identity payload and produce the SAME genome_id. A
+  rule with at least one effective predicate stays in the identity
+  domain.
 - Determinism: identical functional content produces byte-identical
   canonical JSON regardless of dict insertion order or whitespace.
 

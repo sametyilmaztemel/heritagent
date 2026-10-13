@@ -39,8 +39,14 @@ yields a NEW genome_id.
 Hash input is domain-separated so genome identity bytes can never collide
 with another artifact type's hash namespace. The 16-hex prefix (64 bits)
 is a convenience content identifier; the FULL digest is reproducible via
-:func:`genome_identity_hash_hex`. On a prefix collision the contract fails
-closed and any longer-prefix migration requires a new ADR.
+:func:`genome_identity_hash_hex`. ``validate_genome_id()`` guarantees ONLY
+per-document integrity (claimed prefix == this genome's own full-digest
+prefix); M0 keeps NO global collision registry, so a genuine prefix
+collision (two distinct full digests sharing the first 16 hex chars) is
+NOT detectable by single-document validation. A future lineage/genome
+store that observes different full digests under one ``genome_id`` must
+fail closed; resolving such a collision requires a longer-prefix /
+new-ADR migration.
 
 All serialization reuses ``trajectory.storage.canonical`` (sorted keys,
 compact separators, UTF-8, non-finite floats and non-JSON values rejected)
@@ -90,23 +96,45 @@ def _functional_gene_ref(ref, path: str) -> dict:
 
 
 def _canonical_condition(condition, path: str) -> dict:
-    """Canonical form of one regulation condition: ``all_of``/``any_of``
-    are order-insensitive conjunctions/disjunctions, so their predicate
-    arrays are sorted by canonical JSON (normative ADR decision)."""
-    express = (condition or {}).get("express_when")
-    if express is None:
-        return {}
+    """Canonical form of one regulation condition.
+
+    ``all_of``/``any_of`` are order-insensitive conjunctions/disjunctions,
+    so their predicate arrays are sorted by canonical JSON (normative ADR
+    decision). A rule carrying NO effective predicate — no or empty
+    ``all_of`` AND no or empty ``any_of`` — is runtime-equivalent to
+    constitutive expression, so the whole entry is DROPPED from the
+    identity payload (absent rule == ``{}`` == ``{"express_when": {}}``).
+
+    Container types are STRICT when a field is PRESENT: only ABSENT fields
+    are normalized (malformed containers fail closed).
+    """
+    if not isinstance(condition, dict):
+        raise GenomeValidationError(
+            [f"identity payload {path}: regulation condition must be an "
+             f"object when present, got {type(condition).__name__}"])
+    if "express_when" not in condition:
+        return {}  # no rule at all -> constitutive -> dropped
+    express = condition["express_when"]
     if not isinstance(express, dict):
         raise GenomeValidationError(
-            [f"identity payload {path}: express_when must be an object"])
-    out: dict = {}
+            [f"identity payload {path}: express_when must be an object "
+             f"when present, got {type(express).__name__}"])
+    effective: dict = {}
     for key in ("all_of", "any_of"):
-        predicates = express.get(key)
+        if key not in express:
+            continue
+        predicates = express[key]
+        if not isinstance(predicates, list):
+            raise GenomeValidationError(
+                [f"identity payload {path}: express_when.{key} must be an "
+                 f"array when present, got {type(predicates).__name__}"])
         if predicates:
-            out[key] = sorted(
+            effective[key] = sorted(
                 predicates,
                 key=lambda predicate: canonical_json(_plain(predicate)))
-    return {"express_when": out}
+    if not effective:
+        return {}  # no effective predicate -> constitutive -> dropped
+    return {"express_when": effective}
 
 
 def canonical_genome_identity_payload(genome: dict) -> dict:
@@ -133,32 +161,58 @@ def canonical_genome_identity_payload(genome: dict) -> dict:
         errors.append("identity payload: genome is missing 'genes'")
     if errors:
         raise GenomeValidationError(sorted(errors))
-    genes_in = source["genes"] or {}
+    # STRICT container types for PRESENT fields — only ABSENT fields are
+    # normalized (A2: absent policy section == empty; absent skills ==
+    # empty array; absent regulation == {}). A falsy malformed container
+    # ([] where a dict is required, {} where an array is required, ...)
+    # must NEVER be silently normalized into empty valid content.
+    genes_in = source["genes"]
     if not isinstance(genes_in, dict):
         raise GenomeValidationError(
-            ["identity payload: 'genes' must be an object"])
+            [f"identity payload: 'genes' must be an object when present, "
+             f"got {type(genes_in).__name__}"])
     genes_out: dict = {}
     for section in _POLICY_SECTIONS:
-        slots = genes_in.get(section) or {}
+        if section not in genes_in:
+            continue  # ABSENT policy section == empty (A2 normalization)
+        slots = genes_in[section]
+        if not isinstance(slots, dict):
+            raise GenomeValidationError(
+                [f"identity payload: 'genes.{section}' must be an object "
+                 f"when present, got {type(slots).__name__}"])
         if slots:
             genes_out[section] = {
                 slot: _functional_gene_ref(ref, f"genes.{section}.{slot}")
                 for slot, ref in slots.items()}
-    skills_in = genes_in.get("skills") or []
-    if not isinstance(skills_in, list):
-        raise GenomeValidationError(
-            ["identity payload: 'genes.skills' must be an array"])
+    if "skills" in genes_in:
+        skills_in = genes_in["skills"]
+        if not isinstance(skills_in, list):
+            raise GenomeValidationError(
+                [f"identity payload: 'genes.skills' must be an array when "
+                 f"present, got {type(skills_in).__name__}"])
+    else:
+        skills_in = []  # ABSENT skills == empty array (A2 normalization)
     # skills[] is SEMANTICALLY ORDERED (runtime block order): the order is
     # part of the identity domain and must NOT be sorted here
     genes_out["skills"] = [_functional_gene_ref(ref, f"genes.skills[{i}]")
                             for i, ref in enumerate(skills_in)]
-    regulation_in = source.get("regulation") or {}
-    if not isinstance(regulation_in, dict):
-        raise GenomeValidationError(
-            ["identity payload: 'regulation' must be an object"])
-    regulation_out = {gene_id: _canonical_condition(condition,
-                                                     f"regulation.{gene_id}")
-                      for gene_id, condition in regulation_in.items()}
+    if "regulation" in source:
+        regulation_in = source["regulation"]
+        if not isinstance(regulation_in, dict):
+            raise GenomeValidationError(
+                [f"identity payload: 'regulation' must be an object when "
+                 f"present, got {type(regulation_in).__name__}"])
+    else:
+        regulation_in = {}  # ABSENT regulation == {} (A2 normalization)
+    regulation_out: dict = {}
+    for gene_id, condition in regulation_in.items():
+        canonical_condition = _canonical_condition(condition,
+                                                    f"regulation.{gene_id}")
+        if canonical_condition:
+            # only rules carrying an EFFECTIVE predicate stay in the
+            # identity domain; predicate-free rules are constitutive and
+            # equivalent to absence (A2 canonical equivalence)
+            regulation_out[gene_id] = canonical_condition
     return {"schema_version": source["schema_version"],
              "genes": genes_out,
              "regulation": regulation_out}
