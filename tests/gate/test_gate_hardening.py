@@ -243,3 +243,32 @@ def test_dry_run_does_not_require_an_appendable_store(tmp_path):
     somatic.close()
     orch._cig_record_store = None
     assert orch.run(inputs).committed is False and runner.calls
+
+
+# -- review of PR #46 -----------------------------------------------------------------
+
+@pytest.mark.parametrize("state", ["closed", "stale"])
+def test_empty_batch_commits_whatever_the_journal_state(tmp_path, state):
+    """An empty batch appends nothing, so its commit needs no appendable
+    journal (as before the pre-check)."""
+    world = build_world(tmp_path, candidates=("a", "b"))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    if state == "closed":
+        somatic.close()
+    else:
+        SomaticStore.open(somatic.path, registry).decide("b", 1, "rejected", ["CIG-0099"])
+    outcome = orch.run([])
+    assert outcome.committed is True and outcome.results == ()
+    assert runner.calls == []
+
+
+def test_earlier_setup_diagnostics_keep_their_error_type(tmp_path):
+    """The journal check runs last: a candidate that is no longer a somatic
+    candidate is still reported as such on a closed store."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    somatic.decide("a", 1, "rejected", ["CIG-0099"])
+    somatic.close()
+    with pytest.raises(RecordConsistencyError, match="no longer a somatic candidate"):
+        orch.run(inputs)
+    assert runner.calls == []
