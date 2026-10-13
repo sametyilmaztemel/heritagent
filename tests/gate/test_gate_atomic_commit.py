@@ -227,6 +227,7 @@ def test_commit_rejects_terminal_somatic_candidate(tmp_path):
     class _RetaggedResult:
         gene_id = result.gene_id
         candidate_version = result.candidate_version
+        candidate = result.candidate
         verdict = result.verdict
         aggregate = retagged_agg
         stage4_child = next(c for c in retagged_children
