@@ -293,31 +293,41 @@ def test_not_enough_games_fails_closed(tmp_path, data):
 
 def test_feasibility_fallback_builds_with_the_declared_maximum(tmp_path, data):
     """21 games: below the floors through the generalization bank (8 + 4 + 10),
-    so no plan could give it 10. The plan draws 10 + 4 + 2 + 4 = 20 first."""
+    so no plan could give it 10. With only its floors earlier (t_mine 8,
+    replay 4), the bank takes the 9 games left (ADR-0004)."""
     _, _, unseen = data
     sizes = {f: 35 for f in F}
     sizes[F[1]] = 21
     train = collect_games(make_split(tmp_path / "fb", "train", sizes), "train")
-    plan = full_plan(counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: 1}},
-                     feasibility_fallback={"generalization_bank": {F[1]: 1}})
+    plan = scarce_plan(counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: 9}},
+                       feasibility_fallback={"generalization_bank": {F[1]: 9}})
     manifest = build_split_manifest(train, unseen, plan)
-    assert manifest["pools"]["generalization_bank"]["family_counts"][F[1]] == 1
-    assert manifest["plan"]["feasibility_fallback"] == {"generalization_bank": {F[1]: 1}}
+    assert manifest["pools"]["generalization_bank"]["family_counts"][F[1]] == 9
+    assert manifest["plan"]["feasibility_fallback"] == {"generalization_bank": {F[1]: 9}}
     assert manifest["pools"]["generalization_bank"]["feasibility_fallback"] == {
-        F[1]: {"maximum": 1, "available_at_draw": 1, "accepted_in_train": 21,
+        F[1]: {"maximum": 9, "available_at_draw": 9, "accepted_in_train": 21,
                "locked_floor_through_bank": 22, "locked_minimum": 10}}
     assert "feasibility_fallback" not in manifest["pools"]["replay_bank"]
 
 
 # -- review of PR #34 / #42: a fallback only where availability prevents the minimum --
 
-def scarce_plan(**overrides) -> SplitPlan:
-    """F[1] gets only its locked floors: t_mine 8, nothing in ablation or
-    interaction."""
+def _spread(total: int, keys) -> dict:
+    keys = list(keys)
+    base, extra = divmod(total, len(keys))
+    return {k: base + (i < extra) for i, k in enumerate(keys)}
+
+
+def scarce_plan(*families, **overrides) -> SplitPlan:
+    """The given families (default F[1]) get only their locked floors before
+    the banks: t_mine 8, nothing in ablation or interaction. The other
+    families share the rest of each locked total."""
+    families = families or (F[1],)
+    others = [f for f in F if f not in families]
     counts = {
-        "t_mine": dict(zip(F, (11, 8, 11, 10, 10, 10))),
-        "ablation": dict(zip(F, (4, 0, 4, 4, 4, 4))),
-        "interaction": dict(zip(F, (2, 0, 2, 2, 2, 2))),
+        "t_mine": {**{f: 8 for f in families}, **_spread(60 - 8 * len(families), others)},
+        "ablation": {**{f: 0 for f in families}, **_spread(20, others)},
+        "interaction": {**{f: 0 for f in families}, **_spread(10, others)},
         **overrides.pop("counts", {}),
     }
     return full_plan(counts=counts, **overrides)
@@ -381,14 +391,16 @@ def test_fallback_at_the_floor_fails_closed_whatever_the_plan_draws_first(
 
 @pytest.mark.parametrize("valid,invalid", [(F[1], F[3]), (F[5], F[0])])
 def test_every_fallback_family_is_checked(tmp_path, data, valid, invalid):
-    """One family is genuinely short (21 games), the other is not (35); the
-    invalid one sorts after, then before, the valid one."""
+    """One family is genuinely short (21 games, given only its floors), the
+    other is not (35); the invalid one sorts after, then before, the valid
+    one."""
     _, _, unseen = data
     sizes = {f: 35 for f in F}
-    sizes[valid] = 21  # full_plan draws 20 first, 1 left for the bank
+    sizes[valid] = 21
     train = collect_games(make_split(tmp_path / "f", "train", sizes), "train")
-    plan = full_plan(counts={"generalization_bank": {**{f: 10 for f in F}, valid: 1, invalid: 3}},
-                     feasibility_fallback={"generalization_bank": {valid: 1, invalid: 3}})
+    plan = scarce_plan(valid,
+                       counts={"generalization_bank": {**{f: 10 for f in F}, valid: 9, invalid: 3}},
+                       feasibility_fallback={"generalization_bank": {valid: 9, invalid: 3}})
     with pytest.raises(SplitError, match=rf"generalization_bank\[{invalid}\].*35 accepted"):
         build_split_manifest(train, unseen, plan)
 
@@ -433,37 +445,117 @@ def test_fallback_one_below_the_locked_floor_builds(tmp_path, data):
                "locked_floor_through_bank": 22, "locked_minimum": 10}}
 
 
-@pytest.mark.parametrize("pool,size,maximum,available", [
-    ("generalization_bank", 21, 0, 1),   # full_plan: 20 drawn first, 1 left
-    ("generalization_bank", 21, 2, 1),
+@pytest.mark.parametrize("pool,size,maximum,target", [
+    ("generalization_bank", 21, 8, 9),   # fewer than the data leaves
+    ("generalization_bank", 21, 0, 9),
+    ("generalization_bank", 18, 7, 6),   # more than the data leaves (below the minimum 10)
+    ("replay_bank", 11, 2, 3),
+    ("replay_bank", 11, 0, 3),
 ])
-def test_fallback_maximum_must_equal_the_games_available(tmp_path, data, pool, size,
-                                                        maximum, available):
-    """ADR-0004: a fallback bank takes every game of the family still
-    available at the draw; neither fewer nor more."""
+def test_fallback_maximum_must_equal_what_the_data_leaves(tmp_path, data, pool, size,
+                                                          maximum, target):
+    """ADR-0004: a fallback bank takes every game the family has left after
+    its locked floors in the earlier pools; nothing fewer."""
     _, _, unseen = data
     sizes = {f: 35 for f in F}
     sizes[F[1]] = size
     train = collect_games(make_split(tmp_path / "eq", "train", sizes), "train")
-    plan = full_plan(counts={pool: {**{f: 10 for f in F}, F[1]: maximum}},
-                     feasibility_fallback={pool: {F[1]: maximum}})
-    with pytest.raises(SplitError, match=rf"fallback maximum {maximum} must equal the "
-                                         rf"{available} games available at the draw"):
+    counts = {pool: {**{f: {"replay_bank": 4, "generalization_bank": 10}[pool] for f in F},
+                     F[1]: maximum}}
+    fallback = {pool: {F[1]: maximum}}
+    if pool == "replay_bank":  # nothing is left for the generalization bank
+        counts["generalization_bank"] = {**{f: 10 for f in F}, F[1]: 0}
+        fallback["generalization_bank"] = {F[1]: 0}
+    plan = scarce_plan(counts=counts, feasibility_fallback=fallback)
+    with pytest.raises(SplitError, match=rf"{pool}\[{F[1]}\]: the pre-registered fallback "
+                                         rf"maximum {maximum} must equal the {target} games"):
         build_split_manifest(train, unseen, plan)
 
 
-def test_replay_fallback_below_the_games_available_fails_closed(tmp_path, data):
-    """11 games for F[1]: t_mine 8 leaves 3 for the replay bank, so its
-    fallback maximum must be 3, not 2."""
+@pytest.mark.parametrize("pool,value", [
+    ("t_mine", 9), ("ablation", 1), ("interaction", 1), ("replay_bank", 5)])
+def test_fallback_family_takes_only_its_floors_from_earlier_pools(tmp_path, data, pool, value):
+    """Review of #48 (owner decision): a plan must not shrink a fallback bank
+    by giving the family more than its floors earlier. F[0] absorbs the
+    difference so every locked total still holds."""
     _, _, unseen = data
     sizes = {f: 35 for f in F}
-    sizes[F[1]] = 11
-    train = collect_games(make_split(tmp_path / "rq", "train", sizes), "train")
-    plan = scarce_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[1]: 2},
+    sizes[F[1]] = 21
+    train = collect_games(make_split(tmp_path / "pin", "train", sizes), "train")
+    base = scarce_plan()
+    counts = {pool: {**dict(base.counts(pool)), F[1]: value}}
+    if pool != "replay_bank":
+        counts[pool][F[0]] -= value - dict(base.counts(pool))[F[1]]
+    plan = scarce_plan(counts={**counts,
+                               "generalization_bank": {**{f: 10 for f in F}, F[1]: 9}},
+                       feasibility_fallback={"generalization_bank": {F[1]: 9}})
+    need = {"t_mine": 8, "ablation": 0, "interaction": 0, "replay_bank": 4}[pool]
+    with pytest.raises(SplitError, match=rf"so {pool}\[{F[1]}\] must be {need}; "
+                                         rf"the plan has {value}"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_full_plan_allocation_cannot_shrink_a_fallback_bank(tmp_path, data):
+    """The review's example: under full_plan (t_mine 10, ablation 4,
+    interaction 2) a 21-game family would leave 1 game for the bank instead
+    of 9."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 21
+    train = collect_games(make_split(tmp_path / "fp", "train", sizes), "train")
+    plan = full_plan(counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: 1}},
+                     feasibility_fallback={"generalization_bank": {F[1]: 1}})
+    with pytest.raises(SplitError, match=rf"t_mine\[{F[1]}\] must be 8; the plan has 10"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_two_fallback_families_in_one_bank(tmp_path, data):
+    """Both families get their data-determined size; a wrong maximum for
+    either one, first or second, fails closed."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]], sizes[F[4]] = 21, 18
+    train = collect_games(make_split(tmp_path / "two", "train", sizes), "train")
+
+    def plan_with(a, b):
+        return scarce_plan(F[1], F[4],
+                           counts={"generalization_bank": {**{f: 10 for f in F}, F[1]: a, F[4]: b}},
+                           feasibility_fallback={"generalization_bank": {F[1]: a, F[4]: b}})
+    manifest = build_split_manifest(train, unseen, plan_with(9, 6))
+    evidence = manifest["pools"]["generalization_bank"]["feasibility_fallback"]
+    assert {f: e["maximum"] for f, e in evidence.items()} == {F[1]: 9, F[4]: 6}
+    with pytest.raises(SplitError, match=rf"\[{F[4]}\].*maximum 5 must equal the 6 games"):
+        build_split_manifest(train, unseen, plan_with(9, 5))
+    with pytest.raises(SplitError, match=rf"\[{F[1]}\].*maximum 8 must equal the 9 games"):
+        build_split_manifest(train, unseen, plan_with(8, 6))
+
+
+def test_omitted_family_with_games_left_fails_closed(tmp_path, data):
+    """A zero fallback for a family left out of the bank counts is only
+    valid when the data leaves it nothing (review of #48)."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 21
+    train = collect_games(make_split(tmp_path / "om", "train", sizes), "train")
+    plan = scarce_plan(counts={"generalization_bank": {f: 10 for f in F if f != F[1]}},
+                       feasibility_fallback={"generalization_bank": {F[1]: 0}})
+    validate_plan(plan)
+    with pytest.raises(SplitError, match="maximum 0 must equal the 9 games"):
+        build_split_manifest(train, unseen, plan)
+
+
+def test_family_below_the_t_mine_minimum_fails_closed(tmp_path, data):
+    """T_mine has no fallback: a family with 5 games cannot be built."""
+    _, _, unseen = data
+    sizes = {f: 35 for f in F}
+    sizes[F[1]] = 5
+    train = collect_games(make_split(tmp_path / "t5", "train", sizes), "train")
+    plan = scarce_plan(counts={"replay_bank": {**{f: 4 for f in F}, F[1]: 0},
                                "generalization_bank": {**{f: 10 for f in F}, F[1]: 0}},
-                       feasibility_fallback={"replay_bank": {F[1]: 2},
+                       feasibility_fallback={"replay_bank": {F[1]: 0},
                                              "generalization_bank": {F[1]: 0}})
-    with pytest.raises(SplitError, match=r"replay_bank\[.*fallback maximum 2 must equal the 3 games"):
+    with pytest.raises(SplitError, match="5 accepted train games cannot meet the locked "
+                                         "t_mine minimum 8"):
         build_split_manifest(train, unseen, plan)
 
 

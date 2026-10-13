@@ -84,6 +84,16 @@ def render_observation(text: str, admissible_commands) -> str:
     return f"{text.strip()}\n\n{ADMISSIBLE_HEADER}\n" + "\n".join(commands)
 
 
+def _admissible(infos: dict) -> list:
+    """The game's admissible commands; fail closed when the game was opened
+    without them, since D2 renders them into every observation."""
+    if "admissible_commands" not in infos or infos["admissible_commands"] is None:
+        raise AlfworldAdapterError(
+            "game infos carry no admissible_commands; open the game with "
+            "admissible_commands requested (ADR-0003 D2)")
+    return infos["admissible_commands"]
+
+
 def is_inadmissible(observation: str) -> bool:
     return observation.strip() == NOTHING_HAPPENS
 
@@ -107,9 +117,10 @@ class AlfworldEnvironment:
         if self._started:
             raise AlfworldAdapterError("episode already started; use a new environment")
         observation, infos = self._session.reset()
+        task = render_observation(task_text(observation), _admissible(infos))
         self._started = True
         self._won = bool(infos.get("won", False))
-        return render_observation(task_text(observation), infos.get("admissible_commands"))
+        return task
 
     def list_tools(self) -> list[ToolSpec]:
         return [ACT_TOOL]
@@ -123,6 +134,7 @@ class AlfworldEnvironment:
             return ToolObservation(ok=False, content="The episode has ended.",
                                    terminal=True, retryable=False)
         observation, _score, done, infos = self._session.step(arguments["command"])
+        commands = _admissible(infos)
         self._steps += 1
         self._done = bool(done)
         self._won = bool(infos.get("won", False))
@@ -131,7 +143,7 @@ class AlfworldEnvironment:
             self._invalid += 1
         return ToolObservation(
             ok=not invalid,
-            content=render_observation(observation, infos.get("admissible_commands")),
+            content=render_observation(observation, commands),
             terminal=self._done,
             retryable=not invalid,
         )
