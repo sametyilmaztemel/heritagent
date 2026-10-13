@@ -7,6 +7,7 @@ from inheritance.regression import (
     RegressionAllocation,
     RegressionEvaluator,
     TRegTask,
+    drop_within,
     measure_expression_overhead,
 )
 from runtime.expression import RuntimeSkill
@@ -70,6 +71,26 @@ def test_regression_38_of_40_fails(tmp_path, registry, base_config, envelope):
     result = evaluator.evaluate(make_treg())
     assert result.regression_drop == pytest.approx(0.05)
     assert result.passed is False  # 0.05 > tau_r 0.03
+
+
+def test_regression_drop_is_exact_at_the_boundary(tmp_path, registry, base_config,
+                                                  envelope):
+    """2/40 is exactly 0.05: the persisted drop is the nearest float (not
+    1 - 38/40 = 0.050000000000000044) and the denominator is recorded."""
+    runner = ScriptedRegRunner(successes=38)
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope, runner)
+    result = evaluator.evaluate(make_treg())
+    assert result.task_count == 40
+    assert result.regression_drop == 0.05
+
+
+@pytest.mark.parametrize("successes,tau,expected", [
+    (40, 0.02, True), (39, 0.02, False),
+    (39, 0.03, True), (38, 0.03, False),
+    (38, 0.05, True), (37, 0.05, False),
+])
+def test_drop_within_is_exact(successes, tau, expected):
+    assert drop_within(successes, 40, tau) is expected
 
 
 def test_exactly_forty_calls_no_baseline_rerun(tmp_path, registry, base_config,

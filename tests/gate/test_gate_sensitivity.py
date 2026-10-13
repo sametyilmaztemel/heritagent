@@ -65,6 +65,24 @@ def test_sensitivity_hypothetical_pass_flags_flip_with_thresholds(tmp_path):
     assert outcome.results[0].verdict == 'promote'
 
 
+def test_sensitivity_tau_r_cell_is_exact_at_two_failures(tmp_path):
+    """38/40 is a drop of exactly 0.05: the tau_r=0.05 cell must pass it
+    (binary floats give 1 - 38/40 = 0.050000000000000044 and would merge the
+    0.05 cell into the 0.03 cell), while the primary tau_r=0.03 rejects."""
+    world = build_world(tmp_path, candidates=("a",), treg_success_count=38,
+                         interaction={"both": (True, ("a",)),
+                                      "neither": (True, ())})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    outcome = orch.run(inputs)
+    gene = outcome.results[0].gene_id
+    grid = orch.sensitivity_recomputation(gene)
+    assert grid["regression"] == {"tau_r=0.02": False, "tau_r=0.03": False,
+                                  "tau_r=0.05": True}
+    assert outcome.results[0].verdict == "reject"
+    assert outcome.results[0].stage4_child["measurements"]["regression"][
+        "task_count"] == 40
+
+
 def test_no_t_eval_dependency(tmp_path):
     """The gate/sensitivity path never reads T_eval: no task id in the run
     references T_eval and sensitivity works from stored evidence alone."""
