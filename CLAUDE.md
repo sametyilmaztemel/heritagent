@@ -38,4 +38,4 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 - Haiku: mechanical extraction and test matrices. Sonnet: sweeps, triage, verification, reports. Opus: code audits, deep reads, ADR drafts. Fable: the hardest quantitative or judgement work.
 - A different model than the author re-checks every strong claim and reviews every diff adversarially before the push. Corrections are tagged `[corrected after independent verification YYYY-MM-DD]`.
 - Subagents are read-only, state their commit basis, and use the status keys V (verified by running or re-reading at a pinned commit), R (read from a source, not re-derived), M (model output under stated assumptions), S (subjective prior) and U (unverified). Only the main session commits.
-- A multi-agent Workflow runs only on the owner's explicit opt-in, with fewer than 10 agents.
+- Multi-agent Workflows need the owner's opt-in. For this workstream that is the autonomy decision plus the session's ultracode setting. Keep each run under about 10 agents (the session guideline): verify only the top-ranked findings and log the rest by title.
