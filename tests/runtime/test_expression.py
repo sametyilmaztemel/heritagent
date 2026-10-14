@@ -19,7 +19,8 @@ def test_g0_seed_compiles_to_typed_policies(g0_config, registry):
     assert compute_genome_id(build_g0_seed_genome(registry)) == g0_config.genome_id
     planner = g0_config.policies["cognition.planner"]
     retry = g0_config.policies["execution.retry_policy"]
-    assert planner.config == {"style": "react", "max_plan_steps": 8}
+    assert planner.gene_id == "planner_react_v2"  # ADR-0003 D4
+    assert planner.config == {"style": "react", "max_plan_steps": 50}
     assert retry.config == {"max_retries": 3, "backoff": "exponential"}
     assert g0_config.skills == ()
     assert g0_config.regulation == {}
@@ -37,7 +38,8 @@ def test_evaluation_only_metadata_never_enters_runtime_config(registry):
 def test_malformed_planner_payload_rejected(registry):
     genome = seed_with_skill(registry)
     # rebind planner payload to an invalid style via a new version
-    uri = registry.put("policy", "planner_react_v1", 2, {"style": "cot", "max_plan_steps": 4})
+    from runtime.seed_g0 import PLANNER_GENE_ID
+    uri = registry.put("policy", PLANNER_GENE_ID, 2, {"style": "cot", "max_plan_steps": 4})
     genome["genes"]["cognition"]["planner"]["version"] = 2
     genome["genes"]["cognition"]["planner"]["artifact"] = uri
     finalize_genome(genome)  # legitimately mutated genome under test
@@ -96,5 +98,8 @@ def test_compiled_skill_regulation_wiring(registry):
     assert config.skills[0].condition is not None
     assert not config.is_active("look_before_heat_v1", {"consecutive_failures": 0})
     assert config.is_active("look_before_heat_v1", {"consecutive_failures": 3})
-    # constitutive genes have no condition
-    assert config.is_active("planner_react_v1", {})
+    # constitutive genes have no condition: G0's own planner gene (review of
+    # the G0 switch: the v1 name passed vacuously for a gene G0 no longer has)
+    planner = config.policies["cognition.planner"].gene_id
+    assert planner == "planner_react_v2" and planner not in config.regulation
+    assert config.is_active(planner, {})
