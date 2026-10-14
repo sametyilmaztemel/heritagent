@@ -65,7 +65,8 @@ class ToolObservation:
     command): the retry policy is not applied, as for a rejected tool call.
     ``terminal=True`` means the environment ended the episode (e.g. an
     ALFWorld game reported done); the loop stops with status
-    ``environment_terminal`` (ADR-0003 D3, D5)."""
+    ``environment_terminal`` (ADR-0003 D3, D5). It takes precedence over
+    ``retryable``: a terminal failure is never retried."""
 
     ok: bool
     content: str
@@ -147,10 +148,26 @@ def _canonical_catalog(tools: list[ToolSpec]) -> list[ToolSpec]:
     return sorted(tools, key=lambda t: t.name)
 
 
+def _generation_settings(settings: GenerationSettings | None, budgets: Budgets) -> GenerationSettings:
+    """The settings every model call of the run uses (issue #7 criterion 1:
+    explicit inputs, no hidden globals). A gate runner passes the
+    evaluator's locked settings, so their seed and stop reach the model.
+    max_tokens must agree with the request budget, which is the loop's
+    other source for it; a mismatch fails closed."""
+    if settings is None:
+        return GenerationSettings(temperature=0.0, max_tokens=budgets.max_tokens_per_request)
+    if settings.max_tokens != budgets.max_tokens_per_request:
+        raise ValueError(f"settings.max_tokens ({settings.max_tokens}) must equal "
+                         f"budgets.max_tokens_per_request ({budgets.max_tokens_per_request})")
+    return settings
+
+
 def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironment, task: str,
-              budgets: Budgets, hooks: tuple[Callable[[RuntimeEvent], None], ...] = (),
+              budgets: Budgets, settings: GenerationSettings | None = None,
+              hooks: tuple[Callable[[RuntimeEvent], None], ...] = (),
               sleep: Callable[[float], None] = time.sleep,
               clock: Callable[[], float] = time.monotonic) -> RunResult:
+    settings = _generation_settings(settings, budgets)
     planner = ReActPlanner(config.policies["cognition.planner"].config)
     retry = RetryPolicy(config.policies["execution.retry_policy"].config)
     log = EventLog(hooks, clock=clock)
@@ -181,7 +198,6 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
         attempts = 0
         decision = None
         while True:
-            settings = GenerationSettings(temperature=0.0, max_tokens=budgets.max_tokens_per_request)
             started = clock()
             result = model.generate(messages, settings)
             model_latency_ms = (clock() - started) * 1000.0
@@ -207,7 +223,8 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
                      cumulative_prompt_tokens=cumulative_prompt_tokens,
                      cumulative_completion_tokens=cumulative_completion_tokens,
                      total_tokens=total_tokens, latency_ms=model_latency_ms,
-                     temperature=settings.temperature, max_tokens=settings.max_tokens)
+                     temperature=settings.temperature, max_tokens=settings.max_tokens,
+                     seed=settings.seed, stop=list(settings.stop))
             if budgets.max_total_tokens is not None and total_tokens > budgets.max_total_tokens:
                 log.emit("budget_exhausted", step=step, budget="max_total_tokens", used=total_tokens)
                 return RunResult("budget_exhausted", None, step, counters, log)
@@ -260,8 +277,8 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
             log.emit("tool_result", step=step, tool=action.name, ok=observation.ok,
                      content=observation.content, latency_ms=tool_latency_ms)
             counters.after_tool(action.name, observation.ok)
-            if observation.ok or not observation.retryable:
-                break
+            if observation.ok or observation.terminal or not observation.retryable:
+                break  # a terminal observation ends the episode: never call again
             tool_attempts += 1
             if retry.should_retry(tool_attempts) and total_retries < budgets.max_total_retries:
                 total_retries += 1

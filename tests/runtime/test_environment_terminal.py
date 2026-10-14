@@ -27,6 +27,24 @@ def test_terminal_observation_ends_the_run(g0_config):
     assert len(result.events.of_kind("model_called")) == 1  # no step after the end
 
 
+def test_a_terminal_failure_is_not_retried(g0_config):
+    """terminal takes precedence over retryable (module audit, 2026-10-13):
+    an episode that ended in a failure, with retryable left at its default,
+    is never called again."""
+    adapter = ScriptedAdapter([react_action("act", {"command": "open fridge"}),
+                               react_final("should never be asked")])
+    env = ScriptedEnv({"act": [ToolObservation(ok=False, content="You lost.", terminal=True),
+                               ToolObservation(ok=True, content="never sent")]})
+    delays = []
+    result = run_agent(config=g0_config, model=adapter, env=env, task="t", budgets=BUDGETS,
+                       sleep=delays.append)
+    assert result.status == "environment_terminal"
+    assert env.calls == [("act", {"command": "open fridge"})]
+    assert not result.events.of_kind("retry_scheduled") and delays == []
+    assert result.events.kinds()[-3:] == ["tool_called", "tool_result", "environment_terminal"]
+    assert result.counters.failing_tools == 1
+
+
 def test_non_retryable_failure_is_not_retried(g0_config):
     adapter = ScriptedAdapter([react_action("act", {"command": "fly"}),
                                react_final("gave up")])
