@@ -495,3 +495,198 @@ def test_an_arm_that_assimilates_nothing_is_g0_itself(clean):
         arm_genomes({**g0, "generation": 1}, candidates, rejected, gate["aggregate_ids"],
                     store, 11)
 
+
+
+# --- review round 2: crash windows, tampering and bindings -----------------
+
+
+def reopened_copy(clean, tmp_path):
+    """The clean run as it stood just before its last step: the report not
+    yet written and the ledger not yet complete."""
+    import shutil
+    run_dir = tmp_path / "run"
+    shutil.copytree(clean[0], run_dir)
+    (run_dir / "report.json").unlink()
+    ledger = run_dir / "ledger.jsonl"
+    lines = ledger.read_text(encoding="utf-8").splitlines(keepends=True)
+    assert json.loads(lines[-1])["type"] == "complete"
+    ledger.write_text("".join(lines[:-1]), encoding="utf-8")
+    return run_dir
+
+
+def edit(path, change):
+    document = json.loads(path.read_text())
+    change(document)
+    path.write_text(json.dumps(document))
+
+
+def test_a_crash_between_the_report_and_completion_resumes_to_the_report(tmp_path, clean, splits):
+    run_dir = reopened_copy(clean, tmp_path)
+    (run_dir / "report.json").write_text(json.dumps(clean[1]))  # the report made it to disk
+    agent, teacher = Agent(), Teacher()
+    assert make_run(run_dir, splits, agent=agent, teacher=teacher).run() == clean[1]
+    assert agent.calls == teacher.calls == 0
+    assert RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock()).state == "complete"
+
+
+def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path, clean, splits):
+    run_dir = reopened_copy(clean, tmp_path)
+    assert make_run(run_dir, splits).run() == clean[1]  # an honest resume
+    for name, change in (("t_reg.json", lambda d: d["tasks"].pop()),
+                         ("seed-23/arms.json", lambda d: d["C"]["genes"]["skills"].clear())):
+        broken = reopened_copy(clean, tmp_path / name.replace("/", "-"))
+        edit(broken / name, change)
+        with pytest.raises(ProvenanceError, match="frozen with other content"):
+            make_run(broken, splits).run()
+
+
+@pytest.mark.parametrize("tamper,message", [
+    (lambda g, gene: g["verdicts"].update({"extra_gene": "reject"}), "exactly the frozen"),
+    (lambda g, gene: g["aggregates"][g["aggregate_ids"][gene]].update(
+        {"candidate_gene_id": "someone_else"}), "not its aggregate record's"),
+    (lambda g, gene: g["aggregates"][g["aggregate_ids"][gene]]["artifacts"]["candidate"].update(
+        {"artifact": "registry://skills/x@1/sha256:" + "0" * 64}), "not gated on its frozen"),
+    (lambda g, gene: (g["verdicts"].update({gene: "reject"}),
+                      g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"})),
+     "in the somatic journal"),
+])
+def test_an_inconsistent_gate_artifact_fails_closed(tmp_path, clean, splits, tamper, message):
+    run_dir = reopened_copy(clean, tmp_path)
+    path = run_dir / "seed-11" / "gate.json"
+    gate = json.loads(path.read_text())
+    promoted = next(g for g, v in gate["verdicts"].items() if v == "promote")
+    tamper(gate, promoted)
+    path.write_text(json.dumps(gate))
+    with pytest.raises(RunError, match=message):
+        make_run(run_dir, splits).run()
+
+
+@pytest.mark.parametrize("change,message", [
+    (lambda d: d.update({"mining_seed": 23}), "not seed 11's frozen candidate set"),
+    (lambda d: d.update({"candidates": d["candidates"][:1]}), "does not match its digest"),
+])
+def test_a_tampered_candidate_set_fails_closed_on_resume(tmp_path, clean, splits, change, message):
+    run_dir = reopened_copy(clean, tmp_path)
+    edit(run_dir / "seed-11" / "candidates.json", change)
+    with pytest.raises(RunError, match=message):
+        make_run(run_dir, splits).run()
+
+
+def test_a_charged_mining_seed_without_its_set_fails_closed(tmp_path, clean, splits):
+    run_dir = reopened_copy(clean, tmp_path)
+    (run_dir / "seed-11" / "candidates.json").unlink()
+    teacher = Teacher()
+    with pytest.raises(RunError, match="charged but its frozen candidate set is missing"):
+        make_run(run_dir, splits, teacher=teacher).run()
+    assert teacher.calls == 0
+
+
+class NeverWins(Agent):
+    def generate(self, messages, settings):
+        if settings.temperature > 0:
+            settings = type(settings)(temperature=settings.temperature,
+                                      max_tokens=settings.max_tokens, seed=1, stop=settings.stop)
+        return super().generate(messages, settings)
+
+
+def test_a_t_reg_shortfall_stops_the_run_and_a_crash_before_the_stop_is_finished(tmp_path, splits,
+                                                                                  monkeypatch):
+    run_dir = tmp_path / "run"
+
+    def crash(self, reason):
+        raise RuntimeError("killed before the stop record")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(RunLedger, "abandon", crash)
+        with pytest.raises(RuntimeError, match="killed before the stop record"):
+            make_run(run_dir, splits, agent=NeverWins()).run()
+    report = json.loads((run_dir / "report.json").read_text())
+    assert report["status"] == "incomplete" and report["stage"] == "t_reg"
+    assert "new experiment revision" in report["reason"]
+    assert RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock()).state == "running"
+    assert make_run(run_dir, splits, agent=NeverWins()).run() == report
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.state == "incomplete" and ledger.reason == report["reason"]
+
+
+def test_a_cap_stop_whose_report_was_lost_gets_a_rebuilt_report(tmp_path, splits):
+    run_dir = tmp_path / "run"
+    caps = {**CAPS, "episodes_max": 100}
+    first = make_run(run_dir, splits, caps=caps).run()
+    (run_dir / "report.json").unlink()  # the crash came after the stop record
+    rebuilt = make_run(run_dir, splits, caps=caps).run()
+    assert rebuilt["status"] == "incomplete" and rebuilt["reason"] == first["reason"]
+    assert rebuilt["stage"].startswith("unknown") and rebuilt["statistics"] is None
+
+
+def test_a_crash_while_freezing_the_gate_artifact_resumes_to_the_same_report(tmp_path, clean,
+                                                                             splits, monkeypatch):
+    import evaluation.exp0001.pipeline as pipeline
+    real = pipeline.freeze_json
+    crashed = []
+
+    def crash_once(path, document):
+        if path.name == "gate.json" and not crashed:
+            crashed.append(path)
+            raise OSError("disk full")
+        return real(path, document)
+
+    run_dir = tmp_path / "run"
+    with monkeypatch.context() as patch:
+        patch.setattr(pipeline, "freeze_json", crash_once)
+        with pytest.raises(OSError, match="disk full"):
+            make_run(run_dir, splits).run()
+    assert not (run_dir / "seed-11" / "gate.json").exists()
+    assert make_run(run_dir, splits).run() == clean[1]
+
+
+def test_a_teacher_crash_reruns_the_batch_and_keeps_its_reservation(tmp_path, splits):
+    class DyingTeacher(Teacher):
+        def structured_generate(self, messages, settings, schema):
+            if self.calls == 1:
+                raise RuntimeError("teacher died")
+            return super().structured_generate(messages, settings, schema)
+
+    run_dir, caps = tmp_path / "run", {**CAPS, "episodes_max": 540 + 10}
+    with pytest.raises(RuntimeError, match="teacher died"):
+        make_run(run_dir, splits, teacher=DyingTeacher(), caps=caps).run()
+    report = make_run(run_dir, splits, caps=caps).run()  # stops at the cap in seed 11's gate
+    pairs = len(json.loads((run_dir / "seed-11" / "candidates.json").read_text())["mining_records"])
+    assert report["stage"] == "gate/11" and report["aborted_attempts"] == 1
+    assert report["model_calls"] == 540 + 10 + 2 * pairs  # the aborted batch stays charged
+
+
+@pytest.mark.parametrize("change,message", [
+    (lambda r: r.update({"record_sha256": "0" * 64}), "record_sha256"),
+    (lambda r: r["g0"].update({"genome_id": "G-0000000000000000"}), "another G0"),
+    (lambda r: r["splits"].update({"manifest_sha256": "0" * 64}), "another split manifest"),
+])
+def test_the_run_binds_the_records_identity(tmp_path, splits, change, message):
+    record = run_start(tmp_path, splits)
+    change(record)
+    if message != "record_sha256":
+        record["record_sha256"] = canonical_sha256(
+            {k: v for k, v in record.items() if k != "record_sha256"})
+    with pytest.raises(ProvenanceError, match=message):
+        make_run(tmp_path / "run", splits, record=record)
+    make_run(tmp_path / "run", splits).close()  # a failed constructor left no lock behind
+
+
+@pytest.mark.parametrize("name,field", [("model", "revision"), ("model", "backend"),
+                                        ("teacher", "model_id"), ("teacher", "revision")])
+def test_every_adapter_field_is_bound(tmp_path, splits, name, field):
+    record = run_start(tmp_path, splits)
+    record[name][field] = "something-else"
+    record["record_sha256"] = canonical_sha256(
+        {k: v for k, v in record.items() if k != "record_sha256"})
+    with pytest.raises(ProvenanceError, match=f"the {name} adapter"):
+        make_run(tmp_path / "run", splits, record=record)
+
+
+def test_a_second_run_call_takes_the_lock_again(tmp_path, splits):
+    first = make_run(tmp_path / "run", splits, caps={**CAPS, "episodes_max": 1})
+    first.run()  # stops at the cap and releases the directory
+    holder = make_run(tmp_path / "run", splits, caps={**CAPS, "episodes_max": 1})
+    with pytest.raises(RunError, match="in use"):
+        first.run()
+    holder.close()

@@ -182,6 +182,7 @@ class RunLedger:
             self._stop(f"hard cap: episodes_max {self._caps['episodes_max']} would be exceeded")
         worst = max_model_calls_per_episode()
         self._check_calls(worst)
+        self._abort_open(key)
         self._append({"type": "attempt", "key": key, "reserved": worst})
         self._open[key] = worst
         return True
@@ -197,9 +198,19 @@ class RunLedger:
         if isinstance(worst_case, bool) or not isinstance(worst_case, int) or worst_case < 0:
             raise LedgerError(f"worst_case must be a non-negative int, got {worst_case!r}")
         self._check_calls(worst_case)
+        self._abort_open(key)
         self._append({"type": "attempt", "key": key, "reserved": worst_case})
         self._open[key] = worst_case
         return True
+
+    def _abort_open(self, key: str) -> None:
+        """Admitting a key again in the same process: its earlier attempt
+        failed without a record, so it is aborted and charged now, as a
+        reload would charge it."""
+        reserved = self._open.pop(key, None)
+        if reserved is not None:
+            self._aborted.append({"type": "attempt", "key": key, "reserved": reserved})
+            self._model_calls += reserved
 
     def record_calls(self, key: str, *, model_calls: int) -> None:
         if self._state != "running":

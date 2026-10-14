@@ -13,10 +13,13 @@ every episode a ledger record, so a stopped run resumes without running a
 recorded episode, or a frozen seed's teacher calls, again. A crash inside
 an episode or a mining batch re-runs that unit, and its reservation stays
 charged. The gate's decisions reach their artifact before the somatic
-journal, and the report before the ledger's terminal record. A hard cap,
-or a protocol rule that fails closed, stops the run as incomplete with its
-reason; an incomplete run gets no primary verdict (ADR-0006 D5). Nothing
-here labels a result as validated (SPEC section 32)."""
+journal; on completion and on a protocol stop the report is frozen before
+the ledger's terminal record. A hard cap writes its terminal record first:
+a crash before its report leaves a report rebuilt from the ledger, without
+the stage or partial statistics. A hard cap, or a protocol rule that fails
+closed, stops the run as incomplete with its reason; an incomplete run gets
+no primary verdict (ADR-0006 D5). Nothing here labels a result as
+validated (SPEC section 32)."""
 
 from __future__ import annotations
 
@@ -144,6 +147,15 @@ class Exp0001Run:
                                   f"record names {run_start['model']['tokenizer']!r}")
         self.dir.mkdir(parents=True, exist_ok=True)
         self._lock = _lock_run_dir(self.dir)
+        try:
+            self._open(run_start, split_manifest, model, teacher, env_factory, token_counter,
+                       ledger_clock, episode_clock, sleep)
+        except BaseException:
+            self.close()  # a half-built run never keeps the directory locked
+            raise
+
+    def _open(self, run_start, split_manifest, model, teacher, env_factory, token_counter,
+              ledger_clock, episode_clock, sleep) -> None:
         self.registry = TraitRegistry(self.dir / "registry")
         self.g0 = build_g0_seed_genome(self.registry)
         if run_start["g0"]["genome_id"] != self.g0["genome_id"]:
@@ -181,7 +193,9 @@ class Exp0001Run:
             batch = mining_batch(results, self.t_mine, seed)
             # one teacher call per pair (traits.miner.TraitMiner.mine); a crash
             # before the frozen set re-mines, and the aborted attempt stays charged
-            self.ledger.admit_calls(key, len(batch.pairs))
+            if not self.ledger.admit_calls(key, len(batch.pairs)):
+                # charged only after the set was frozen: the set was removed by hand
+                raise RunError(f"{key} was charged but its frozen candidate set is missing")
             miner = TraitMiner(self.teacher, self.registry,
                                settings=MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
                                                        max_tokens=MINER_MAX_TOKENS,
@@ -228,8 +242,9 @@ class Exp0001Run:
                 raise RunError(f"seed {seed}: gate.json's verdict for {gene!r} is not its "
                                f"aggregate record's")
             bound = (aggregate.get("artifacts") or {}).get("candidate") or {}
-            if bound.get("artifact") not in (None, genes[gene]["artifact"]):
-                raise RunError(f"seed {seed}: {gene!r} was gated on another artifact")
+            if (bound.get("gene_id"), bound.get("version"), bound.get("artifact")) != \
+                    (gene, genes[gene]["version"], genes[gene]["artifact"]):
+                raise RunError(f"seed {seed}: {gene!r} was not gated on its frozen artifact")
 
     def _apply_decisions(self, seed: int, candidates, gate: Mapping) -> None:
         """The gate artifact is written first; the somatic journal then takes
@@ -377,6 +392,8 @@ class Exp0001Run:
 
     # -- the run ----------------------------------------------------------------
     def run(self) -> dict:
+        if self._lock is None:  # a later run() on this object takes the lock again
+            self._lock = _lock_run_dir(self.dir)
         try:
             return self._run()
         finally:

@@ -62,7 +62,8 @@ VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT = "not applied: vacuous out-of-scope stage (
 @dataclass(frozen=True)
 class GeneralizationAllocation:
     """Frozen stage-3 allocation: exactly 10 in-scope + 10 out-of-scope
-    distinct tasks with per-scope frozen family-count plans. Applicability
+    distinct tasks (0 out-of-scope for an all-family applicability, ADR-0007
+    E6) with per-scope frozen family-count plans. Applicability
     is resolved from the stored artifact (not caller labels) and every
     in-scope family must be inside it, every out-of-scope family outside.
     Tasks are deep-frozen at construction."""
@@ -252,7 +253,8 @@ def resolve_frozen_applicability(envelope: dict, registry) -> tuple[str, ...]:
 
 
 class GeneralizationEvaluator:
-    """Paired stage-3 evaluation over 10 in-scope + 10 out-of-scope tasks."""
+    """Paired stage-3 evaluation over 10 in-scope + 10 out-of-scope tasks
+    (in-scope only when the out-of-scope stage is vacuous, ADR-0007 E6)."""
 
     def __init__(self, *, candidate_envelope: dict, registry,
                  base_config: RuntimeConfig, runner: GateEpisodeRunner,

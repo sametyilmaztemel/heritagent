@@ -254,7 +254,7 @@ def test_incomplete_or_inconsistent_lifetimes_fail_closed(tmp_path):
 def test_t_reg_is_one_keyed_draw_with_the_earliest_success_as_baseline():
     task_list = tasks(50)
     # task i is solved only in seed MINING_SEEDS[i % 3], at attempt i % 3;
-    # task 0 is also solved in the first seed's attempt 2 (not earlier)
+    # task 1 is also solved in the third seed's attempt 0 (a later seed)
     def solved(seed, i, attempt):
         return (seed == MINING_SEEDS[i % 3] and attempt == i % 3) or \
             (i == 1 and seed == MINING_SEEDS[2] and attempt == 0)
@@ -334,3 +334,38 @@ def test_a_resumed_episode_must_carry_the_settings_it_ran_with(tmp_path, registr
     run.run(spec)
     with pytest.raises(LedgerError, match="recorded with settings"):
         run.run(replace(spec, settings=replace(spec.settings, seed=spec.settings.seed + 1)))
+
+
+def test_the_baseline_is_the_earliest_attempt_within_a_seed_and_40_suffice():
+    task_list = tasks(40)
+    # every task: successes at attempts 0 and 2 of the second seed only
+    allocation = derive_t_reg(lifetimes(task_list, lambda s, i, a: s == MINING_SEEDS[1] and a != 1),
+                              task_list)
+    assert len(allocation.tasks) == 40  # exactly 40 eligible: not a shortfall
+    assert {t.payload["baseline_attempt"] for t in allocation.tasks} == {0}
+    assert {t.payload["baseline_seed"] for t in allocation.tasks} == {MINING_SEEDS[1]}
+    with pytest.raises(LifetimeError, match="new experiment revision"):
+        derive_t_reg(lifetimes(task_list, lambda s, i, a: i < 39), task_list)
+
+
+@pytest.mark.parametrize("field,value", [("temperature", 0.0), ("max_tokens", 256),
+                                         ("stop", ("\nStop:",))])
+def test_every_recorded_setting_is_checked_on_resume(tmp_path, registry, field, value):  # noqa: F811
+    from dataclasses import replace
+    from evaluation.exp0001.ledger import LedgerError
+    run, _ = executor(tmp_path, SeededModel())
+    spec = lifetime_specs(tasks(1), g0_runtime_config(registry), MINING_SEEDS[0])[0]
+    run.run(spec)
+    with pytest.raises(LedgerError, match="recorded with settings"):
+        run.run(replace(spec, settings=replace(spec.settings, **{field: value})))
+
+
+def test_a_key_admitted_twice_in_one_process_charges_the_first_attempt(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.admit("e0")  # the episode raised; the same process tries again
+    assert ledger.admit("e0")
+    ledger.record("e0", model_calls=2, outcome={})
+    worst = 60
+    assert (ledger.aborted_attempts, ledger.model_calls) == (1, worst + 2)
+    reloaded = RunLedger(tmp_path / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert (reloaded.aborted_attempts, reloaded.model_calls) == (1, worst + 2)

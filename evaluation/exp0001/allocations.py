@@ -1,11 +1,11 @@
 """Frozen CIG allocations for EXP-0001 from the split manifest (issue #13
-Phase A; manifest ``inheritance.stages``; ADR-0007 E6, proposed).
+Phase A; manifest ``inheritance.stages``; ADR-0007 E6).
 
 - Replay (design section 4 stage 1): the candidate's source task, the
   T_mine task of its source trajectory, and the 4 games of
   ``replay_bank[family of the source task]``.
 - Ablation: the 20-game ablation pool, stratified as the manifest froze it.
-- Generalization (E6, proposed): 10 in-scope games split as evenly as
+- Generalization (E6): 10 in-scope games split as evenly as
   possible over the candidate's frozen applicability families, and 10
   out-of-scope games split the same way over the other families. A
   family's games are taken in the order of a keyed hash, so every

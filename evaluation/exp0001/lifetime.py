@@ -170,7 +170,7 @@ def derive_t_reg(results_by_seed: Mapping[int, Sequence[EpisodeResult]],
     if len(baselines) < T_REG_SIZE:
         raise LifetimeError(f"only {len(baselines)} T_mine tasks were solved in any lifetime "
                             f"episode; T_reg needs {T_REG_SIZE} (ADR-0007 E3 fails closed: "
-                            f"changing the rule needs a pre-execution amendment)")
+                            f"a changed rule needs a new experiment revision)")
     drawn = sorted(baselines, key=lambda task_id: (t_reg_rank(task_id), task_id))[:T_REG_SIZE]
     by_id = {t.task_id: t for t in tasks}
     allocation = []

@@ -1,5 +1,5 @@
 """The G1 genomes of EXP-0001's arms (issue #13 Phase A; manifest ``arms``;
-ADR-0007 E7, proposed).
+ADR-0007 E7).
 
 - A: G0 unchanged.
 - B: G0 plus every frozen candidate of the seed, in frozen rank order.
