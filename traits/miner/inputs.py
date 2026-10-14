@@ -89,6 +89,9 @@ class MiningBatch:
     family_universe: tuple[str, ...]
 
     def __post_init__(self):
+        # frozen means frozen: keep a tuple, not the caller's mutable list,
+        # so the checks below cannot be bypassed after construction
+        object.__setattr__(self, "pairs", tuple(self.pairs))
         if not self.pairs:
             raise MinerInputError("mining batch requires at least one pair")
         if not self.family_universe:
