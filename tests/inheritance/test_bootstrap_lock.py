@@ -129,6 +129,7 @@ def test_the_manifest_gate_and_code_agree():
 
 
 @pytest.mark.parametrize("line", [
+    "# bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}",
     "      # bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}",
     "      tau_c: 0.05  # bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}",
 ])
@@ -198,6 +199,8 @@ _DROP = object()
     ("evaluation", "cluster_order", _DROP),
     ("ids", None, ["abl-01", "abl-00"]),  # not in task_id order
     ("ids", None, ["abl-00", "abl-00"]),  # not distinct
+    ("ids", None, list(range(20))),       # ascending, but not strings
+    ("ids", None, [1] + [f"abl-{i:02d}" for i in range(2, 21)]),  # mixed types
     ("ids", None, _DROP),
 ])
 def test_the_gate_rejects_an_ablation_child_off_the_locked_bootstrap(tmp_path, where, key, value):

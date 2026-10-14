@@ -22,7 +22,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - The child record's bootstrap block carries `seed`, `n_resamples` and `cluster_order: "task_id"`.
   - The aggregate's `thresholds_used` carries `bootstrap_seed` and `bootstrap_cluster_order`.
   - The manifest's ablation stage carries `bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}`.
-  - The gate checks these values before any stage-3/4 episode: the child's and the evaluation's bootstrap blocks must carry seed 0, 10,000 resamples and `cluster_order: "task_id"`, and `paired_delta_task_ids` must be distinct strings in ascending order. The aggregate's `thresholds_used` therefore states what the evidence was computed with, not only what it should have been.
+  - The gate checks these values before any stage-3/4 episode: the child's and the evaluation's bootstrap blocks must carry seed 0, 10,000 resamples and `cluster_order: "task_id"`, and `paired_delta_task_ids` must be distinct strings in ascending order. So the aggregate's `thresholds_used` matches what the ablation evidence declares. The gate checks the declared values; it does not recompute the bound.
 - **Scope.**
   - This covers the gate's primary ablation stage only.
   - Sensitivity analysis (`sensitivity_analysis`) stays analysis-only (ADR-0002: secondary recomputation on existing stage evidence). As `inheritance/ablation.py` documents, its seed stays free, since it never enters the primary gate. The evaluation object's convenience method uses the task_id-ordered deltas.

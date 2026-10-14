@@ -120,8 +120,10 @@ def _ablation_bootstrap_issues(measurements: dict, evaluated: dict) -> list[str]
     """ADR-0005: an ablation verdict is evidence only under the
     pre-registered bootstrap (seed 0, 10,000 resamples, the deltas in
     task_id order), in the child record and in the evaluation whose lower
-    bound the gate ranks by. The aggregate's thresholds_used claims these
-    values, so they are checked, not assumed (review of #63)."""
+    bound the sensitivity recomputation reads. The aggregate's
+    thresholds_used claims these values, so the declared values are
+    checked, not assumed; the bound itself is not recomputed (review of
+    #63)."""
     issues: list[str] = []
     locked = {"seed": BOOTSTRAP_SEED, "n_resamples": BOOTSTRAP_N_RESAMPLES,
               "cluster_order": BOOTSTRAP_CLUSTER_ORDER}
