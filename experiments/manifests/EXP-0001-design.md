@@ -1,6 +1,6 @@
 # EXP-0001 — Minimal Causal Inheritance Gate experiment (design, pre-registration)
 
-**Status: PREREGISTERED-LOCKED (2026-10-13, before EXP-0001 execution).** Originally designed and locked 2026-10-02; revised same day per Research/Critic review on PR #2 / issue #5 (see §9); expected results and compute cap pre-registered 2026-10-13, before any EXP-0001 execution (see §8). Machine-readable manifest: `EXP-0001-minimal-cig.yaml`. Decision record: `research/decisions/ADR-0002-exp-0001-design.md`.
+**Status: PREREGISTERED-LOCKED (2026-10-14, before EXP-0001 execution).** Originally designed and locked 2026-10-02; revised same day per Research/Critic review on PR #2 / issue #5 (see §9); expected results and compute cap pre-registered 2026-10-14, before any EXP-0001 execution (see §8). Machine-readable manifest: `EXP-0001-minimal-cig.yaml`. Decision record: `research/decisions/ADR-0002-exp-0001-design.md`.
 
 This is Milestone 0 (SPEC §29): one model, one domain, one agent, two generations. It exists to test the load-bearing hypothesis H2 before anything else is built (SPEC §27).
 
@@ -84,7 +84,7 @@ Gate outputs are CIG records (schema `cig/0.1`); rejected candidates stay in som
 
 Mining: 3 seeds × 60 tasks = 180 episodes. CIG per seed: 10 candidates × [replay 5×2 + ablation 20×2 + generalization 20×2 + regression 40] = 1,300 episodes → 3,900 across seeds (single deterministic run per (task, condition); ~130 episodes per candidate vs ~350 under the earlier repeated-run design). Final evaluation: 3 arms × (134 + 40 + 20) × 3 mining seeds ≈ 1.75k episodes. The interaction stage adds ≤ ~900 in the worst case (all pairs of 10 validated skills). Total ≈ 5.8–6.7k episodes × ~30 LLM calls ≈ 180–200k local-7B calls — feasible on one GPU node over a few days. **Bank construction (`replay_bank`, `generalization_bank`; ~84 instances) adds no LLM calls** — only per-trait evaluations on bank instances are billed, and per-trait counts are unchanged by the family-indexed layout.
 
-## 8. Pre-registration (LOCKED 2026-10-13, before EXP-0001 execution)
+## 8. Pre-registration (LOCKED 2026-10-14, before EXP-0001 execution)
 
 **Pre-registration completed before EXP-0001 execution; no EXP-0001 outcome data had been collected or inspected when these expectations were locked.** (This statement refers to actual EXP-0001 outcome data only; the synthetic test/dev fixtures used while building the merged CIG implementation are not EXP-0001 outcomes.)
 
