@@ -393,3 +393,28 @@ def test_a_mining_retry_in_one_process_charges_the_first_batch(tmp_path):
     assert (ledger.aborted_attempts, ledger.model_calls) == (1, 94)
     reloaded = RunLedger(path, run_id=RUN_ID, clock=Clock())
     assert (reloaded.aborted_attempts, reloaded.model_calls) == (1, 94)
+
+
+def test_a_mining_retry_and_an_episode_cap_see_the_aborted_charge(tmp_path):
+    from evaluation.exp0001.protocol import CAPS
+    caps = {**CAPS, "model_calls_max": 90}
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=caps)
+    assert ledger.admit_calls("mining/11", 47)  # the teacher raised
+    with pytest.raises(CapExceeded, match="model_calls_max"):
+        ledger.admit_calls("mining/11", 47)  # 47 charged + 47 > 90, as a reload decides
+    reloaded = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=caps)
+    assert (ledger.aborted_attempts, ledger.model_calls) == (1, 47) == \
+        (reloaded.aborted_attempts, reloaded.model_calls)
+
+    caps = {**CAPS, "episodes_max": 1}
+    path = tmp_path / "episodes.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=caps)
+    assert ledger.admit("e0")  # raises
+    assert ledger.admit("e1")
+    ledger.record("e1", model_calls=3, outcome={})
+    with pytest.raises(CapExceeded, match="episodes_max"):
+        ledger.admit("e0")
+    reloaded = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=caps)
+    assert (ledger.aborted_attempts, ledger.model_calls) == (1, 63) == \
+        (reloaded.aborted_attempts, reloaded.model_calls)
