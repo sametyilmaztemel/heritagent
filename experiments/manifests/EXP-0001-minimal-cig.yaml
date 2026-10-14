@@ -117,6 +117,20 @@ environment:
   contamination_rule: T_eval never visible to miner, gate, or threshold tuning
   episode_max_steps: 50               # ADR-0003 D4: Budgets.max_steps, identical in every arm
 
+run_protocol:                         # ADR-0007 (E1-E8 owner decisions, 2026-10-14; before any EXP-0001 execution)
+  split_plan: EXP-0001-split-plan.json  # SplitPlan seed 0, counts from the real ALFWorld inventory
+  split_manifest: {file: EXP-0001-splits.json, sha256: 2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c}
+  calibration_pilot: {file: EXP-0001-pilot.json, sha256: 6286d0fa3072f3a179fbe70d543ec3a6a3e4020f05977111fc05ddb02d57e90c, games: 30, per_family: 5, seed: 0}
+  lifetime: {attempts_per_task: 3, temperature: 0.7, pairing: first-success-first-failure, attempt_seed: sha256-derived}
+  t_reg: {eligible: solved-in-any-lifetime-episode, size: 40, seed: 0, baseline: earliest-success, shortfall: fail-closed}
+  transfer_subset: ablation-pool
+  budgets: {max_steps: 50, max_total_retries: 10, max_tokens_per_request: 512}   # E5
+  cap_check: worst-case-before-each-episode   # E5: max_steps + max_total_retries calls; teacher calls count too
+  generalization_allocation: {split: even-over-families, draw: sha256-keyed-per-family, seed: 0, all_family_applicability: vacuous-out-of-scope}   # E6; for an all-family candidate this supersedes inheritance.stages.generalization.out_of_scope (10 tasks)
+  arm_genomes: {origin: assimilation, provenance: [source_trajectory, aggregate_cig_record], skill_order: frozen-rank}   # E7
+  run_order: [lifetimes-all-seeds, t_reg, per-seed-miner-gate-arms, final-evaluation]   # E8
+  final_evaluation: {temperature: 0.0, sampling_seed: none, arm_a: once}   # E8
+
 arms:
   A-no-inheritance:   {g1_genome: "G0"}
   B-unrestricted:     {g1_genome: "G0 + all frozen candidates as skill genes"}
@@ -153,6 +167,15 @@ evaluation:
     h1_supported_if: "C-A > 0, CI excl. 0"
     seed_consistency: "direction holds in >= 2/3 mining seeds"
     gate_statistics: "over distinct task instances only; one deterministic execution per (instance, condition)"
+    final_rule:                         # ADR-0006 (owner decisions, 2026-10-14; before any EXP-0001 execution)
+      seed_pooling: per-task-mean-over-seeds
+      bootstrap: {method: percentile, confidence: 0.95, seed: 0, resamples: 10000, cluster_order: task_id}
+      seed_direction: strict-C-gt-B
+      regression_rate: t_reg-failure-rate
+      incomplete_data: fail-closed-no-primary-verdict
+      arm_a: run-once-reused-across-seeds
+      secondary: descriptive-only
+      t_reg: one-set-shared-across-seeds   # ADR-0006 D8
   sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval
     thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}
     candidate_cap: {k_grid: [5, 10, 20], followup_experiment: EXP-0005}

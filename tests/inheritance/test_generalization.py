@@ -5,6 +5,7 @@ import pytest
 
 from genome.validation.errors import RecordConsistencyError
 from inheritance.generalization import (
+    VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT,
     GeneralizationAllocation,
     GeneralizationEvaluator,
 )
@@ -191,3 +192,84 @@ def test_both_children_schema_valid(tmp_path, registry, base_config, envelope):
     assert result.in_scope_child["cig_id"].endswith("-generalization_in_scope")
     assert result.out_scope_child["cig_id"].endswith(
         "-generalization_out_of_scope")
+
+
+# --- ADR-0007 E6: a vacuous out-of-scope stage ------------------------------
+
+UNIVERSE = ("clean_surface", "cool_and_place", "heat_and_place")
+
+
+def universal_envelope(registry, applicability=UNIVERSE, gene_id="probe_everything_v1"):
+    payload = {"name": gene_id, "principle": "Look before acting.",
+               "when_to_apply": "Any household task.",
+               "applicability": {"task_families": list(applicability)}}
+    uri = registry.put("skill", gene_id, 1, payload)
+    return {"candidate": {"gene_id": gene_id, "version": 1, "type": "skill",
+                          "origin": "acquired", "artifact": uri,
+                          "provenance": {"born_generation": 1,
+                                         "source_trajectory": "T-aaaa1111aaaa"}},
+            "validation": {"state": "candidate"}}
+
+
+def vacuous_allocation(declared=UNIVERSE, universe=UNIVERSE, in_families=None, **overrides):
+    in_families = in_families or [UNIVERSE[i % 3] for i in range(10)]
+    plan = {}
+    for f in in_families:
+        plan[f] = plan.get(f, 0) + 1
+    args = dict(in_scope_tasks=tuple(EvaluationTask(
+                    task_id=f"in-{i}", family=f, payload={"goal": "g"},
+                    bank_id=f"generalization_bank[{f}]") for i, f in enumerate(in_families)),
+                out_scope_tasks=(), frozen_in_scope_plan=plan, frozen_out_scope_plan={},
+                declared_frozen_applicability=declared, family_universe=universe)
+    args.update(overrides)
+    return GeneralizationAllocation(**args)
+
+
+def test_a_vacuous_out_of_scope_stage_runs_no_episode_and_passes(tmp_path, registry,
+                                                                  base_config):
+    evaluator = make_evaluator(tmp_path, registry, base_config, universal_envelope(registry))
+    allocation = vacuous_allocation()
+    assert allocation.out_scope_vacuous
+    result = evaluator.evaluate(allocation)
+    calls = evaluator._runner.calls
+    assert len(calls) == 20 and all(c[0].startswith("in-") for c in calls)
+    assert result.out_scope_passed is True and result.delta_out is None
+    child = result.out_scope_child["measurements"]
+    assert child["vacuous"] is True and child["stage_pass"] is True
+    assert child["delta"] is None and child["scope_episodes"] == []
+    assert child["locked_threshold"] == {"min_delta": None,
+                                         "rule": VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT}
+    assert "pooled in-scope delta" in child["vacuous_reason"]
+    assert child["allocation"]["out_scope_vacuous"] is True
+    assert child["allocation"]["family_universe"] == list(UNIVERSE)
+    assert "vacuous" not in result.in_scope_child["measurements"]
+
+
+def test_a_non_vacuous_allocation_records_no_vacuous_keys(tmp_path, registry, base_config,
+                                                          envelope):
+    result = make_evaluator(tmp_path, registry, base_config, envelope).evaluate(
+        make_allocation(registry, envelope))
+    assert "vacuous" not in result.out_scope_child["measurements"]
+    assert "out_scope_vacuous" not in result.out_scope_child["measurements"]["allocation"]
+
+
+@pytest.mark.parametrize("overrides,message", [
+    ({"universe": ()}, "family universe"),
+    ({"declared": UNIVERSE[:2]}, "names every family"),
+    ({"frozen_out_scope_plan": {"clean_surface": 0}}, "empty plan"),
+    ({"in_families": ["heat_and_place"] * 10}, "cover every family"),
+])
+def test_a_vacuous_allocation_is_checked_at_construction(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        vacuous_allocation(**overrides)
+
+
+def test_a_vacuous_stage_needs_the_stored_applicability_to_cover_the_universe(
+        tmp_path, registry, base_config):
+    """The caller declares every family, but the stored artifact names two:
+    the stage is not vacuous, and nothing runs."""
+    narrow = universal_envelope(registry, applicability=UNIVERSE[1:], gene_id="narrow_v1")
+    evaluator = make_evaluator(tmp_path, registry, base_config, narrow)
+    with pytest.raises(ValueError, match="stored applicability"):
+        evaluator.evaluate(vacuous_allocation())
+    assert evaluator._runner.calls == []

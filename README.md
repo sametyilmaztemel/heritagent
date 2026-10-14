@@ -81,4 +81,4 @@ Repo: https://github.com/sametyilmaztemel/heritagent (public). Tracking:
 
 ## Suggested next step
 
-#22 (canonical `genome_id`) is in review. Then come the EXP-0001 design decisions flagged before #13: the lifetime/mining-pair protocol, the step budget, the T_reg rule, the arm-B representation and a performance-gated baseline arm. After those: #6 pre-registration, a calibration pilot, and #13.
+#13 Phase A (the EXP-0001 orchestration, pre-run artifacts and run protocol, ADR-0006 and ADR-0007) is in review on PR #68; no EXP-0001 or pilot episode has run. Next: Phase B on a GPU node (the calibration pilot, then the compute-cap decision), then the EXP-0001 run.

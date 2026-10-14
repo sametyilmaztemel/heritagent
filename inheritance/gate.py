@@ -815,7 +815,9 @@ class CigGateOrchestrator:
             "generalization_out_of_scope": {
                 "measurements_ref": "children",
                 "pass": gen.out_scope_passed,
-                "threshold": "delta_out >= -0.05"},
+                "threshold": ("vacuous: no out-of-scope family (ADR-0007 E6)"
+                              if gen_out["measurements"].get("vacuous")
+                              else "delta_out >= -0.05")},
             "interaction_regression": {
                 "measurements_ref": "children",
                 "pass": stage4["measurements"]["stage_pass"],
