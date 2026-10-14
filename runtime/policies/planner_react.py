@@ -32,7 +32,11 @@ Final Answer: <the final answer>"""
 # prose (a Thought, or a string inside Action Input). The answer runs to
 # the end of the reply.
 _FINAL_RE = re.compile(r"^[ \t]*Final Answer:(.*)\Z", re.MULTILINE | re.DOTALL)
-_ACTION_LINE_RE = re.compile(r"^[ \t]*Action(?: Input)?:", re.MULTILINE)
+# An Action or Action Input line, also behind list or quote decoration
+# ("- ", "> ", "1. ", NBSP): the action path accepts such lines, so the
+# mixed-step check must see them too. A line that starts with a word
+# ("Thought: no further Action: needed") is prose.
+_ACTION_LINE_RE = re.compile(r"^(?:[^\w\n]|\d+[.)])*Action(?: Input)?:", re.MULTILINE)
 _THOUGHT_RE = re.compile(r"Thought:\s*(.+)")
 _ACTION_RE = re.compile(r"Action:\s*([A-Za-z0-9_\-]+)\s*$", re.MULTILINE)
 _INPUT_RE = re.compile(r"Action Input:\s*(\{.*\})\s*$", re.DOTALL)
