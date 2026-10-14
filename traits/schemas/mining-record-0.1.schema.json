@@ -142,6 +142,7 @@
           "reason": {
             "enum": [
               "malformed_output",
+              "invalid_runtime_payload",
               "invalid_applicability",
               "exact_duplicate",
               "outside_cap"
