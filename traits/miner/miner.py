@@ -3,8 +3,9 @@
 Two-phase pipeline (deterministic except the teacher calls):
 
     Phase 1 (per pair): evidence -> structured teacher call -> validated
-    proposal DESCRIPTORS (schema-checked, applicability-checked, exact-
-    deduped) — nothing is bound to the registry yet.
+    proposal DESCRIPTORS (schema-checked, runtime-skill-checked,
+    applicability-checked, exact-deduped) — nothing is bound to the
+    registry yet.
 
     Phase 2 (batch-wide): ranking (estimated_generality desc,
     discovery-order tie-break) -> K cap -> FAIL-ATOMIC persistence:
@@ -36,7 +37,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from genome.validation.errors import GenomeValidationError
 from genome.validation.loader import load_somatic
+from genome.validation.projection import project_skill
 from trajectory.recorder.errors import RecorderError
 from genome.validation.registry import TraitRegistry
 from runtime.model_adapters import (
@@ -46,6 +49,7 @@ from runtime.model_adapters import (
     ModelResponseError,
 )
 
+from runtime.expression import validate_runtime_skill_payload
 from trajectory.storage.canonical import canonical_json, sha256_hex
 from traits.miner.evidence import render_pair_evidence
 from traits.miner.inputs import MiningBatch
@@ -185,8 +189,9 @@ class TraitMiner:
         """Mine the batch and return the frozen candidate set.
 
         Phases: per-pair evidence -> teacher call -> schema-validated
-        proposals -> applicability validation -> deterministic identity ->
-        batch-wide exact dedupe (before the cap) -> batch-wide ranking
+        proposals -> runtime skill boundary -> applicability validation ->
+        deterministic identity -> batch-wide exact dedupe (before the cap)
+        -> batch-wide ranking
         (estimated_generality desc, discovery-order tie-break) -> K cap ->
         FAIL-ATOMIC persistence (prevalidate all selected envelopes, then
         registry binding + post-write verification) -> mining-record
@@ -221,10 +226,12 @@ class TraitMiner:
                 # fail closed: the malformed teacher output yields no
                 # proposals but the exact raw output stays auditable
                 raw_teacher_text = exc.raw_text
-                pair_rejected.append({"reason": "malformed_output",
-                                       "proposal_name": None, "proposal_index": None,
-                                       "gene_id": None, "discovery_order": None,
-                                       "detail": str(exc)})
+                entry = {"reason": "malformed_output",
+                          "proposal_name": None, "proposal_index": None,
+                          "gene_id": None, "discovery_order": None,
+                          "detail": str(exc)}
+                rejected.append(entry)  # an all-malformed run is not a clean zero
+                pair_rejected.append(entry)
                 proposals = []
             else:
                 proposals = list(raw_response.get("proposals") or [])
@@ -243,6 +250,20 @@ class TraitMiner:
                                        sorted(proposal["applicability"]["task_families"])},
                 }
                 payload_json = canonical_json(payload)
+
+                # the runtime skill boundary that arms B/C and the CIG overlay
+                # apply (unique step ids among others): a payload it rejects
+                # could never be expressed, so it is never frozen
+                try:
+                    validate_runtime_skill_payload(project_skill(payload))
+                except GenomeValidationError as exc:
+                    entry = {"reason": "invalid_runtime_payload", "proposal_name": name,
+                              "proposal_index": order,
+                              "gene_id": self._gene_identity(payload),
+                              "discovery_order": None, "detail": str(exc)}
+                    rejected.append(entry)
+                    pair_rejected.append(entry)
+                    continue
 
                 invalid = [f for f in payload["applicability"]["task_families"]
                            if f not in batch.family_universe]
