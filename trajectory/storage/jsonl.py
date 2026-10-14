@@ -80,26 +80,49 @@ def _reject_non_finite_constant(name: str):
     raise ValueError(f"non-finite JSON constant {name!r} is not allowed in evidence files")
 
 
+def jsonl_lines(path: Path) -> list[bytes]:
+    """The file's records as raw lines, split on b"\\n" only.
+
+    ``str.splitlines()`` also splits on U+2028, U+2029, U+0085 and other
+    separators that canonical JSON keeps raw inside strings
+    (``ensure_ascii=False``), which would cut one record in two. JSON never
+    holds a raw newline inside a string, so b"\\n" is the only record
+    separator. A line ending in "\\r" (CRLF) is still valid JSON."""
+    lines = Path(path).read_bytes().split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
 def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
     """Parse JSONL records strictly; a malformed TRAILING line is tolerated
     on the explicit recovery path ONLY while the parsed prefix contains no
     finalization record (i.e. the stream is genuinely unfinished). Trailing
     corruption after an already-finalized trajectory is ALWAYS an error —
     recovery must not hide post-finalization tampering. Non-standard JSON
-    constants (NaN/Infinity/-Infinity) are rejected unconditionally."""
+    constants (NaN/Infinity/-Infinity) are rejected unconditionally. A
+    trailing line cut inside a multi-byte UTF-8 character is a truncated
+    crash artifact like any other."""
     records: list[dict] = []
     has_finalization = False
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
-    for index, line in enumerate(lines):
+    lines = jsonl_lines(path)
+    for index, raw in enumerate(lines):
+        is_trailing = index == len(lines) - 1
+        suffix = " (appended after a finalized trajectory)" if has_finalization else ""
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            if allow_incomplete and is_trailing and not has_finalization:
+                break  # unfinished prefix: a write cut inside a UTF-8 character
+            raise MalformedTrajectoryError(
+                f"{path}: invalid UTF-8 at line {index + 1}: {exc}{suffix}") from None
         if not line.strip():
             continue
         try:
             parsed = json.loads(line, parse_constant=_reject_non_finite_constant)
         except json.JSONDecodeError as exc:
-            is_trailing = index == len(lines) - 1
             if allow_incomplete and is_trailing and not has_finalization:
                 break  # unfinished prefix: tolerate the truncated crash artifact
-            suffix = " (appended after a finalized trajectory)" if has_finalization else ""
             raise MalformedTrajectoryError(
                 f"{path}: malformed JSONL at line {index + 1}: {exc}{suffix}") from None
         except ValueError as exc:
