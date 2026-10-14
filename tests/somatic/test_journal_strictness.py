@@ -45,6 +45,7 @@ def test_an_unterminated_last_record_refuses_the_next_append(tmp_path, registry)
     (b"[1, 2]\n", "journal line 2 is not a JSON object"),
     (b"42\n", "journal line 2 is not a JSON object"),
     (b'{"record": "somatic-journal", "seq": 1e999}\n', "non-finite JSON number '1e999'"),
+    (b'{"record": "somatic-journal", "seq": -1e999}\n', "non-finite JSON number '-1e999'"),
 ])
 def test_a_hostile_line_fails_closed_with_a_typed_error(tmp_path, registry, line, message):
     path = journal_with_one_candidate(tmp_path, registry)

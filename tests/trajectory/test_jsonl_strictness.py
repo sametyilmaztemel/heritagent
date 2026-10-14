@@ -33,6 +33,7 @@ def test_invalid_utf8_after_finalization_is_never_recovered(tmp_path, registry, 
     (b"[1, 2]\n", "line 2 is not a JSON object"),
     (b"42\n", "line 2 is not a JSON object"),
     (b'{"record": "event", "latency_ms": 1e999}\n', "non-finite JSON number '1e999'"),
+    (b'{"record": "event", "latency_ms": -1e999}\n', "non-finite JSON number '-1e999'"),
 ])
 def test_a_hostile_line_fails_closed_with_a_typed_error(tmp_path, registry, context, line, message):
     header = finalized(tmp_path, registry, context).read_bytes().split(b"\n", 1)[0] + b"\n"

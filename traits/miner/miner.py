@@ -251,9 +251,11 @@ class TraitMiner:
                 }
                 payload_json = canonical_json(payload)
 
-                # the runtime skill boundary that arms B/C and the CIG overlay
-                # apply (unique step ids among others): a payload it rejects
-                # could never be expressed, so it is never frozen
+                # the runtime skill boundary the CIG overlay applies, which
+                # compile_runtime_config also runs (unique step ids among
+                # others): a payload it rejects could never be expressed, so
+                # it is never frozen. compile_runtime_config's whole-genome
+                # leak scan is not repeated here.
                 try:
                     validate_runtime_skill_payload(project_skill(payload))
                 except GenomeValidationError as exc:
