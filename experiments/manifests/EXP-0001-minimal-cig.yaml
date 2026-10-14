@@ -80,7 +80,8 @@ inheritance:
                       substitution_note: "admissible later only if proven semantics-preserving",
                       runs_per_condition: 1, pass: "success_with>=0.6-of-5-instances and delta>=+0.4", expression_check: true}
     ablation:        {pool: stratified-ablation, tasks: 20, runs_per_condition: 1,
-                      pass: "cluster-bootstrap95-over-instances_lb>0 and delta>=0.05 (tau_c)"}
+                      pass: "cluster-bootstrap95-over-instances_lb>0 and delta>=0.05 (tau_c)",
+                      bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}}   # ADR-0005, pre-registered
     generalization:
       in_scope:      {tasks: 10, source: families-matching-frozen-applicability, runs_per_condition: 1, pass: "delta>=0"}
       out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05"}
