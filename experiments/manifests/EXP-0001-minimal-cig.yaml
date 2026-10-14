@@ -1,6 +1,6 @@
 # EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC section 24 format)
 # Design locked 2026-10-02; REVISED after critic round 1 and round 2 (2026-10-02, PR #2 / issue #5).
-# Status: preregistered-locked (2026-10-13) — expected results and compute cap locked in
+# Status: preregistered-locked (2026-10-14) — expected results and compute cap locked in
 # section 8 of EXP-0001-design.md BEFORE any EXP-0001 execution; no EXP-0001 outcome data
 # had been collected or inspected at lock time (SPEC section 33).
 #
@@ -25,7 +25,7 @@ experiment:
   preregistration:
     locked: true
     expected_results_filled: true
-    locked_at: "2026-10-13"            # before EXP-0001 execution; no outcome data inspected
+    locked_at: "2026-10-14"            # before EXP-0001 execution; no outcome data inspected
     expected_results:
       h2:
         direction: C>B                                       # expectation, NOT a threshold
