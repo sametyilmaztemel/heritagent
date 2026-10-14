@@ -57,7 +57,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 **Implementation status.**
 1. Runtime support (D3 `retryable`, D5 `terminal`, the trajectory terminal kind, the D4 schema maximum): this change.
 2. `runtime/tool_adapters/alfworld.py` (D1, D2, D3, D6, D7, D8), with tests against a scripted fake of TextWorld's single-game gym API (`reset() -> (obs, infos)`, `step(cmd) -> (obs, score, done, infos)`). Real-game integration is not yet run: no ALFWorld data in the build sandbox, and the integration test is skipped unless `ALFWORLD_GAMEFILE` is set. The open question on the initial admissible list is resolved by amendment A1.
-3. The G0 switch to `planner_react_v2` (D4) and the manifest amendment: after PR #29.
+3. The G0 switch to `planner_react_v2` (D4) and the manifest amendment: done after PR #29 merged. G0's planner is `planner_react_v2` with `max_plan_steps: 50`, and G0's canonical `genome_id` changed with the planner gene. The manifest's `genome.initial` names `planner_react_v2 + retry_backoff_v1`. The episode budget is declared as `runtime.seed_g0.EPISODE_MAX_STEPS` (50) and recorded as `environment.episode_max_steps: 50`. No code applies it yet: the EXP-0001 episode runner (#13) must build every arm's `Budgets` from it.
 4. Amendment A2 (stop sequence): planner, loop, gate settings and manifest, in the change that records it.
 
 **Amendment A1: the initial observation carries the admissible commands.** The owner chose this in chat on 2026-10-13 ("Evet, göster"). Codex cross-review is requested.
