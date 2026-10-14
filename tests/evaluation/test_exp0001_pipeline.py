@@ -74,6 +74,8 @@ class Agent(ScriptedAdapter):
         if self.calls == self.fail_at:
             raise RuntimeError("backend died")
         text = "\n".join(m.content for m in messages)
+        # evaluation-only metadata never reaches the agent (manifest runtime_input_policy)
+        assert "task_families" not in text and "estimated_generality" not in text
         if settings.temperature > 0:
             win = settings.seed % 2 == 0
         else:
