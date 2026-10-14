@@ -85,7 +85,20 @@ def _plain(obj):
     return obj
 
 
-def _functional_gene_ref(ref, path: str) -> dict:
+def _functional_gene_ref(ref, path: str, expected_type: str) -> dict:
+    """Validate one functional gene reference and return its identity keys.
+
+    Strict primitive types FIRST (before URI parsing): the identity API
+    runs on construction paths before ``load_genome()`` and must neither
+    mint an id for a malformed ref nor leak a raw Python exception
+    (Python equality aliases like ``True == 1`` and ``1.0 == 1`` must not
+    pass). Then the self-contained artifact-ref integrity checks reuse the
+    AUTHORITATIVE registry helpers — no URI parsing duplicated here.
+    Registry RESOLUTION is deliberately out of scope (no bytes lookup, no
+    digest existence check, no I/O). ``expected_type`` enforces the
+    slot/ref invariant: policy slots carry policy genes only, ``skills[]``
+    carries skill genes only.
+    """
     if not isinstance(ref, dict):
         raise GenomeValidationError(
             [f"identity payload {path}: gene reference must be an object, "
@@ -95,30 +108,53 @@ def _functional_gene_ref(ref, path: str) -> dict:
         raise GenomeValidationError(
             [f"identity payload {path}: gene reference is missing the "
              f"functional identity keys {sorted(missing)}"])
+    from genome.validation.registry import KIND_BY_TYPE
+    errors: list[str] = []
+    gene_id = ref["gene_id"]
+    if not isinstance(gene_id, str) or not gene_id:
+        errors.append(f"gene_id must be a non-empty string, got "
+                       f"{gene_id!r}")
+    version = ref["version"]
+    if not isinstance(version, int) or isinstance(version, bool) \
+            or version < 1:
+        errors.append(f"version must be a strict int >= 1 (bool rejected), "
+                       f"got {version!r}")
+    gene_type = ref["type"]
+    if not isinstance(gene_type, str) or gene_type not in KIND_BY_TYPE:
+        errors.append(f"gene type must be one of {sorted(KIND_BY_TYPE)}, "
+                       f"got {gene_type!r}")
+    elif gene_type != expected_type:
+        errors.append(f"gene type {gene_type!r} is not allowed in this "
+                       f"slot (expected {expected_type!r}); structurally "
+                       f"impossible slot assignment")
+    artifact = ref["artifact"]
+    if not isinstance(artifact, str) or not artifact:
+        errors.append(f"artifact must be a non-empty string, got "
+                       f"{artifact!r}")
+    if errors:
+        raise GenomeValidationError(
+            [f"identity payload {path}: {e}" for e in sorted(errors)])
     # Self-contained artifact-ref integrity (fail closed, A2): grammar +
-    # name/version/kind coherence are checked with the AUTHORITATIVE
-    # registry helpers — no URI parsing duplicated here. Registry
-    # RESOLUTION is deliberately out of scope for identity canonicalization
-    # (no bytes lookup, no digest existence check, no I/O); ref-level
-    # integrity must already hold when an id is minted, even on
-    # construction paths that run before load_genome().
-    from genome.validation.registry import KIND_BY_TYPE, parse_uri
+    # name/version/kind coherence with the AUTHORITATIVE registry
+    # helpers. No registry RESOLUTION (no bytes lookup, no digest
+    # existence check, no I/O).
+    from genome.validation.registry import parse_uri
     try:
-        parts = parse_uri(ref["artifact"])
+        parts = parse_uri(artifact)
     except GenomeValidationError as exc:
         raise GenomeValidationError(
             [f"identity payload {path}: {e}" for e in exc.errors]) from None
-    errors: list[str] = []
-    if parts["name"] != ref["gene_id"]:
+    errors = []
+    if parts["name"] != gene_id:
         errors.append(f"artifact URI name {parts['name']!r} != gene_id "
-                       f"{ref['gene_id']!r}")
-    if int(parts["version"]) != ref["version"]:
+                       f"{gene_id!r}")
+    if int(parts["version"]) != version:
         errors.append(f"artifact URI version {parts['version']} != gene "
-                       f"version {ref['version']}")
-    expected_kind = KIND_BY_TYPE.get(ref["type"])
+                       f"version {version}")
+    expected_kind = KIND_BY_TYPE[gene_type]
     if parts["kind"] != expected_kind:
         errors.append(f"artifact URI kind {parts['kind']!r} does not match "
-                       f"gene type {ref['type']!r} (expected "
+                       f"gene type {gene_type!r} (expected "
                        f"{expected_kind!r})")
     if errors:
         raise GenomeValidationError(
@@ -223,7 +259,8 @@ def canonical_genome_identity_payload(genome: dict) -> dict:
                  f"when present, got {type(slots).__name__}"])
         if slots:
             genes_out[section] = {
-                slot: _functional_gene_ref(ref, f"genes.{section}.{slot}")
+                slot: _functional_gene_ref(
+                    ref, f"genes.{section}.{slot}", expected_type="policy")
                 for slot, ref in slots.items()}
     if "skills" in genes_in:
         skills_in = genes_in["skills"]
@@ -234,9 +271,11 @@ def canonical_genome_identity_payload(genome: dict) -> dict:
     else:
         skills_in = []  # ABSENT skills == empty array (A2 normalization)
     # skills[] is SEMANTICALLY ORDERED (runtime block order): the order is
-    # part of the identity domain and must NOT be sorted here
-    genes_out["skills"] = [_functional_gene_ref(ref, f"genes.skills[{i}]")
-                            for i, ref in enumerate(skills_in)]
+    # part of the identity domain and must NOT be sorted here; slots carry
+    # skill genes only
+    genes_out["skills"] = [
+        _functional_gene_ref(ref, f"genes.skills[{i}]", expected_type="skill")
+        for i, ref in enumerate(skills_in)]
     if "regulation" in source:
         regulation_in = source["regulation"]
         if not isinstance(regulation_in, dict):
