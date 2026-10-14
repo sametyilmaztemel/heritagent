@@ -41,6 +41,7 @@ class RunLedger:
         self._clock = clock
         self._caps = dict(caps)
         self._done: dict[str, dict] = {}
+        self._charged: dict[str, dict] = {}  # model calls outside episodes (the miner's)
         self._model_calls = 0
         self._state = "running"
         self._reason: str | None = None
@@ -80,14 +81,14 @@ class RunLedger:
             kind = record.get("type")
             if self._state in TERMINAL:
                 raise LedgerError(f"{self._path}: a record follows the terminal state")
-            if kind == "episode":
+            if kind in ("episode", "calls"):
                 key = record.get("key")
-                if not isinstance(key, str) or key in self._done:
-                    raise LedgerError(f"{self._path}: bad or duplicate episode key {key!r}")
+                if not isinstance(key, str) or key in self._done or key in self._charged:
+                    raise LedgerError(f"{self._path}: bad or duplicate {kind} key {key!r}")
                 calls = record.get("model_calls")
                 if isinstance(calls, bool) or not isinstance(calls, int) or calls < 0:
                     raise LedgerError(f"{self._path}: bad model_calls for {key!r}")
-                self._done[key] = record
+                (self._done if kind == "episode" else self._charged)[key] = record
                 self._model_calls += calls
             elif kind in TERMINAL:
                 self._state, self._reason = kind, record.get("reason")
@@ -128,6 +129,17 @@ class RunLedger:
                       "episodes": self.episodes, "model_calls": self._model_calls})
         raise CapExceeded(reason)
 
+    def abandon(self, reason: str) -> None:
+        """Stop the run as incomplete for a protocol rule that fails closed
+        (not a cap): nothing can be admitted afterwards."""
+        if self._state != "running":
+            raise LedgerError(f"the run is already {self._state}")
+        if not isinstance(reason, str) or not reason.strip():
+            raise LedgerError("an incomplete run records its reason")
+        self._state, self._reason = "incomplete", reason
+        self._append({"type": "incomplete", "reason": reason,
+                      "episodes": self.episodes, "model_calls": self._model_calls})
+
     def admit(self, key: str) -> bool:
         """True if the episode should run now, False if the ledger already
         holds it (resume). Raises CapExceeded and marks the run incomplete if
@@ -138,20 +150,50 @@ class RunLedger:
             return False
         if self.episodes + 1 > self._caps["episodes_max"]:
             self._stop(f"hard cap: episodes_max {self._caps['episodes_max']} would be exceeded")
-        worst = max_model_calls_per_episode()
+        self._check_calls(max_model_calls_per_episode())
+        return True
+
+    def admit_calls(self, key: str, worst_case: int) -> bool:
+        """Admit model calls made outside an episode (the miner's teacher
+        calls): False if already charged, CapExceeded if they could exceed
+        a cap."""
+        if self._state != "running":
+            raise LedgerError(f"the run is {self._state}; nothing can start")
+        if key in self._charged:
+            return False
+        if isinstance(worst_case, bool) or not isinstance(worst_case, int) or worst_case < 0:
+            raise LedgerError(f"worst_case must be a non-negative int, got {worst_case!r}")
+        self._check_calls(worst_case)
+        return True
+
+    def record_calls(self, key: str, *, model_calls: int) -> None:
+        if self._state != "running":
+            raise LedgerError(f"the run is {self._state}; nothing can be recorded")
+        if key in self._charged or key in self._done:
+            raise LedgerError(f"{key!r} is already recorded")
+        if isinstance(model_calls, bool) or not isinstance(model_calls, int) or model_calls < 0:
+            raise LedgerError(f"model_calls must be a non-negative int, got {model_calls!r}")
+        record = {"type": "calls", "key": key, "model_calls": model_calls}
+        self._append(record)
+        self._charged[key] = record
+        self._model_calls += model_calls
+
+    def is_charged(self, key: str) -> bool:
+        return key in self._charged
+
+    def _check_calls(self, worst: int) -> None:
         if self._model_calls + worst > self._caps["model_calls_max"]:
             self._stop(f"hard cap: model_calls_max {self._caps['model_calls_max']} would be "
-                       f"exceeded (used {self._model_calls}, an episode may use {worst})")
+                       f"exceeded (used {self._model_calls}, the next step may use {worst})")
         elapsed_hours = (float(self._clock()) - self._started) / 3600
         if elapsed_hours > self._caps["wall_clock_hours_max"]:
             self._stop(f"hard cap: wall_clock_hours_max {self._caps['wall_clock_hours_max']} "
                        f"exceeded ({elapsed_hours:.2f} h)")
-        return True
 
     def record(self, key: str, *, model_calls: int, outcome: Mapping) -> None:
         if self._state != "running":
             raise LedgerError(f"the run is {self._state}; nothing can be recorded")
-        if key in self._done:
+        if key in self._done or key in self._charged:
             raise LedgerError(f"episode {key!r} is already recorded")
         if isinstance(model_calls, bool) or not isinstance(model_calls, int) or model_calls < 0:
             raise LedgerError(f"model_calls must be a non-negative int, got {model_calls!r}")

@@ -180,6 +180,7 @@ def derive_t_reg(results_by_seed: Mapping[int, Sequence[EpisodeResult]],
             task_id=task_id, family=by_id[task_id].family,
             baseline_trajectory_id=success.trajectory_id,
             payload={"game_id": task_id, "content_sha256": by_id[task_id].content_sha256,
+                     "split": LIFETIME_SPLIT, "pool": "t_mine",
                      "baseline_key": success.key, "baseline_seed": seed,
                      "baseline_attempt": _attempt(success, seed)}))
     return RegressionAllocation(tasks=tuple(allocation))

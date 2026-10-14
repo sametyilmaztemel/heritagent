@@ -145,6 +145,25 @@ def verify_run_start_record(record: dict) -> None:
         raise ProvenanceError("record_sha256 does not match the run-start record")
 
 
+def freeze_json(path: Path, document) -> dict:
+    """Write a run artifact once. Writing the identical content again is a
+    no-op (a resumed run); any other content fails closed."""
+    document = plain(document)
+    path = Path(path)
+    if path.exists():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing != document:
+            raise ProvenanceError(f"{path} is frozen with other content; a frozen run artifact "
+                                  f"is never replaced")
+        return existing
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n",
+                   encoding="utf-8")
+    tmp.replace(path)
+    return document
+
+
 def freeze_run_start_record(path: Path, record: dict) -> dict:
     """Write the record once. Writing the identical record again is a no-op
     (a resumed run); any other content fails closed."""
@@ -156,8 +175,4 @@ def freeze_run_start_record(path: Path, record: dict) -> dict:
             raise ProvenanceError(f"{path} already holds another run-start record "
                                   f"({existing.get('record_sha256')})")
         return existing
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
-    return record
+    return freeze_json(path, record)

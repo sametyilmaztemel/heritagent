@@ -105,7 +105,7 @@ def wins_for(pattern, seed=MINING_SEEDS[0]):
 def executor(tmp_path, model, *, caps=CAPS, games=None):
     games = games if games is not None else {}
 
-    def env_factory(game_id):
+    def env_factory(split, game_id):
         games[game_id] = Game(game_id)
         return AlfworldEnvironment(games[game_id], game_id=game_id)
 

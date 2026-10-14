@@ -182,3 +182,34 @@ def test_a_complete_run_admits_nothing_more(tmp_path):
         ledger.admit("e0")
     assert json.loads((tmp_path / "ledger.jsonl").read_text().splitlines()[-1])["type"] == "complete"
     assert canonical_sha256({"a": 1}) == canonical_sha256({"a": 1})
+
+
+def test_teacher_calls_count_against_the_cap_but_are_not_episodes(tmp_path):
+    caps = {**CAPS, "model_calls_max": max_model_calls_per_episode() + 40}
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock(), caps=caps)
+    assert ledger.admit_calls("mining/11", 40) is True
+    ledger.record_calls("mining/11", model_calls=40)
+    assert (ledger.episodes, ledger.model_calls) == (0, 40)
+    reopened = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock(), caps=caps)
+    assert reopened.admit_calls("mining/11", 40) is False and reopened.model_calls == 40
+    assert reopened.is_charged("mining/11") and not reopened.is_done("mining/11")
+    with pytest.raises(LedgerError, match="already recorded"):
+        reopened.record_calls("mining/11", model_calls=1)
+    assert reopened.admit("e0") is True  # 40 + one episode's worst case fits
+    reopened.record("e0", model_calls=1, outcome={})
+    with pytest.raises(CapExceeded, match="model_calls_max"):
+        reopened.admit_calls("mining/23", max_model_calls_per_episode())
+
+
+def test_a_protocol_stop_marks_the_run_incomplete_with_its_reason(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock())
+    with pytest.raises(LedgerError, match="reason"):
+        ledger.abandon(" ")
+    ledger.abandon("t_reg: only 39 T_mine tasks were solved")
+    assert ledger.state == "incomplete" and ledger.reason.startswith("t_reg")
+    with pytest.raises(LedgerError, match="incomplete"):
+        ledger.admit("e0")
+    with pytest.raises(LedgerError, match="already incomplete"):
+        ledger.abandon("again")
+    reopened = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock())
+    assert reopened.state == "incomplete" and reopened.reason.startswith("t_reg")

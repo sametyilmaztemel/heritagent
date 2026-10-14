@@ -81,10 +81,14 @@ class EpisodeResult:
     invalid_commands: int
     status: str
     resumed: bool
+    expressed_gene_ids: tuple = ()
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class EpisodeExecutor:
-    def __init__(self, *, model: ModelAdapter, env_factory: Callable[[str], EpisodeEnvironment],
+    def __init__(self, *, model: ModelAdapter,
+                 env_factory: Callable[[str, str], EpisodeEnvironment],
                  ledger: RunLedger, trajectories_dir: Path, run_id: str, code_commit: str,
                  budgets: Budgets | None = None, clock: Callable[[], float] | None = None,
                  sleep: Callable[[float], None] = time.sleep):
@@ -113,7 +117,8 @@ class EpisodeExecutor:
 
     def run(self, spec: EpisodeSpec) -> EpisodeResult:
         if not self._ledger.admit(spec.key):  # recorded already: resume
-            outcome = self._ledger.done_record(spec.key)["outcome"]
+            outcome = dict(self._ledger.done_record(spec.key)["outcome"])
+            outcome["expressed_gene_ids"] = tuple(outcome.get("expressed_gene_ids", ()))
             return EpisodeResult(key=spec.key, resumed=True, **outcome)
         path = self._dir / f"{spec.key.replace('/', '__')}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +126,7 @@ class EpisodeExecutor:
             # a crash after the trajectory was written but before the ledger
             # record: the episode is not counted, so it is run again cleanly
             path.unlink()
-        env = self._env_factory(spec.task_id)
+        env = self._env_factory(spec.split, spec.task_id)  # (split, game_id)
         try:
             task = env.start()
             recorder = TrajectoryRecorder(self._context(spec), path,
@@ -147,10 +152,18 @@ class EpisodeExecutor:
             close = getattr(env, "close", None)
             if callable(close):
                 close()
-        model_calls = result.events.kinds().count("model_called")
+        calls = result.events.of_kind("model_called")
+        expressed: list[str] = []
+        for event in result.events.of_kind("skills_expressed"):
+            expressed.extend(g for g in event.data["skills"] if g not in expressed)
         outcome = {"task_id": spec.task_id, "family": spec.family, "success": bool(episode.won),
                    "trajectory_id": finalized.trajectory_id, "trajectory_path": str(path),
-                   "model_calls": model_calls, "steps": episode.steps,
-                   "invalid_commands": episode.invalid_commands, "status": result.status}
-        self._ledger.record(spec.key, model_calls=model_calls, outcome=outcome)
-        return EpisodeResult(key=spec.key, resumed=False, **outcome)
+                   "model_calls": len(calls), "steps": episode.steps,
+                   "invalid_commands": episode.invalid_commands, "status": result.status,
+                   "expressed_gene_ids": expressed,
+                   "prompt_tokens": calls[-1].data["cumulative_prompt_tokens"] if calls else 0,
+                   "completion_tokens":
+                       calls[-1].data["cumulative_completion_tokens"] if calls else 0}
+        self._ledger.record(spec.key, model_calls=len(calls), outcome=outcome)
+        return EpisodeResult(key=spec.key, resumed=False,
+                             **{**outcome, "expressed_gene_ids": tuple(expressed)})
