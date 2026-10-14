@@ -61,11 +61,12 @@ def test_real_replay_and_ablation_children_pass_the_gate_check(tmp_path, registr
 
 
 def _settings_records(node, found):
-    """Every recorded generation-settings dict in a CIG record."""
+    """Every recorded generation-settings dict in a CIG record, as
+    (key, settings) pairs."""
     if isinstance(node, dict):
         for key, value in node.items():
             if key in ("eval_generation_settings", "locked_settings") and isinstance(value, dict):
-                found.append(value)
+                found.append((key, value))
             _settings_records(value, found)
     elif isinstance(node, list):
         for item in node:
@@ -75,14 +76,16 @@ def _settings_records(node, found):
 def test_every_record_of_a_gate_run_stores_the_protocol_stop(tmp_path):
     orchestrator, _, cig_store, _, inputs, _ = build_world(tmp_path, candidates=("a", "b"))
     orchestrator.run(inputs)
-    found: list[dict] = []
+    found: list[tuple[str, dict]] = []
     for record in list(cig_store.children.values()) + list(cig_store.aggregates.values()):
         _settings_records(record, found)
     stages = {child["stage"] for child in cig_store.children.values()}
     assert stages == {"replay", "ablation", "generalization_in_scope",
                       "generalization_out_of_scope", "interaction_regression"}
-    assert len(found) >= 10  # two candidates x five children, plus pair evidence
-    assert all(record["stop"] == list(STOP_SEQUENCES) for record in found)
+    keys = [key for key, _ in found]
+    assert keys.count("eval_generation_settings") >= 10  # two candidates x five children
+    assert keys.count("locked_settings") >= 1  # the interaction pair evidence (review of #62)
+    assert all(settings["stop"] == list(STOP_SEQUENCES) for _, settings in found)
 
 
 def test_the_regression_stage_runs_with_settings_run_agent_accepts(tmp_path, registry,

@@ -74,6 +74,9 @@ def _ablation_with_child(ablation, child):
     ("temperature", 0.7),
     ("seed", 11.0),
     ("stop", ["x"]),
+    ("stop", []),                            # the pre-A2 empty stop (review of #62)
+    ("stop", ["\nObservation:", "END"]),     # a superset of the protocol stop
+    ("stop", "\nObservation:"),              # the right text, but not a list
 ])
 def test_corrupted_ablation_child_rejected_before_any_episode(tmp_path, field, bad_value):
     """T1: the #11 preflight covers the ablation child, not only replay."""
