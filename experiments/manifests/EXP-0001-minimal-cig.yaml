@@ -117,6 +117,15 @@ environment:
   contamination_rule: T_eval never visible to miner, gate, or threshold tuning
   episode_max_steps: 50               # ADR-0003 D4: Budgets.max_steps, identical in every arm
 
+run_protocol:                         # ADR-0007 (E1-E4 owner decisions, 2026-10-14; E5 pending the owner)
+  split_plan: EXP-0001-split-plan.json  # SplitPlan seed 0, counts from the real ALFWorld inventory
+  split_manifest: {file: EXP-0001-splits.json, sha256: 2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c}
+  calibration_pilot: {file: EXP-0001-pilot.json, sha256: 6286d0fa3072f3a179fbe70d543ec3a6a3e4020f05977111fc05ddb02d57e90c, games: 30, per_family: 5, seed: 0}
+  lifetime: {attempts_per_task: 3, temperature: 0.7, pairing: first-success-first-failure, attempt_seed: sha256-derived}
+  t_reg: {eligible: solved-in-any-lifetime-episode, size: 40, seed: 0, baseline: earliest-success, shortfall: fail-closed}
+  transfer_subset: ablation-pool
+  budgets: {max_steps: 50, max_total_retries: 10, max_tokens_per_request: 512}   # E5, pending the owner
+
 arms:
   A-no-inheritance:   {g1_genome: "G0"}
   B-unrestricted:     {g1_genome: "G0 + all frozen candidates as skill genes"}
