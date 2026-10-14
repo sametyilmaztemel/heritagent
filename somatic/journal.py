@@ -80,18 +80,23 @@ def _reject_non_finite_constant(name: str):
 def read_journal_records(path: Path) -> list[dict]:
     """Strictly parse journal lines; corruption fails closed (no recovery
     path in v0.1 — somatic memory is never silently salvaged)."""
+    from trajectory.recorder.errors import MalformedTrajectoryError
+    from trajectory.storage.jsonl import jsonl_lines
     records: list[dict] = []
-    for index, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines()):
+    for index, raw in enumerate(jsonl_lines(path)):  # b"\n" only, never splitlines()
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise MalformedTrajectoryError(
+                f"{path}: invalid UTF-8 in journal at line {index + 1}: {exc}") from None
         if not line.strip():
             continue
         try:
             records.append(json.loads(line, parse_constant=_reject_non_finite_constant))
         except json.JSONDecodeError as exc:
-            from trajectory.recorder.errors import MalformedTrajectoryError
             raise MalformedTrajectoryError(
                 f"{path}: malformed journal JSON at line {index + 1}: {exc}") from None
         except ValueError as exc:
-            from trajectory.recorder.errors import MalformedTrajectoryError
             raise MalformedTrajectoryError(
                 f"{path}: non-standard JSON at line {index + 1}: {exc}") from None
     return records
