@@ -74,10 +74,13 @@ def test_the_manifest_records_the_protocol_stop():
     import json
     import re
     from pathlib import Path
-    text = Path("experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
-    match = re.search(r"^  eval_stop: (\[[^\]]*\])", text, re.MULTILINE)
-    assert match, "EXP-0001 manifest records no model.eval_stop"
-    assert tuple(json.loads(match.group(1))) == STOP_SEQUENCES
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    model = re.search(r"^model:\n((?:[ #].*\n|\n)*)", text, re.MULTILINE)
+    assert model, "EXP-0001 manifest has no model section"
+    stops = re.findall(r"^  eval_stop: (\[[^\]]*\])", model.group(1), re.MULTILINE)
+    assert len(stops) == 1, "the model section must record eval_stop exactly once"
+    assert tuple(json.loads(stops[0])) == STOP_SEQUENCES
 
 
 @pytest.mark.parametrize("max_tokens", [128, 32])  # both directions (review of #56)

@@ -90,5 +90,6 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 - *Compatibility.*
   - Callers that pass no settings need no change.
   - A caller that passes settings must pass the protocol stop.
+  - The gate's stage 1–2 evidence check now requires the protocol stop in each replay and ablation child (it required an empty stop before). Every stage, regression included, runs with `evaluation_settings`.
   - The vLLM backend already forwards `stop`. The scripted test adapters return replies as if the backend had applied it.
   - No CIG record or trajectory exists yet, so no stored evidence changes.

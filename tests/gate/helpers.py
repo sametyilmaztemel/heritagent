@@ -53,7 +53,7 @@ def coherent_stage11_children(gene_id: str, *, replay_pass: bool,
             "successes_with": 5 if replay_pass else 2,
             "delta_count": 5 if replay_pass else 1,
             "eval_generation_settings": {"temperature": 0.0, "max_tokens": 64,
-                                          "seed": seed, "stop": []},
+                                          "seed": seed, "stop": ["\nObservation:"]},
         },
     }
     ablation_child = {
@@ -66,7 +66,7 @@ def coherent_stage11_children(gene_id: str, *, replay_pass: bool,
                            "seed": seed,
                            "method": "percentile-paired-cluster-bootstrap"},
             "eval_generation_settings": {"temperature": 0.0, "max_tokens": 64,
-                                          "seed": seed, "stop": []},
+                                          "seed": seed, "stop": ["\nObservation:"]},
         },
     }
     replay = ReplayEvaluation(

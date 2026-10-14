@@ -55,6 +55,7 @@ from genome.validation.loader import load_cig
 from genome.validation.records import CigRecordStore
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
+from runtime.policies.planner_react import STOP_SEQUENCES
 
 from inheritance.ablation import AblationEvaluation
 from inheritance.generalization import (
@@ -590,8 +591,8 @@ class CigGateOrchestrator:
         ``load_cig`` validity, candidate match, exact
         ``<parent>/S<seed>-<stage>`` child ids, parent match, seed match,
         stage names, pass agreement, EXACT locked eval settings
-        (temperature 0.0, gate max_tokens, resolved mining seed, empty
-        stop), and unique child ids."""
+        (temperature 0.0, gate max_tokens, resolved mining seed, the ReAct
+        protocol stop of ADR-0003 A2), and unique child ids."""
         gene_id = self._validated_of(inp.candidate_envelope)["candidate"]["gene_id"]
         parent, seed = self._parent_seed_for(inp)
         issues: list[str] = []
@@ -675,10 +676,10 @@ class CigGateOrchestrator:
                     f"{stage} eval_generation_settings.seed {eval_seed!r} "
                     f"!= locked mining seed {seed!r} (strict int, non-bool)")
             stop = settings.get("stop")
-            if not isinstance(stop, list) or stop != []:
+            if not isinstance(stop, list) or stop != list(STOP_SEQUENCES):
                 issues.append(
                     f"{stage} eval_generation_settings.stop {stop!r} != "
-                    f"locked [] (empty list)")
+                    f"locked {list(STOP_SEQUENCES)!r} (ADR-0003 A2)")
         if issues:
             raise EvidenceCoherenceError(sorted(issues))
 
