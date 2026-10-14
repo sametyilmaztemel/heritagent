@@ -1,6 +1,6 @@
 # ADR-0003 — ALFWorld `ToolEnvironment` adapter for EXP-0001
 
-Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
+Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat); **amendment A2** chosen by the owner on 2026-10-14 (explicit answer in chat). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
 
 **Problem.** EXP-0001 runs on ALFWorld, but the repo has no adapter from ALFWorld's text games to the runtime's `ToolEnvironment` boundary. The adapter's protocol choices set G0's success level. Published Qwen2.5-7B-Instruct results span 14.8–45.5 % across protocols, and rendering alone moves 83.6 % to 1.5 %. G0's level in turn sets T_reg feasibility, the expected number of mining pairs and every power number. These choices are therefore pre-registration elements.
 
@@ -58,6 +58,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 1. Runtime support (D3 `retryable`, D5 `terminal`, the trajectory terminal kind, the D4 schema maximum): this change.
 2. `runtime/tool_adapters/alfworld.py` (D1, D2, D3, D6, D7, D8), with tests against a scripted fake of TextWorld's single-game gym API (`reset() -> (obs, infos)`, `step(cmd) -> (obs, score, done, infos)`). Real-game integration is not yet run: no ALFWorld data in the build sandbox, and the integration test is skipped unless `ALFWORLD_GAMEFILE` is set. The open question on the initial admissible list is resolved by amendment A1.
 3. The G0 switch to `planner_react_v2` (D4) and the manifest amendment: after PR #29.
+4. Amendment A2 (stop sequence): planner, loop, gate settings and manifest, in the change that records it.
 
 **Amendment A1: the initial observation carries the admissible commands.** The owner chose this in chat on 2026-10-13 ("Evet, göster"). Codex cross-review is requested.
 - *Problem.* As first written, D7 added nothing to the task text and D2 covered only step observations. The model therefore saw the first admissible-command list only after its first action, so that first action was blind.
@@ -68,3 +69,27 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
   - A blind first action is expected to add invalid commands that would measure the protocol rather than the agent.
 - *Research implication.* Like D2, A1 sets G0's level, so it stays frozen through the calibration pilot and the run.
 - *Compatibility.* `AlfworldEnvironment.start()` returns the rendered text, so callers that pass `start()` to `run_agent` need no change. Since the own review of #48, a game whose infos lack `admissible_commands` fails closed at `start()` and at every step. Without that check the model would see an empty command list.
+
+**Amendment A2: generation stops before an observation line.** The owner chose this in chat on 2026-10-14 ("Evet, 'Observation:'"), after #55 raised the question. Codex cross-review is requested.
+- *Problem.*
+  - D1–D8 set no stop sequence, so a chat model can keep writing past its `Action Input` and invent the environment's reply (`Observation: …`) and further steps.
+  - Since #55 such a reply is a mixed step: it fails closed, and the retry policy reprompts. A model that repeats the pattern spends the retry budget and can lose an episode it could have played. That would measure the protocol, not the agent.
+- *Decision.*
+  - Every ReAct model call stops at `"\nObservation:"`, the start of a line in which the model would begin an observation. The text before it is parsed as one step under the #55 rules, which are unchanged.
+  - The stop sequence belongs to the planner's protocol: `runtime.policies.planner_react.STOP_SEQUENCES`.
+  - `run_agent` uses it by default. It rejects explicit settings whose `stop` differs, as it does for `max_tokens` (#56).
+  - The gate's locked evaluation settings (`inheritance.overlay.evaluation_settings`) carry it, so every CIG child records it in `eval_generation_settings`.
+  - Every `model_called` event records it.
+  - The EXP-0001 manifest records it as `model.eval_stop`.
+  - It is the same in every arm and part of the frozen G0 protocol.
+- *Reason.*
+  - In a ReAct loop the environment, not the model, supplies observations. Stopping where the model starts one keeps each call to one step.
+  - It is *expected* to reduce mixed replies and the retries they cost. That expectation is unmeasured here: the calibration pilot reports parse-failure and retry rates under A2, but it has no comparison run without the stop, so the expectation stays untested.
+  - The #55 mixed-step check stays as a backstop for a backend that does not honour stop sequences.
+- *Research implication.* Like D1, D2, D4 and D7, A2 sets G0's level, so it stays frozen through the calibration pilot and the run. No novelty or causal claim.
+- *Compatibility.*
+  - Callers that pass no settings need no change.
+  - A caller that passes settings must pass the protocol stop.
+  - The gate's stage 1–2 evidence check now requires the protocol stop in each replay and ablation child (it required an empty stop before). Every stage, regression included, runs with `evaluation_settings`.
+  - The vLLM backend already forwards `stop`. The scripted test adapters return replies as if the backend had applied it.
+  - No CIG record or trajectory exists yet, so no stored evidence changes.

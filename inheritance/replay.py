@@ -181,7 +181,7 @@ class ReplayEvaluator:
         self._candidate_gene_id: str | None = None
         # locked evaluation settings derived from the fixed budget:
         # temperature 0, max_tokens = budgets.max_tokens_per_request, seed =
-        # the mining seed, no stop — ONE deterministic run per (task
+        # the mining seed, the ReAct protocol stop (ADR-0003 A2) — ONE deterministic run per (task
         # instance, condition); both conditions share this exact object
         self._locked_settings = evaluation_settings(
             max_tokens=budgets.max_tokens_per_request, seed=mining_seed)
