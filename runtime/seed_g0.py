@@ -17,15 +17,20 @@ from genome.validation.registry import TraitRegistry
 
 from runtime.expression import RuntimeConfig, compile_runtime_config
 
-PLANNER_GENE_ID = "planner_react_v1"
+# ADR-0003 D4: planner_react_v2 plans up to 50 steps (v1 capped G0 at 8)
+PLANNER_GENE_ID = "planner_react_v2"
 PLANNER_VERSION = 1
-PLANNER_PAYLOAD = {"style": "react", "max_plan_steps": 8}
+PLANNER_PAYLOAD = {"style": "react", "max_plan_steps": 50}
 
 RETRY_GENE_ID = "retry_backoff_v1"
 RETRY_VERSION = 1
 RETRY_PAYLOAD = {"max_retries": 3, "backoff": "exponential"}
 
 G0_LINEAGE_ID = "L-alpha"
+
+# ADR-0003 D4: the EXP-0001 episode budget, Budgets.max_steps, identical in
+# every arm and recorded in the manifest (environment.episode_max_steps)
+EPISODE_MAX_STEPS = 50
 
 
 def build_g0_seed_genome(registry: TraitRegistry) -> dict:

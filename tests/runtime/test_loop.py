@@ -296,12 +296,12 @@ def test_planner_max_plan_steps_changes_phenotype(registry, g0_config):
     phenotype must follow the policy limit, not just the external budget."""
     from runtime.expression import compile_runtime_config
     from runtime.model_adapters import ScriptedAdapter
-    from runtime.seed_g0 import build_g0_seed_genome
+    from runtime.seed_g0 import PLANNER_GENE_ID, PLANNER_PAYLOAD, build_g0_seed_genome
 
     def genome_with_planner_steps(max_plan_steps: int) -> dict:
         genome = build_g0_seed_genome(registry)
-        if max_plan_steps != 8:  # G0 default is 8; v2 binds a tighter policy
-            uri = registry.put("policy", "planner_react_v1", 2,
+        if max_plan_steps != PLANNER_PAYLOAD["max_plan_steps"]:  # version 2 binds another limit
+            uri = registry.put("policy", PLANNER_GENE_ID, 2,
                                {"style": "react", "max_plan_steps": max_plan_steps})
             genome["genes"]["cognition"]["planner"]["version"] = 2
             genome["genes"]["cognition"]["planner"]["artifact"] = uri
@@ -310,8 +310,9 @@ def test_planner_max_plan_steps_changes_phenotype(registry, g0_config):
 
     budgets = Budgets(max_steps=4, max_total_retries=0, max_tokens_per_request=64)
 
-    # baseline G0 (max_plan_steps=8): the external budget (4) ends the run
-    base_config = compile_runtime_config(genome_with_planner_steps(8), registry)
+    # baseline G0 (max_plan_steps=50, ADR-0003 D4): the external budget (4) ends the run
+    base_config = compile_runtime_config(
+        genome_with_planner_steps(PLANNER_PAYLOAD["max_plan_steps"]), registry)
     adapter = ScriptedAdapter([react_action("heat_object", {"object": "plate"}) for _ in range(4)])
     env = ScriptedEnv({"heat_object": [ToolObservation(ok=True, content="ok")] * 4})
     base = run_agent(config=base_config, model=adapter, env=env, task="t", budgets=budgets)

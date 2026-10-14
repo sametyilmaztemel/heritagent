@@ -75,7 +75,7 @@ model:
     future_stochastic_repeats: require-explicit-pre-registered-stochastic-source
 
 genome:
-  initial: G0-seed-react              # planner_react_v1 + retry_backoff_v1, no skills
+  initial: G0-seed-react              # planner_react_v2 + retry_backoff_v1, no skills (ADR-0003 D4)
   schema: eag/0.1
   candidate_set:
     cap: 10                           # K
@@ -115,6 +115,7 @@ environment:
     T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}   # untouched
     T_reg:  {source: subset-of-T_mine-solved-by-G0, size: 40}
   contamination_rule: T_eval never visible to miner, gate, or threshold tuning
+  episode_max_steps: 50               # ADR-0003 D4: Budgets.max_steps, identical in every arm
 
 arms:
   A-no-inheritance:   {g1_genome: "G0"}
