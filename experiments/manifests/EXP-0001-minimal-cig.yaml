@@ -161,6 +161,7 @@ evaluation:
       incomplete_data: fail-closed-no-primary-verdict
       arm_a: run-once-reused-across-seeds
       secondary: descriptive-only
+      t_reg: one-set-shared-across-seeds   # ADR-0006 D8
   sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval
     thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}
     candidate_cap: {k_grid: [5, 10, 20], followup_experiment: EXP-0005}

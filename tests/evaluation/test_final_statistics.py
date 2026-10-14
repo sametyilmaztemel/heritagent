@@ -35,23 +35,21 @@ T_REG = tuple(f"reg-{j:02d}" for j in range(40))
 def make_data(*, a_eval=lambda i: False, b_eval=lambda s, i: i < 40,
               c_eval=lambda s, i: i < 60, a_reg=lambda t: True,
               b_reg=lambda s, j: j >= 6, c_reg=lambda s, j: j >= 1,
-              t_reg=None, complete=True, reason=None, drop=()):
-    """Arm A once (D7); B and C per seed. The defaults give C-B = 20/134 in
-    every seed and reg(C)-reg(B) = -5/40."""
-    t_reg = t_reg or {seed: T_REG for seed in MINING_SEEDS}
-    union = sorted(set().union(*map(set, t_reg.values())))
+              complete=True, reason=None, drop=()):
+    """Arm A once (D7); B and C per seed; one T_reg set for every seed (D8).
+    The defaults give C-B = 20/134 in every seed and reg(C)-reg(B) = -5/40."""
     runs = [ArmRun("A", None, {t: a_eval(i) for i, t in enumerate(T_EVAL)},
-                   {t: a_reg(t) for t in union})]
+                   {t: a_reg(t) for t in T_REG})]
     for seed in MINING_SEEDS:
         for arm, ev, rg in (("B", b_eval, b_reg), ("C", c_eval, c_reg)):
             runs.append(ArmRun(arm, seed, {t: ev(seed, i) for i, t in enumerate(T_EVAL)},
-                               {t: rg(seed, j) for j, t in enumerate(t_reg[seed])}))
+                               {t: rg(seed, j) for j, t in enumerate(T_REG)}))
     for arm, seed, task in drop:  # remove recorded cells
         run = next(r for r in runs if (r.arm, r.seed) == (arm, seed))
         runs[runs.index(run)] = ArmRun(arm, seed,
                                        {k: v for k, v in run.t_eval.items() if k != task},
                                        {k: v for k, v in run.t_reg.items() if k != task})
-    return FinalEvaluationInput(T_EVAL, t_reg, tuple(runs), complete, reason)
+    return FinalEvaluationInput(T_EVAL, T_REG, tuple(runs), complete, reason)
 
 
 @pytest.fixture(scope="module")
@@ -93,13 +91,25 @@ def test_a_strong_pattern_meets_both_rules(strong):
     assert strong["seed_consistency"]["holding"] == 3
     assert strong["h2"]["rule_met"] is True and strong["h1"]["rule_met"] is True
     assert set(strong["t_eval"]["contrasts"]) == {"C-B", "C-A", "B-A"}  # all pairwise
+    ba = strong["t_eval"]["contrasts"]["B-A"]  # B wins 40 tasks over A in every seed
+    assert (ba["point_estimate"]["exact"], ba["lower_bound"]["exact"],
+            ba["upper_bound"]["exact"]) == ("20/67", "15/67", "51/134")
+    assert strong["t_eval"]["contrasts"]["C-A"]["point_estimate"]["exact"] == "30/67"
+    rates = strong["t_eval"]["success_rate"]
+    assert (rates["A"]["pooled"]["exact"], rates["B"]["pooled"]["exact"],
+            rates["C"]["pooled"]["exact"]) == ("0/1", "20/67", "30/67")
+    assert rates["C"]["per_seed"]["23"] == {"count": 60, "recorded": 134,
+                                            "rate": {"exact": "30/67", "float": 30 / 67}}
 
 
 def test_the_record_states_its_rule_and_claims_nothing(strong):
     assert strong["rule"] == json.loads(json.dumps({**FINAL_RULE,
                                                     "bootstrap": dict(FINAL_RULE["bootstrap"])}))
+    assert CLAIM_STATUS.startswith("pre-registered rule outcome only; not a validated result")
+    assert "not a causal claim" in CLAIM_STATUS
     assert strong["claim_status"] == CLAIM_STATUS
-    assert "validated" not in json.dumps({k: v for k, v in strong.items() if k != "claim_status"})
+    # "validated" appears only negated, anywhere in the record
+    assert not re.search(r"(?<!not a )validated", json.dumps(strong))
     json.dumps(strong)  # serialisable
     block = strong["t_eval"]["contrasts"]["C-B"]["bootstrap"]
     assert (block["seed"], block["resamples"], block["cluster_order"], block["confidence"]) \
@@ -211,20 +221,22 @@ def test_regression_rate_is_the_t_reg_failure_rate(strong):
     rates = strong["t_reg"]["regression_rate"]
     assert rates["B"]["pooled"]["exact"] == "3/20" and rates["C"]["pooled"]["exact"] == "1/40"
     assert rates["A"]["pooled"]["exact"] == "0/1"
-    assert strong["t_reg"]["shared_across_seeds"] is True
+    assert rates["B"]["per_seed"]["41"]["count"] == 6
+    assert strong["t_reg"]["task_ids"] == sorted(T_REG)
 
 
-def test_per_seed_t_reg_sets_weigh_each_task_once(fast):
-    """D1 on T_reg when the sets differ by seed: a task's value is its mean
-    over the seeds containing it; arm A runs their union once (D7)."""
-    sets = {11: tuple(f"reg-{j:02d}" for j in range(0, 40)),
-            23: tuple(f"reg-{j:02d}" for j in range(5, 45)),
-            41: tuple(f"reg-{j:02d}" for j in range(10, 50))}
-    record = analyze_final_evaluation(make_data(t_reg=sets))
-    reg = record["t_reg"]["contrast"]["reg(C)-reg(B)"]
-    assert record["t_reg"]["shared_across_seeds"] is False
-    assert len(reg["cluster_task_ids"]) == 50 and reg["cluster_denominator"] == 6
-    assert reg["n_cells"] == 120
+def test_t_reg_is_one_set_shared_by_every_seed():
+    """D8: one 40-task T_reg for every seed; a per-seed mapping fails closed."""
+    with pytest.raises(FinalStatisticsError, match="t_reg_task_ids must be a list or tuple"):
+        FinalEvaluationInput(T_EVAL, {seed: T_REG for seed in MINING_SEEDS}, (), True)
+
+
+def test_the_recorded_bootstrap_block_is_what_ran(fast, strong):
+    """The block states the parameters the bound was computed with."""
+    block = analyze_final_evaluation(make_data())["t_reg"]["contrast"]["reg(C)-reg(B)"]["bootstrap"]
+    assert block["resamples"] == 1_000
+    full = strong["t_eval"]["contrasts"]["C-B"]["bootstrap"]
+    assert {k: full[k] for k in FINAL_RULE["bootstrap"]} == dict(FINAL_RULE["bootstrap"])
 
 
 def test_h1_needs_c_above_a(fast):
@@ -237,7 +249,7 @@ def test_the_analysis_is_independent_of_input_order(fast):
     data = make_data()
     shuffled = FinalEvaluationInput(
         tuple(reversed(data.t_eval_task_ids)),
-        {seed: tuple(reversed(ids)) for seed, ids in reversed(list(data.t_reg_task_ids.items()))},
+        tuple(reversed(data.t_reg_task_ids)),
         tuple(ArmRun(r.arm, r.seed, dict(reversed(list(r.t_eval.items()))),
                      dict(reversed(list(r.t_reg.items())))) for r in reversed(data.runs)),
         True)
@@ -295,9 +307,11 @@ BASE = make_data()
     (_with(BASE, runs=BASE.runs[:-1] + ("not a run",)), "ArmRun records"),
     (_with(BASE, t_eval_task_ids=T_EVAL[:-1]), "exactly 134 tasks"),
     (_with(BASE, t_eval_task_ids=T_EVAL[:-1] + (T_EVAL[0],)), "distinct"),
-    (_with(BASE, t_reg_task_ids={11: T_REG, 23: T_REG}), "exactly the mining seeds"),
-    (_with(BASE, t_reg_task_ids={11: T_REG[:39], 23: T_REG, 41: T_REG}), "exactly 40 tasks"),
-    (_with(BASE, t_reg_task_ids={s: T_REG[:39] + ("eval-000",) for s in MINING_SEEDS}), "disjoint"),
+    (_with(BASE, t_reg_task_ids=T_REG[:39]), "exactly 40 tasks"),
+    (_with(BASE, t_reg_task_ids=T_REG[:39] + ("eval-000",)), "disjoint"),
+    (_replace_run(BASE, ("B", 11), t_eval={**BASE.runs[1].t_eval, 1: True, "zzz": True}),
+     "outside its set"),  # mixed key types still fail closed
+    ("not an input", "expected a FinalEvaluationInput"),
     (_with(BASE, complete=False), "must record its reason"),
     (_with(BASE, complete=False, incomplete_reason="  "), "must record its reason"),
     (_with(BASE, incomplete_reason="cap"), "carries no incomplete_reason"),
@@ -314,6 +328,12 @@ def test_the_manifest_records_the_rule():
     root = Path(__file__).resolve().parents[2]
     text = (root / "experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
     text = re.sub(r"(^|[ \t])#.*", r"\1", text, flags=re.MULTILINE)
+    # evaluation -> statistics -> final_rule, each inside its parent's block
+    evaluation = re.search(r"^evaluation:[ \t]*\n((?:[ \t]+.*\n|\n)+)", text, re.MULTILINE)
+    statistics = re.search(r"^  statistics:[ \t]*\n((?:    .*\n)+)", evaluation.group(1),
+                           re.MULTILINE)
+    assert statistics, "evaluation.statistics is missing"
+    text = statistics.group(1)
     block = re.search(r"^    final_rule:[ \t]*\n((?:      .*\n)+)", text, re.MULTILINE)
     assert block, "evaluation.statistics.final_rule is missing"
     parsed = {}
@@ -392,3 +412,116 @@ def test_adaptation_cost_counts_unsolved_tasks_as_censored():
 def test_transfer_outcomes_are_validated(args, message):
     with pytest.raises(FinalStatisticsError, match=message):
         TransferOutcome(*args)
+
+
+@pytest.mark.parametrize("build,message", [
+    (lambda: ArmRun("B", 11, list(BASE.runs[1].t_eval.items()), BASE.runs[1].t_reg),
+     "t_eval must be a mapping"),  # pairs could repeat a task (D5: one outcome per cell)
+    (lambda: ArmRun(1, 11, {}, {}), "arm must be a str"),
+    (lambda: ArmRun("B", True, {}, {}), "seed must be None or an int"),
+    (lambda: ArmRun("B", "11", {}, {}), "seed must be None or an int"),
+    (lambda: FinalEvaluationInput(set(T_EVAL), T_REG, BASE.runs, True), "must be a list or tuple"),
+    (lambda: FinalEvaluationInput(T_EVAL, T_REG, iter(BASE.runs), True), "must be a list or tuple"),
+])
+def test_inputs_of_the_wrong_kind_fail_closed(build, message):
+    with pytest.raises(FinalStatisticsError, match=message):
+        build()
+
+
+def test_the_analysis_is_isolated_from_caller_mutation():
+    t_eval = dict(BASE.runs[1].t_eval)
+    run = ArmRun("B", 11, t_eval, BASE.runs[1].t_reg)
+    t_eval["eval-000"] = not t_eval["eval-000"]
+    assert run.t_eval["eval-000"] == BASE.runs[1].t_eval["eval-000"]
+
+
+class _BadCounter:
+    identity = "bad-counter"
+
+    def __init__(self, value):
+        self.value = value
+
+    def count_tokens(self, text):
+        return 0 if not text else self.value
+
+
+@pytest.mark.parametrize("value", [-7, True, 4.5, "9", None])
+def test_an_invalid_token_count_fails_closed(registry, value):  # noqa: F811
+    with pytest.raises(FinalStatisticsError, match="skill_block_tokens must be a non-negative int"):
+        measure_genome_size(seed_with_skill(registry), registry, _BadCounter(value))
+
+
+def test_a_counter_without_identity_fails_closed(registry):  # noqa: F811
+    class NoIdentity:
+        identity = ""
+
+        def count_tokens(self, text):
+            return 0
+    with pytest.raises(FinalStatisticsError, match="invalid token counter"):
+        measure_genome_size(build_g0_seed_genome(registry), registry, NoIdentity())
+
+
+def test_genome_size_records_its_rendering(registry):  # noqa: F811
+    import hashlib
+
+    from runtime.expression import compile_runtime_config
+    from runtime.skills import skill_block
+    genome = seed_with_skill(registry)
+    text = skill_block(compile_runtime_config(genome, registry).skills)
+    size = measure_genome_size(genome, registry, _WordCounter())
+    assert size["skill_block_tokens"] == len(text.split())
+    assert size["skill_block_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sizes(registry):  # noqa: F811
+    g0 = measure_genome_size(build_g0_seed_genome(registry), registry, _WordCounter())
+    one = measure_genome_size(seed_with_skill(registry), registry, _WordCounter())
+    sizes = {("A", None): g0}
+    sizes.update({("B", s): one for s in MINING_SEEDS})
+    sizes.update({("C", s): (one if s == 11 else g0) for s in MINING_SEEDS})
+    return sizes, one
+
+
+def test_mean_skill_block_tokens_is_the_run_mean(registry):  # noqa: F811
+    sizes, one = _sizes(registry)
+    summary = summarize_genome_sizes(sizes)
+    def exact(value):
+        return f"{value.numerator}/{value.denominator}"
+    assert summary["per_arm"]["C"]["mean_skill_block_tokens"]["exact"] \
+        == exact(Fraction(one["skill_block_tokens"], 3))
+    assert summary["per_arm"]["B"]["mean_skill_block_tokens"]["exact"] \
+        == exact(Fraction(one["skill_block_tokens"], 1))
+
+
+@pytest.mark.parametrize("key,change,message", [
+    (("B", 11), {"genes": True}, "genes must be a non-negative int"),
+    (("B", 11), {"skill_block_tokens": -50}, "skill_block_tokens must be a non-negative int"),
+    (("B", 11), {"skill_genes": 99}, "more skill genes than genes"),
+    (("B", 11), {"token_counter": ""}, "lacks its token counter identity"),
+    (("A", None), {"skill_genes": 1, "genes": 3}, "arm A is G0 unchanged"),
+])
+def test_genome_size_entries_are_validated(registry, key, change, message):  # noqa: F811
+    sizes, _ = _sizes(registry)
+    sizes[key] = {**sizes[key], **change}
+    with pytest.raises(FinalStatisticsError, match=message):
+        summarize_genome_sizes(sizes)
+
+
+def test_a_genome_size_entry_missing_a_field_fails_closed(registry):  # noqa: F811
+    sizes, _ = _sizes(registry)
+    sizes[("C", 23)] = {k: v for k, v in sizes[("C", 23)].items() if k != "genes"}
+    with pytest.raises(FinalStatisticsError, match="lacks genes"):
+        summarize_genome_sizes(sizes)
+
+
+def test_the_median_is_the_middle_not_the_mean():
+    tasks = [f"transfer-{k:02d}" for k in range(3)]
+    skewed = {t: TransferOutcome(True, tokens, steps)
+              for t, tokens, steps in zip(tasks, (10, 20, 900), (1, 2, 90))}
+    outcomes = {key: skewed for key in [("A", None)] + [(a, s) for a in ("B", "C")
+                                                        for s in MINING_SEEDS]}
+    a = summarize_adaptation_cost(tasks, outcomes)["per_arm"]["A"]["runs"]["once"]
+    assert a["total_tokens_to_success"]["median"]["exact"] == "20/1"
+    assert a["total_tokens_to_success"]["mean"]["exact"] == "310/1"
+    with pytest.raises(FinalStatisticsError, match="must be a list or tuple"):
+        summarize_adaptation_cost(set(tasks), outcomes)

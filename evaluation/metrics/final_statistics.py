@@ -7,6 +7,8 @@ retunes a threshold. The locked rules (EXP-0001-design section 5, manifest
 
 - D1 seeds: for each task the paired arm difference is averaged over the
   mining seeds; the tasks are the bootstrap clusters.
+- D8 T_reg is one 40-task set shared by every mining seed; other T_reg
+  input fails closed.
 - D2 bootstrap: two-sided 95 % percentile, 10,000 resamples, seed 0, the
   clusters in task_id order (the ADR-0005 rule). It is computed with exact
   rational arithmetic on the same index stream as
@@ -31,7 +33,6 @@ The output states rule outcomes only. It never calls a result validated
 from __future__ import annotations
 
 import hashlib
-import math
 import random
 import statistics
 from collections.abc import Mapping
@@ -63,6 +64,7 @@ FINAL_RULE = MappingProxyType({
     "incomplete_data": "fail-closed-no-primary-verdict",
     "arm_a": "run-once-reused-across-seeds",
     "secondary": "descriptive-only",
+    "t_reg": "one-set-shared-across-seeds",
 })
 
 CLAIM_STATUS = ("pre-registered rule outcome only; not a validated result "
@@ -87,8 +89,18 @@ class ArmRun:
     t_reg: Mapping[str, bool]
 
     def __post_init__(self):
-        object.__setattr__(self, "t_eval", MappingProxyType(dict(self.t_eval)))
-        object.__setattr__(self, "t_reg", MappingProxyType(dict(self.t_reg)))
+        if not isinstance(self.arm, str):
+            raise FinalStatisticsError(f"arm must be a str, got {self.arm!r}")
+        if self.seed is not None and (isinstance(self.seed, bool)
+                                      or not isinstance(self.seed, int)):
+            raise FinalStatisticsError(f"seed must be None or an int, got {self.seed!r}")
+        for name in ("t_eval", "t_reg"):
+            cells = getattr(self, name)
+            # a mapping holds one outcome per task; pairs could repeat a task
+            if not isinstance(cells, Mapping):
+                raise FinalStatisticsError(
+                    f"{name} must be a mapping of task id to outcome, got {type(cells).__name__}")
+            object.__setattr__(self, name, MappingProxyType(dict(cells)))
 
 
 @dataclass(frozen=True)
@@ -96,21 +108,24 @@ class FinalEvaluationInput:
     """The complete recorded final evaluation of one EXP-0001 run.
 
     ``t_eval_task_ids`` is the full official T_eval set; ``t_reg_task_ids``
-    maps each mining seed to its 40 T_reg tasks (the same 40 for every seed
-    if T_reg is shared). ``complete`` is False for a run that stopped early
-    (a hard cap, D5); it then needs an ``incomplete_reason``."""
+    is the one 40-task T_reg set every mining seed shares (D8). Both are
+    lists or tuples, so a repeated id is caught. ``complete`` is False for a
+    run that stopped early (a hard cap, D5); it then needs an
+    ``incomplete_reason``."""
 
     t_eval_task_ids: tuple[str, ...]
-    t_reg_task_ids: Mapping[int, tuple[str, ...]]
+    t_reg_task_ids: tuple[str, ...]
     runs: tuple[ArmRun, ...]
     complete: bool
     incomplete_reason: str | None = None
 
     def __post_init__(self):
-        object.__setattr__(self, "t_eval_task_ids", tuple(self.t_eval_task_ids))
-        object.__setattr__(self, "t_reg_task_ids", MappingProxyType(
-            {seed: tuple(ids) for seed, ids in dict(self.t_reg_task_ids).items()}))
-        object.__setattr__(self, "runs", tuple(self.runs))
+        for name in ("t_eval_task_ids", "t_reg_task_ids", "runs"):
+            value = getattr(self, name)
+            if not isinstance(value, (list, tuple)):
+                raise FinalStatisticsError(
+                    f"{name} must be a list or tuple, got {type(value).__name__}")
+            object.__setattr__(self, name, tuple(value))
 
 
 @dataclass(frozen=True)
@@ -185,7 +200,8 @@ def _check_cells(cells: Mapping[str, bool], expected: set[str], label: str,
     keys = set(cells)
     if keys - expected:
         raise FinalStatisticsError(
-            f"{label} has outcomes for tasks outside its set: {sorted(keys - expected)[:5]}")
+            f"{label} has outcomes for tasks outside its set: "
+            f"{sorted(map(repr, keys - expected))[:5]}")
     if complete and keys != expected:
         raise FinalStatisticsError(
             f"{label} is missing {len(expected - keys)} task outcomes "
@@ -197,6 +213,9 @@ def _check_cells(cells: Mapping[str, bool], expected: set[str], label: str,
 
 
 def _validate(data: FinalEvaluationInput) -> dict:
+    if not isinstance(data, FinalEvaluationInput):
+        raise FinalStatisticsError(
+            f"expected a FinalEvaluationInput, got {type(data).__name__}")
     if not isinstance(data.complete, bool):
         raise FinalStatisticsError(f"complete must be a bool, got {data.complete!r}")
     if data.complete and data.incomplete_reason is not None:
@@ -205,17 +224,11 @@ def _validate(data: FinalEvaluationInput) -> dict:
                               or not data.incomplete_reason.strip()):
         raise FinalStatisticsError("an incomplete run must record its reason (D5)")
     t_eval = _check_ids(data.t_eval_task_ids, "T_eval", T_EVAL_SIZE)
-    if set(data.t_reg_task_ids) != set(MINING_SEEDS):
-        raise FinalStatisticsError(
-            f"T_reg sets must be given for exactly the mining seeds {list(MINING_SEEDS)}, "
-            f"got {sorted(data.t_reg_task_ids, key=repr)}")
-    t_reg = {seed: _check_ids(data.t_reg_task_ids[seed], f"T_reg (seed {seed})",
-                              REGRESSION_TASK_COUNT) for seed in MINING_SEEDS}
-    union = set().union(*map(set, t_reg.values()))
-    if union & set(t_eval):
+    t_reg = _check_ids(data.t_reg_task_ids, "T_reg", REGRESSION_TASK_COUNT)  # D8: one set
+    if set(t_reg) & set(t_eval):
         raise FinalStatisticsError(
             f"T_reg and T_eval must be disjoint (T_reg is drawn from T_mine): "
-            f"{sorted(union & set(t_eval))[:5]}")
+            f"{sorted(set(t_reg) & set(t_eval))[:5]}")
 
     expected_keys = {("A", None)} | {(arm, seed) for arm in ("B", "C") for seed in MINING_SEEDS}
     runs: dict = {}
@@ -237,8 +250,7 @@ def _validate(data: FinalEvaluationInput) -> dict:
     for (arm, seed), run in runs.items():
         label = f"arm {arm}" + ("" if seed is None else f" seed {seed}")
         _check_cells(run.t_eval, set(t_eval), f"{label} T_eval", data.complete)
-        expected_reg = union if seed is None else set(t_reg[seed])
-        _check_cells(run.t_reg, expected_reg, f"{label} T_reg", data.complete)
+        _check_cells(run.t_reg, set(t_reg), f"{label} T_reg", data.complete)
     return {"t_eval": t_eval, "t_reg": t_reg, "runs": runs}
 
 
@@ -249,23 +261,29 @@ def _success(run: ArmRun, task_set: str, task_id: str) -> int:
 def _pooled_contrast(cells: list[tuple[str, int]]) -> dict:
     """Bootstrap one pooled contrast. ``cells`` are (task_id, delta) with
     delta in {-1, 0, 1}, one per (seed, task): each task's deltas are
-    averaged over its seeds (D1) and the tasks, in task_id order, are the
-    clusters (D2)."""
+    averaged over the seeds (D1), and the tasks, in task_id order, are the
+    clusters (D2). Every task has one cell per seed (T_eval; the shared
+    T_reg of D8), so a cluster's mean is its delta sum over the seed count."""
     by_task: dict[str, list[int]] = {}
     for task_id, delta in cells:
         by_task.setdefault(task_id, []).append(delta)
+    if any(len(deltas) != len(MINING_SEEDS) for deltas in by_task.values()):
+        raise FinalStatisticsError("every task needs one cell per mining seed")
     task_ids = sorted(by_task)  # ADR-0006 D2 / ADR-0005: task_id order
-    # one common denominator so every cluster mean is an exact integer numerator
-    denominator = math.lcm(*(len(by_task[t]) for t in task_ids))
-    numerators = [sum(by_task[t]) * (denominator // len(by_task[t])) for t in task_ids]
-    result = exact_cluster_bootstrap(
-        numerators, denominator, seed=FINAL_BOOTSTRAP_SEED,
-        n_resamples=FINAL_BOOTSTRAP_RESAMPLES, confidence=FINAL_BOOTSTRAP_CONFIDENCE)
+    denominator = len(MINING_SEEDS)
+    numerators = [sum(by_task[t]) for t in task_ids]
+    # the parameters actually used, read once and recorded as used
+    seed, n_resamples = FINAL_BOOTSTRAP_SEED, FINAL_BOOTSTRAP_RESAMPLES
+    confidence = FINAL_BOOTSTRAP_CONFIDENCE
+    result = exact_cluster_bootstrap(numerators, denominator, seed=seed,
+                                     n_resamples=n_resamples, confidence=confidence)
     return {
         "point_estimate": _fraction(result.point_estimate),
         "lower_bound": _fraction(result.lower_bound),
         "upper_bound": _fraction(result.upper_bound),
-        "bootstrap": {**dict(FINAL_RULE["bootstrap"]), "implementation": BOOTSTRAP_METHOD},
+        "bootstrap": {"method": "percentile", "confidence": confidence, "seed": seed,
+                      "resamples": n_resamples, "cluster_order": FINAL_CLUSTER_ORDER,
+                      "implementation": BOOTSTRAP_METHOD},
         "cluster_task_ids": task_ids,
         "cluster_numerators": numerators,
         "cluster_denominator": denominator,
@@ -285,11 +303,11 @@ def _t_eval_contrast(runs: dict, t_eval: tuple[str, ...], x: str, y: str) -> dic
     return _pooled_contrast(cells)
 
 
-def _regression_contrast(runs: dict, t_reg: dict, x: str, y: str) -> dict:
+def _regression_contrast(runs: dict, t_reg: tuple[str, ...], x: str, y: str) -> dict:
     """reg(x) - reg(y): failure indicators, so delta = success(y) - success(x)."""
     cells = [(task_id, _success(_seed_runs(runs, y, seed), "t_reg", task_id)
               - _success(_seed_runs(runs, x, seed), "t_reg", task_id))
-             for seed in MINING_SEEDS for task_id in t_reg[seed]]
+             for seed in MINING_SEEDS for task_id in t_reg]
     return _pooled_contrast(cells)
 
 
@@ -338,9 +356,8 @@ def analyze_final_evaluation(data: FinalEvaluationInput) -> dict:
                    "success_rate": _rates(runs, lambda seed: t_eval, "t_eval",
                                           failure=False),
                    "contrasts": None},
-        "t_reg": {"task_ids": {str(seed): sorted(t_reg[seed]) for seed in MINING_SEEDS},
-                  "shared_across_seeds": len({frozenset(v) for v in t_reg.values()}) == 1,
-                  "regression_rate": _rates(runs, lambda seed: t_reg[seed], "t_reg",
+        "t_reg": {"task_ids": sorted(t_reg),
+                  "regression_rate": _rates(runs, lambda seed: t_reg, "t_reg",
                                             failure=True),
                   "contrast": None},
         "seed_consistency": None,
@@ -402,15 +419,27 @@ def measure_genome_size(genome: dict, registry, counter) -> dict:
     from runtime.expression import compile_runtime_config
     from runtime.skills import skill_block
 
-    validate_token_counter(counter)
+    if not isinstance(genome, dict):
+        raise FinalStatisticsError(f"genome must be a dict, got {type(genome).__name__}")
+    try:
+        validate_token_counter(counter)
+    except Exception as exc:
+        raise FinalStatisticsError(f"invalid token counter: {exc}") from exc
     config = compile_runtime_config(genome, registry)
     text = skill_block(config.skills) if config.skills else ""
     tokens = counter.count_tokens(text) if text else 0
+    # the probe in validate_token_counter only counts "": check the real count
+    _require_count(tokens, "skill_block_tokens")
     genes, skill_genes = _gene_count(genome)
     return {"genome_id": genome.get("genome_id"), "genes": genes, "skill_genes": skill_genes,
             "skill_block_tokens": tokens,
             "skill_block_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "token_counter": counter.identity}
+
+
+def _require_count(value, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise FinalStatisticsError(f"{name} must be a non-negative int, got {value!r}")
 
 
 def _seeded_keys() -> list[tuple[str, int | None]]:
@@ -427,6 +456,21 @@ def summarize_genome_sizes(sizes: Mapping[tuple[str, int | None], dict]) -> dict
     """Per-arm genome sizes (D6, descriptive). ``sizes`` maps (arm, seed) to
     ``measure_genome_size`` output, with arm A once (seed None)."""
     _require_seeded_keys(sizes, "genome sizes")
+    for key, entry in sizes.items():
+        if not isinstance(entry, Mapping):
+            raise FinalStatisticsError(f"genome size {key!r} must be a mapping")
+        for name in ("genes", "skill_genes", "skill_block_tokens"):
+            if name not in entry:
+                raise FinalStatisticsError(f"genome size {key!r} lacks {name}")
+            _require_count(entry[name], f"genome size {key!r} {name}")
+        if entry["skill_genes"] > entry["genes"]:
+            raise FinalStatisticsError(f"genome size {key!r} has more skill genes than genes")
+        counter = entry.get("token_counter")
+        if not isinstance(counter, str) or not counter.strip():
+            raise FinalStatisticsError(f"genome size {key!r} lacks its token counter identity")
+    arm_a = sizes[("A", None)]
+    if arm_a["skill_genes"] or arm_a["skill_block_tokens"]:
+        raise FinalStatisticsError("arm A is G0 unchanged and carries no skills")
     counters = {entry["token_counter"] for entry in sizes.values()}
     if len(counters) != 1:
         raise FinalStatisticsError(f"every genome size needs the same token counter, got {sorted(counters)}")
@@ -482,6 +526,8 @@ def summarize_adaptation_cost(transfer_task_ids, outcomes: Mapping[tuple[str, in
     per run, the tasks solved and, over the solved tasks, the tokens and
     steps to success; unsolved tasks are counted as censored, never given a
     cost. Every run must cover exactly the same transfer tasks."""
+    if not isinstance(transfer_task_ids, (list, tuple)):
+        raise FinalStatisticsError("transfer task ids must be a list or tuple")
     ids = tuple(transfer_task_ids)
     if not ids or any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
         raise FinalStatisticsError("transfer task ids must be distinct non-empty strings")
@@ -492,6 +538,8 @@ def summarize_adaptation_cost(transfer_task_ids, outcomes: Mapping[tuple[str, in
         rows, pooled = {}, []
         for _, seed in keys:
             run = outcomes[(arm, seed)]
+            if not isinstance(run, Mapping):
+                raise FinalStatisticsError(f"arm {arm} run {seed} must be a mapping")
             if set(run) != set(ids):
                 raise FinalStatisticsError(
                     f"arm {arm} run {seed} must cover exactly the transfer tasks")
