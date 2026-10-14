@@ -67,9 +67,32 @@ def _project_policy(payload: dict) -> dict:
     return {k: v for k, v in payload.items() if k not in EVALUATION_ONLY_KEYS}
 
 
+def _keys_in(node, found: set[str]) -> None:
+    """Collect every object key at any depth of a JSON-like value."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found.add(key)
+            _keys_in(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _keys_in(item, found)
+
+
 def _assert_no_evaluation_only(projection: dict) -> None:
-    text = json.dumps(projection)
-    leaked = [key for key in EVALUATION_ONLY_KEYS if f'"{key}"' in text]
+    """Fail closed if an evaluation-only key survives anywhere in the
+    projection. Only object keys count: a string value such as a skill
+    named "evaluation" carries no evaluation-only metadata. The keys of the
+    regulation map are gene ids, not metadata, so only their conditions
+    are walked."""
+    found: set[str] = set()
+    for key, value in projection.items():
+        found.add(key)
+        if key == "regulation" and isinstance(value, dict):
+            for condition in value.values():
+                _keys_in(condition, found)
+        else:
+            _keys_in(value, found)
+    leaked = [key for key in EVALUATION_ONLY_KEYS if key in found]
     if leaked:
         raise GenomeValidationError(f"runtime projection leaked evaluation-only keys: {leaked}")
 
