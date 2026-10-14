@@ -51,10 +51,11 @@ def test_the_locked_evaluation_settings_are_the_settings_used(g0_config):
     assert {r.settings for r in adapter.requests} == {locked}
 
 
-def test_max_tokens_disagreeing_with_the_request_budget_fails_closed(g0_config):
+@pytest.mark.parametrize("max_tokens", [128, 32])  # both directions (review of #56)
+def test_max_tokens_disagreeing_with_the_request_budget_fails_closed(g0_config, max_tokens):
     adapter = ScriptedAdapter([react_final("never asked")])
-    with pytest.raises(ValueError, match=r"settings.max_tokens \(128\) must equal "
+    with pytest.raises(ValueError, match=rf"settings.max_tokens \({max_tokens}\) must equal "
                                          r"budgets.max_tokens_per_request \(64\)"):
         run_agent(config=g0_config, model=adapter, env=ScriptedEnv({}), task="t",
-                  budgets=BUDGETS, settings=GenerationSettings(max_tokens=128))
+                  budgets=BUDGETS, settings=GenerationSettings(max_tokens=max_tokens))
     assert adapter.requests == []  # rejected before any model call
