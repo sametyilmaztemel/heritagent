@@ -181,8 +181,8 @@ class RunLedger:
         if self.episodes + 1 > self._caps["episodes_max"]:
             self._stop(f"hard cap: episodes_max {self._caps['episodes_max']} would be exceeded")
         worst = max_model_calls_per_episode()
+        self._abort_open(key)  # charged before the cap check, as a reload would
         self._check_calls(worst)
-        self._abort_open(key)
         self._append({"type": "attempt", "key": key, "reserved": worst})
         self._open[key] = worst
         return True
@@ -197,8 +197,8 @@ class RunLedger:
             return False
         if isinstance(worst_case, bool) or not isinstance(worst_case, int) or worst_case < 0:
             raise LedgerError(f"worst_case must be a non-negative int, got {worst_case!r}")
+        self._abort_open(key)  # charged before the cap check, as a reload would
         self._check_calls(worst_case)
-        self._abort_open(key)
         self._append({"type": "attempt", "key": key, "reserved": worst_case})
         self._open[key] = worst_case
         return True

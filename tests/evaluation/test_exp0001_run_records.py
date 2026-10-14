@@ -353,13 +353,19 @@ def test_nothing_follows_a_terminal_record(tmp_path):
 
 @pytest.mark.parametrize("line,message", [
     (b'{"type": "attempt", "key": "e9", "reserved": -1}\n', "bad attempt record"),
+    (b'{"type": "attempt", "key": "e9", "reserved": 1.5}\n', "bad attempt record"),
+    (b'{"type": "attempt", "key": "e9", "reserved": true}\n', "bad attempt record"),
+    (b'{"type": "attempt", "key": 7, "reserved": 60}\n', "bad attempt record"),
     (b'{"type": "attempt", "key": "e0", "reserved": 60}\n', "attempt after"),
+    (b'{"type": "attempt", "key": "mining/11", "reserved": 40}\n', "attempt after"),
 ])
 def test_bad_attempt_records_fail_closed(tmp_path, line, message):
     path = tmp_path / "ledger.jsonl"
     ledger = RunLedger(path, run_id="r", clock=Clock())
     ledger.admit("e0")
     ledger.record("e0", model_calls=1, outcome={})
+    ledger.admit_calls("mining/11", 40)
+    ledger.record_calls("mining/11", model_calls=40)
     path.write_bytes(path.read_bytes() + line)
     with pytest.raises(LedgerError, match=message):
         RunLedger(path, run_id="r", clock=Clock())

@@ -57,8 +57,8 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 **Scope.**
 - This covers the final analysis only. The gate's stages keep ADR-0002 and ADR-0005.
 - Not decided here; these stay with #13's runner and the Critic:
-  - how the T_reg derivation picks its one shared set (D8), e.g. among tasks G0 solved in every seed's lifetime;
-  - the 20-task transfer subset for adaptation cost, which has no pool yet;
+  - how the T_reg derivation picks its one shared set (D8), e.g. among tasks G0 solved in every seed's lifetime (since decided by ADR-0007 E3);
+  - the 20-task transfer subset for adaptation cost, which has no pool yet (since decided by ADR-0007 E4: the ablation pool);
   - how the threshold-sensitivity grid (design §5, "report how arm-C composition and T_eval outcomes would change") is reported for compositions that were never run on T_eval.
 - The output states rule outcomes only. It never calls a result validated (SPEC §32) and makes no causal or inheritance claim (SPEC §34).
 

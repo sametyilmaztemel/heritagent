@@ -117,9 +117,10 @@ def _t_reg_allocation(doc: Mapping) -> RegressionAllocation:
 
 
 class Exp0001Run:
-    """One EXP-0001 run in one run directory. The directory is locked for
-    the object's run (one writer); the caps, the model, the teacher and the
-    token counter must be the ones the frozen run-start record names."""
+    """One EXP-0001 run in one run directory, single-use: the directory is
+    locked from construction until run() returns (one writer); the caps, the
+    model, the teacher and the token counter must be the ones the frozen
+    run-start record names."""
 
     def __init__(self, *, run_dir: Path, run_start: dict, split_manifest: dict, model, teacher,
                  env_factory: Callable[[str, str], object], token_counter,
@@ -392,8 +393,10 @@ class Exp0001Run:
 
     # -- the run ----------------------------------------------------------------
     def run(self) -> dict:
-        if self._lock is None:  # a later run() on this object takes the lock again
-            self._lock = _lock_run_dir(self.dir)
+        """Run (or resume) once. The object is single-use: its ledger view is
+        as of construction, so a later resume needs a new Exp0001Run."""
+        if self._lock is None:
+            raise RunError("this run object is closed; construct a new Exp0001Run to resume")
         try:
             return self._run()
         finally:
