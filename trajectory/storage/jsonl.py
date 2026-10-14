@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,6 +81,23 @@ def _reject_non_finite_constant(name: str):
     raise ValueError(f"non-finite JSON constant {name!r} is not allowed in evidence files")
 
 
+def finite_float(text: str) -> float:
+    """``parse_float`` hook: an overflowing literal such as ``1e999`` would
+    parse as inf, the value the NaN/Infinity constant check rejects."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number {text!r} is not allowed in evidence files")
+    return value
+
+
+def split_jsonl(data: bytes) -> list[bytes]:
+    """``data`` as raw record lines, split on b"\\n" only (see ``jsonl_lines``)."""
+    lines = data.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
 def jsonl_lines(path: Path) -> list[bytes]:
     """The file's records as raw lines, split on b"\\n" only.
 
@@ -88,10 +106,7 @@ def jsonl_lines(path: Path) -> list[bytes]:
     (``ensure_ascii=False``), which would cut one record in two. JSON never
     holds a raw newline inside a string, so b"\\n" is the only record
     separator. A line ending in "\\r" (CRLF) is still valid JSON."""
-    lines = Path(path).read_bytes().split(b"\n")
-    if lines and lines[-1] == b"":
-        lines.pop()
-    return lines
+    return split_jsonl(Path(path).read_bytes())
 
 
 def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
@@ -100,7 +115,8 @@ def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
     finalization record (i.e. the stream is genuinely unfinished). Trailing
     corruption after an already-finalized trajectory is ALWAYS an error —
     recovery must not hide post-finalization tampering. Non-standard JSON
-    constants (NaN/Infinity/-Infinity) are rejected unconditionally. A
+    constants (NaN/Infinity/-Infinity) and overflowing numbers are rejected
+    unconditionally, and so is a line that is not a JSON object. A
     trailing line cut inside a multi-byte UTF-8 character is a truncated
     crash artifact like any other."""
     records: list[dict] = []
@@ -119,7 +135,8 @@ def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
         if not line.strip():
             continue
         try:
-            parsed = json.loads(line, parse_constant=_reject_non_finite_constant)
+            parsed = json.loads(line, parse_constant=_reject_non_finite_constant,
+                                parse_float=finite_float)
         except json.JSONDecodeError as exc:
             if allow_incomplete and is_trailing and not has_finalization:
                 break  # unfinished prefix: tolerate the truncated crash artifact
@@ -128,6 +145,9 @@ def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
         except ValueError as exc:
             raise MalformedTrajectoryError(
                 f"{path}: non-standard JSON at line {index + 1}: {exc}") from None
+        if not isinstance(parsed, dict):  # a complete line, never a truncation artifact
+            raise MalformedTrajectoryError(
+                f"{path}: line {index + 1} is not a JSON object{suffix}")
         records.append(parsed)
         if parsed.get("record") == "finalization":
             has_finalization = True
