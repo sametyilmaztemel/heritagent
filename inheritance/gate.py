@@ -57,7 +57,12 @@ from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
 from runtime.policies.planner_react import STOP_SEQUENCES
 
-from inheritance.ablation import AblationEvaluation
+from inheritance.ablation import (
+    BOOTSTRAP_CLUSTER_ORDER,
+    BOOTSTRAP_N_RESAMPLES,
+    BOOTSTRAP_SEED,
+    AblationEvaluation,
+)
 from inheritance.generalization import (
     GeneralizationEvaluation,
     GeneralizationEvaluator,
@@ -109,6 +114,34 @@ class GateInputError(ValueError):
 class EvidenceCoherenceError(ValueError):
     """#11 evidence does not cohere with this candidate/aggregate (fail
     closed; replay/ablation are never rerun)."""
+
+
+def _ablation_bootstrap_issues(measurements: dict, evaluated: dict) -> list[str]:
+    """ADR-0005: an ablation verdict is evidence only under the
+    pre-registered bootstrap (seed 0, 10,000 resamples, the deltas in
+    task_id order), in the child record and in the evaluation whose lower
+    bound the gate ranks by. The aggregate's thresholds_used claims these
+    values, so they are checked, not assumed (review of #63)."""
+    issues: list[str] = []
+    locked = {"seed": BOOTSTRAP_SEED, "n_resamples": BOOTSTRAP_N_RESAMPLES,
+              "cluster_order": BOOTSTRAP_CLUSTER_ORDER}
+    for where, block in (("child bootstrap", measurements.get("bootstrap")),
+                         ("evaluation bootstrap", evaluated)):
+        if not isinstance(block, dict):
+            issues.append(f"ablation {where} is missing")
+            continue
+        for key, value in locked.items():
+            got = block.get(key)
+            # strict type: True == 1 and 0.0 == 0 must not validate
+            if type(got) is not type(value) or got != value:
+                issues.append(f"ablation {where}.{key} {got!r} != pre-registered "
+                              f"{value!r} (ADR-0005)")
+    ids = measurements.get("paired_delta_task_ids")
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) \
+            or any(a >= b for a, b in zip(ids, ids[1:])):
+        issues.append(f"ablation child paired_delta_task_ids {ids!r} are not "
+                      f"distinct strings in task_id order (ADR-0005)")
+    return issues
 
 
 @dataclass(frozen=True)
@@ -594,7 +627,8 @@ class CigGateOrchestrator:
         ``<parent>/S<seed>-<stage>`` child ids, parent match, seed match,
         stage names, pass agreement, EXACT locked eval settings
         (temperature 0.0, gate max_tokens, resolved mining seed, the ReAct
-        protocol stop of ADR-0003 A2), and unique child ids."""
+        protocol stop of ADR-0003 A2), the pre-registered ablation
+        bootstrap (ADR-0005), and unique child ids."""
         gene_id = self._validated_of(inp.candidate_envelope)["candidate"]["gene_id"]
         parent, seed = self._parent_seed_for(inp)
         issues: list[str] = []
@@ -636,6 +670,8 @@ class CigGateOrchestrator:
                 issues.append(f"{stage} result.passed {evaluation.passed!r} != "
                                f"child measurements.stage_pass "
                                f"{stage_pass!r} (strict bool on both sides)")
+            if stage == "ablation":
+                issues.extend(_ablation_bootstrap_issues(m, evaluation.bootstrap))
             settings = m.get("eval_generation_settings")
             if not isinstance(settings, dict):
                 issues.append(f"{stage} child lacks eval_generation_settings "

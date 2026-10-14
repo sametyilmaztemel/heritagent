@@ -99,17 +99,26 @@ def test_the_child_record_recomputes_its_bound(tmp_path, registry, base_config, 
     assert result.bootstrap["cluster_order"] == "task_id"
 
 
-def test_the_manifest_gate_and_code_agree():
-    """pyyaml is not a test dependency: the manifest's flow mapping is read
-    with a pattern."""
-    root = Path(__file__).resolve().parents[2]
-    text = (root / "experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+def manifest_bootstraps(text: str) -> tuple[list[tuple[str, str, str]], int]:
+    """The ablation stage's pre-registered bootstraps and the count of
+    bootstrap keys anywhere in the manifest. pyyaml is not a test
+    dependency: the manifest's flow mapping is read with a pattern."""
+    # YAML comments are not data: a commented-out line must not count as the
+    # pre-registration (review of #63)
+    text = re.sub(r"(^|[ \t])#.*", r"\1", text, flags=re.MULTILINE)
     # the ablation stage runs up to the next stage key (review of #63)
     ablation = re.search(r"^    ablation:(.*?)^    generalization:", text, re.MULTILINE | re.DOTALL)
     assert ablation, "EXP-0001 manifest has no ablation stage before generalization"
     matches = re.findall(r"bootstrap: \{seed: (\d+), resamples: (\d+), cluster_order: (\w+)\}",
                          ablation.group(1))
-    assert len(re.findall(r"bootstrap: \{seed:", text)) == 1, "no other stage pre-registers one"
+    return matches, len(re.findall(r"bootstrap: \{seed:", text))
+
+
+def test_the_manifest_gate_and_code_agree():
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    matches, anywhere = manifest_bootstraps(text)
+    assert anywhere == 1, "no other stage pre-registers one"
     assert len(matches) == 1, "the ablation stage must pre-register its bootstrap exactly once"
     match = matches[0]
     assert (int(match[0]), int(match[1]), match[2]) == (
@@ -117,6 +126,15 @@ def test_the_manifest_gate_and_code_agree():
     assert (PRIMARY_THRESHOLDS["bootstrap_seed"], PRIMARY_THRESHOLDS["bootstrap_resamples"],
             PRIMARY_THRESHOLDS["bootstrap_cluster_order"]) == (
         BOOTSTRAP_SEED, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_CLUSTER_ORDER)
+
+
+@pytest.mark.parametrize("line", [
+    "      # bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}",
+    "      tau_c: 0.05  # bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}",
+])
+def test_a_commented_out_pre_registration_does_not_count(line):
+    text = f"stages:\n    ablation:\n{line}\n    generalization:\n      x: 1\n"
+    assert manifest_bootstraps(text) == ([], 0)
 
 
 def test_episodes_keep_the_allocation_order(tmp_path, registry, base_config, envelope):
@@ -144,3 +162,67 @@ def test_the_gate_aggregate_records_the_lock(tmp_path):
         values = aggregate["thresholds_used"]["values"]
         assert (values["bootstrap_seed"], values["bootstrap_resamples"],
                 values["bootstrap_cluster_order"]) == (0, 10_000, "task_id")
+
+
+def test_non_string_task_ids_are_rejected_with_the_allocation(tmp_path, registry):
+    """The bootstrap order is string order (ADR-0005): a non-string id fails
+    when the allocation is built, not after its 40 episodes (review of #63)."""
+    from inheritance.runner import EvaluationTask
+    tasks = list(make_allocation(tmp_path, registry).tasks)
+    first = tasks[0]
+    tasks[0] = EvaluationTask(task_id=0, family=first.family,
+                              payload=dict(first.payload), bank_id=first.bank_id)
+    with pytest.raises(ValueError, match="must be strings"):
+        AblationAllocation(tasks=tuple(tasks), frozen_strata=dict(FROZEN_STRATA))
+
+
+def _set(block, key, value):
+    if value is _DROP:
+        block.pop(key)
+    else:
+        block[key] = value
+
+
+_DROP = object()
+
+
+@pytest.mark.parametrize("where,key,value", [
+    ("child", "seed", 11),               # the mining seed the old fixture used
+    ("child", "seed", False),            # False == 0: the type is checked too
+    ("child", "seed", 0.0),              # 0.0 == 0
+    ("child", "n_resamples", 9_999),
+    ("child", "cluster_order", "allocation"),
+    ("child", "cluster_order", _DROP),
+    ("child", "bootstrap", _DROP),
+    ("evaluation", "seed", 11),
+    ("evaluation", "cluster_order", _DROP),
+    ("ids", None, ["abl-01", "abl-00"]),  # not in task_id order
+    ("ids", None, ["abl-00", "abl-00"]),  # not distinct
+    ("ids", None, _DROP),
+])
+def test_the_gate_rejects_an_ablation_child_off_the_locked_bootstrap(tmp_path, where, key, value):
+    """The aggregate records seed 0 and task_id order as the thresholds
+    used, so the gate checks them in the ablation evidence before any
+    stage-3/4 episode (review of #63)."""
+    import copy
+    import dataclasses
+
+    from inheritance.gate import EvidenceCoherenceError
+    from tests.gate.test_gate_orchestrator import build_world
+    orchestrator, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    ablation = inputs[0].ablation_evaluation
+    child = copy.deepcopy(ablation.child_record)
+    evaluated = ablation.bootstrap
+    measurements = child["measurements"]
+    if where == "child" and key == "bootstrap":
+        measurements.pop("bootstrap")
+    elif where == "child":
+        _set(measurements["bootstrap"], key, value)
+    elif where == "evaluation":
+        _set(evaluated, key, value)
+    else:
+        _set(measurements, "paired_delta_task_ids", value)
+    bad = dataclasses.replace(ablation, _child_record=child, _bootstrap=evaluated)
+    with pytest.raises(EvidenceCoherenceError, match="ADR-0005|bootstrap is missing"):
+        orchestrator.run([dataclasses.replace(inputs[0], ablation_evaluation=bad)])
+    assert runner.calls == []

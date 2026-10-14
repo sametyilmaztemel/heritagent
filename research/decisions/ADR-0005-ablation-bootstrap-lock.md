@@ -1,6 +1,6 @@
 # ADR-0005 — The stage-2 ablation bootstrap is pre-registered: seed 0, task_id order
 
-Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explicit answer in chat: "Lock in the manifest: seed 0 + task_id order"). **Codex cross-review requested (SPEC §32).** Artifacts: `inheritance/ablation.py` (`BOOTSTRAP_SEED`, `BOOTSTRAP_CLUSTER_ORDER`, `AblationEvaluator`), `inheritance/gate.py` (`PRIMARY_THRESHOLDS`), `experiments/manifests/EXP-0001-minimal-cig.yaml` (`inheritance.stages.ablation.bootstrap`), `tests/inheritance/test_bootstrap_lock.py` · Origin: audit finding F2 / P1-12; takeover note §5.7.
+Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explicit answer in chat: "Lock in the manifest: seed 0 + task_id order"). **Codex cross-review requested (SPEC §32).** Artifacts: `inheritance/ablation.py` (`BOOTSTRAP_SEED`, `BOOTSTRAP_CLUSTER_ORDER`, `AblationEvaluator`), `inheritance/gate.py` (`PRIMARY_THRESHOLDS`, the stage 1–2 evidence check), `experiments/manifests/EXP-0001-minimal-cig.yaml` (`inheritance.stages.ablation.bootstrap`), `tests/inheritance/test_bootstrap_lock.py` · Origin: audit finding F2 / P1-12; takeover note §5.7.
 
 **Problem.**
 - The stage-2 ablation verdict is "point estimate ≥ τ_c (0.05) and the 95 % paired cluster bootstrap lower bound > 0" over 20 paired task deltas (ADR-0002; manifest `inheritance.stages.ablation`).
@@ -14,7 +14,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - **Seed.** The ablation bootstrap seed is pre-registered as **0**.
   - `AblationEvaluator` rejects any other value before any episode.
   - The constructor argument stays only for that check.
-- **Order.** The paired deltas enter the bootstrap **ordered by `task_id`** (ascending, Python string order, i.e. Unicode code point order). Task ids are distinct by the allocation contract.
+- **Order.** The paired deltas enter the bootstrap **ordered by `task_id`** (ascending, Python string order, i.e. Unicode code point order). Task ids are distinct strings by the allocation contract: `AblationAllocation` rejects a non-string id before any episode.
   - Episodes still run, and are still recorded, in allocation order.
   - The child record stores `paired_deltas` in task_id order, with `paired_delta_task_ids` naming each delta's task, so the bound recomputes from the record alone.
 - **Resamples.** 10,000, unchanged (ADR-0002).
@@ -22,6 +22,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - The child record's bootstrap block carries `seed`, `n_resamples` and `cluster_order: "task_id"`.
   - The aggregate's `thresholds_used` carries `bootstrap_seed` and `bootstrap_cluster_order`.
   - The manifest's ablation stage carries `bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}`.
+  - The gate checks these values before any stage-3/4 episode: the child's and the evaluation's bootstrap blocks must carry seed 0, 10,000 resamples and `cluster_order: "task_id"`, and `paired_delta_task_ids` must be distinct strings in ascending order. The aggregate's `thresholds_used` therefore states what the evidence was computed with, not only what it should have been.
 - **Scope.**
   - This covers the gate's primary ablation stage only.
   - Sensitivity analysis (`sensitivity_analysis`) stays analysis-only (ADR-0002: secondary recomputation on existing stage evidence). As `inheritance/ablation.py` documents, its seed stays free, since it never enters the primary gate. The evaluation object's convenience method uses the task_id-ordered deltas.

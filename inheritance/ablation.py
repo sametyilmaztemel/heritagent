@@ -71,6 +71,12 @@ class AblationAllocation:
             raise ValueError(
                 f"ablation allocation requires exactly {ABLATION_INSTANCE_COUNT} "
                 f"distinct task instances, got {len(ids)}")
+        if not all(isinstance(i, str) for i in ids):
+            # ADR-0005 orders the bootstrap clusters by task_id string order;
+            # fail here, not after the 40 episodes (review of #63)
+            raise ValueError(
+                f"ablation task ids must be strings (ADR-0005 orders them as "
+                f"strings), got {sorted({type(i).__name__ for i in ids})}")
         if len(set(ids)) != len(ids):
             raise ValueError("ablation task ids must be distinct (no replacement)")
         if not self.frozen_strata:
