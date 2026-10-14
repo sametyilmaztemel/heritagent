@@ -90,6 +90,7 @@ def test_the_child_record_recomputes_its_bound(tmp_path, registry, base_config, 
     assert (recorded["seed"], recorded["n_resamples"], recorded["cluster_order"]) == (
         0, 10_000, "task_id")
     task_ids = sorted(measurements["allocation"]["task_ids"])
+    assert measurements["paired_delta_task_ids"] == task_ids  # each delta names its task
     assert len(task_ids) == len(measurements["paired_deltas"]) == 20
     recomputed = paired_cluster_bootstrap(measurements["paired_deltas"], seed=recorded["seed"],
                                           n_resamples=recorded["n_resamples"])
@@ -103,10 +104,12 @@ def test_the_manifest_gate_and_code_agree():
     with a pattern."""
     root = Path(__file__).resolve().parents[2]
     text = (root / "experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
-    ablation = re.search(r"^    ablation: +\{(.*?)\}\}", text, re.MULTILINE | re.DOTALL)
-    assert ablation, "EXP-0001 manifest has no ablation stage"
+    # the ablation stage runs up to the next stage key (review of #63)
+    ablation = re.search(r"^    ablation:(.*?)^    generalization:", text, re.MULTILINE | re.DOTALL)
+    assert ablation, "EXP-0001 manifest has no ablation stage before generalization"
     matches = re.findall(r"bootstrap: \{seed: (\d+), resamples: (\d+), cluster_order: (\w+)\}",
-                         ablation.group(0))
+                         ablation.group(1))
+    assert len(re.findall(r"bootstrap: \{seed:", text)) == 1, "no other stage pre-registers one"
     assert len(matches) == 1, "the ablation stage must pre-register its bootstrap exactly once"
     match = matches[0]
     assert (int(match[0]), int(match[1]), match[2]) == (
@@ -114,3 +117,30 @@ def test_the_manifest_gate_and_code_agree():
     assert (PRIMARY_THRESHOLDS["bootstrap_seed"], PRIMARY_THRESHOLDS["bootstrap_resamples"],
             PRIMARY_THRESHOLDS["bootstrap_cluster_order"]) == (
         BOOTSTRAP_SEED, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_CLUSTER_ORDER)
+
+
+def test_episodes_keep_the_allocation_order(tmp_path, registry, base_config, envelope):
+    """Only the bootstrap input is sorted: the episodes run, and are
+    recorded, in allocation order (ADR-0005; review of #63)."""
+    allocation = reordered(make_allocation(tmp_path, registry), key=lambda t: t.task_id[::-1])
+    result = evaluate(tmp_path, registry, base_config, envelope, allocation)
+    order = [t.task_id for t in allocation.tasks]
+    assert order != sorted(order)
+    episodes = result.child_record["measurements"]["episodes"]
+    assert [e["task_id"] for e in episodes if e["condition"] == "with_trait"] == order
+    deltas = dict(zip(result.child_record["measurements"]["paired_delta_task_ids"],
+                      result.child_record["measurements"]["paired_deltas"]))
+    for i in range(20):
+        assert deltas[f"abl-{i}"] == float(i in WITH) - float(i in WITHOUT)
+
+
+def test_the_gate_aggregate_records_the_lock(tmp_path):
+    """The aggregate's thresholds_used carries the pre-registered seed and
+    order (ADR-0005 Recording; review of #63)."""
+    from tests.gate.test_gate_orchestrator import build_world
+    orchestrator, _, cig_store, _, inputs, _ = build_world(tmp_path, candidates=("a",))
+    outcome = orchestrator.run(inputs)
+    for aggregate in [outcome.results[0].aggregate] + list(cig_store.aggregates.values()):
+        values = aggregate["thresholds_used"]["values"]
+        assert (values["bootstrap_seed"], values["bootstrap_resamples"],
+                values["bootstrap_cluster_order"]) == (0, 10_000, "task_id")

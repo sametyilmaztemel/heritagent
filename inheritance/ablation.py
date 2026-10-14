@@ -279,7 +279,8 @@ class AblationEvaluator:
         # ADR-0005: clusters ordered by task_id (distinct by the allocation
         # contract); the record keeps this order, so the bound recomputes
         # from the record alone
-        deltas = [d for _, d in sorted(task_deltas)]
+        ordered = sorted(task_deltas)
+        deltas = [d for _, d in ordered]
         bootstrap = paired_cluster_bootstrap(
             deltas, seed=self._bootstrap_seed, n_resamples=self._n_resamples)
         passed = stage_passes(bootstrap.point_estimate, bootstrap.lower_bound,
@@ -287,7 +288,8 @@ class AblationEvaluator:
         child = self._build_child_record(
             allocation=allocation, episodes=episodes, deltas=deltas,
             bootstrap=bootstrap, expression_observations=expression_observations,
-            passed=passed, settings=locked_settings)
+            passed=passed, settings=locked_settings,
+            delta_task_ids=[task_id for task_id, _ in ordered])
         return AblationEvaluation(
             _passed=passed, _deltas=tuple(deltas),
             _delta_success=bootstrap.point_estimate, _bootstrap={
@@ -307,7 +309,7 @@ class AblationEvaluator:
     def _build_child_record(self, *, allocation: AblationAllocation,
                              episodes: list[dict], deltas: list[float],
                              bootstrap, expression_observations: list[dict],
-                             passed: bool, settings) -> dict:
+                             passed: bool, settings, delta_task_ids: list[str]) -> dict:
         child_id = f"{self._parent_cig_id}/S{self._mining_seed}-ablation"
         child = {
             "cig_id": child_id,
@@ -319,6 +321,9 @@ class AblationEvaluator:
                 "allocation": allocation.allocation_metadata(),
                 "episodes": episodes,
                 "paired_deltas": deltas,
+                # ADR-0005: the task each paired delta belongs to, in the
+                # task_id order the bootstrap resamples (review of #63)
+                "paired_delta_task_ids": delta_task_ids,
                 "point_estimate_delta_success": bootstrap.point_estimate,
                 "bootstrap": {
                     "method": bootstrap.method,

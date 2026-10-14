@@ -16,7 +16,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - The constructor argument stays only for that check.
 - **Order.** The paired deltas enter the bootstrap **ordered by `task_id`** (ascending, Python string order, i.e. Unicode code point order). Task ids are distinct by the allocation contract.
   - Episodes still run, and are still recorded, in allocation order.
-  - The child record's `paired_deltas` are stored in task_id order, so the bound recomputes from the record alone.
+  - The child record stores `paired_deltas` in task_id order, with `paired_delta_task_ids` naming each delta's task, so the bound recomputes from the record alone.
 - **Resamples.** 10,000, unchanged (ADR-0002).
 - **Recording.**
   - The child record's bootstrap block carries `seed`, `n_resamples` and `cluster_order: "task_id"`.
@@ -24,7 +24,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - The manifest's ablation stage carries `bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}`.
 - **Scope.**
   - This covers the gate's primary ablation stage only.
-  - Sensitivity analysis (`sensitivity_analysis`) stays analysis-only, with any seed (ADR-0002 §15). The evaluation object's convenience method uses the task_id-ordered deltas.
+  - Sensitivity analysis (`sensitivity_analysis`) stays analysis-only (ADR-0002: secondary recomputation on existing stage evidence). As `inheritance/ablation.py` documents, its seed stays free, since it never enters the primary gate. The evaluation object's convenience method uses the task_id-ordered deltas.
   - The final-evaluation statistics (H1/H2, #13) are not implemented yet and are not decided here. The same rule is the natural default, but #13 decides it.
 
 **Reason.**
@@ -42,5 +42,5 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 **Compatibility impact.**
 - A caller passing a seed other than 0 now fails closed. In the repo only tests did that, and they are updated.
 - A default-built evaluator gives the same verdict whenever the allocation already lists the tasks in task_id order. Otherwise the bound may differ. No CIG record exists yet, so no stored evidence changes.
-- The child and aggregate records gain one field each. Both fields are free-form, so the schemas are unchanged. `THRESHOLD_VERSION` stays `EXP-0001-CIG-M0-v1`, since no record has been produced under it.
+- The child record gains `cluster_order` (in its bootstrap block) and `paired_delta_task_ids`. The aggregate's `thresholds_used.values` gains `bootstrap_seed` and `bootstrap_cluster_order`. Both places are free-form, so the schemas are unchanged. `THRESHOLD_VERSION` stays `EXP-0001-CIG-M0-v1`, since no record has been produced under it.
 - The locked manifest gains one line. The verdict rule text is unchanged.
