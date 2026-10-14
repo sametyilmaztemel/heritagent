@@ -304,6 +304,8 @@ def test_runtime_leakage_invariant(tmp_path, registry, context, miner):
         "artifact": mined["artifact"],
         "provenance": {"born_generation": 1},
     })
+    from tests.conftest import finalize_genome
+    genome = finalize_genome(genome)
     config = compile_runtime_config(genome, miner._registry)
     # the compiled runtime skill carries no evaluation-only metadata
     runtime_skill = json.dumps(vars(config.skills[0]))
