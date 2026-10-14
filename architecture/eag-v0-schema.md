@@ -196,9 +196,14 @@ Written before thresholds are re-tuned (SPEC §33 pre-registration applies at th
 
 ## 5. Example instance (v0)
 
+The `genome_id` is the canonical content hash of the heritable functional content
+(ADR-0001 Amendment A2 / issue #22: `G-` + SHA-256 over the domain-separated
+canonical identity payload, first 16 lowercase hex chars); `parent`, `generation`,
+`lineage_id` and gene provenance are excluded from the hash.
+
 ```json
 {
-  "genome_id": "G-a1b2c3d4",
+  "genome_id": "G-5bcacc7d4806bb06",
   "schema_version": "0.1",
   "generation": 1,
   "lineage_id": "L-alpha",

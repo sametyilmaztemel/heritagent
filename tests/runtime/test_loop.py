@@ -305,7 +305,8 @@ def test_planner_max_plan_steps_changes_phenotype(registry, g0_config):
                                {"style": "react", "max_plan_steps": max_plan_steps})
             genome["genes"]["cognition"]["planner"]["version"] = 2
             genome["genes"]["cognition"]["planner"]["artifact"] = uri
-        return genome
+        from tests.conftest import finalize_genome
+        return finalize_genome(genome)
 
     budgets = Budgets(max_steps=4, max_total_retries=0, max_tokens_per_request=64)
 

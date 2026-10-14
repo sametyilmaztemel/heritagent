@@ -11,7 +11,7 @@ from tests.conftest import registered_genome, registered_parent_genome
 def parent_and_child(registry):
     parent = registered_parent_genome(registry)
     child = registered_genome(registry)
-    assert child["parent"] == parent["genome_id"]
+    child["parent"] = parent["genome_id"]  # lineage reference label (excluded from the content hash)
     return parent, child
 
 
@@ -21,8 +21,8 @@ def test_golden_diff(registry, parent_and_child):
     load_genome(child, registry)
     edge = diff_genomes(parent, child, fitness_delta=0.084)
     assert edge == {
-        "parent": "G-0f1e2d3c",
-        "child": "G-a1b2c3d4",
+        "parent": parent["genome_id"],
+        "child": child["genome_id"],
         "inheritance": ["planner_react_v1", "retry_backoff_v1"],
         "assimilated_traits": ["look_before_heat_v1"],
         "mutations": ["regulation.look_before_heat_v1: added"],

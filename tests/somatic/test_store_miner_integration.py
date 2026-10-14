@@ -107,6 +107,8 @@ def test_persisted_miner_candidate_runtime_projection_unchanged(tmp_path, regist
         "origin": "seed", "artifact": stored["candidate"]["artifact"],
         "provenance": {"born_generation": 1},
     })
+    from tests.conftest import finalize_genome
+    genome = finalize_genome(genome)
     config = compile_runtime_config(genome, registry)
     runtime_payload = json.dumps(vars(config.skills[0]))
     for forbidden in ("applicability", "task_families"):

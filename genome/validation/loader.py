@@ -6,7 +6,10 @@ Validation boundary:
   assimilation if/then, canonical URI grammar pattern);
 - semantic (this module): URI name == gene_id, URI version == gene version,
   URI kind == gene type, SHA-256 digest == registry artifact bytes (when a
-  registry is supplied), regulation keys reference existing genes.
+  registry is supplied), regulation keys reference existing genes, and —
+  as the FINAL semantic gate (ADR-0001 Amendment A2) — the canonical
+  content-hash ``genome_id``: the claimed id must equal the recomputed
+  hash of the genome's heritable functional content.
 """
 
 from __future__ import annotations
@@ -81,11 +84,20 @@ def _check_regulation(genome: dict) -> None:
 
 
 def load_genome(document: dict, registry: TraitRegistry | None = None) -> dict:
-    """Validate a genome document structurally and semantically; return it unchanged."""
+    """Validate a genome document structurally and semantically; return it unchanged.
+
+    The canonical genome_id check (ADR-0001 Amendment A2) runs as the LAST
+    semantic gate so that referential errors are reported with their own
+    diagnostics; a document passing every other check but carrying a
+    claimed id that does not match its heritable functional content is
+    rejected here. There is exactly one canonical-id validation boundary:
+    this module delegates to ``genome.validation.identity``."""
     _validate_structural(document, "eag-0.1.genome.schema.json", "genome")
     for path, ref in _slot_gene_refs(document.get("genes", {})):
         _check_gene_ref(ref, path, registry)
     _check_regulation(document)
+    from genome.validation.identity import validate_genome_id
+    validate_genome_id(document)
     return document
 
 
