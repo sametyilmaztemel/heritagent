@@ -85,6 +85,18 @@ def deep_freeze(obj):
     return obj
 
 
+def thaw(obj):
+    """Inverse of ``deep_freeze``: mapping proxies become dicts and tuples
+    become lists, recursively. Lets an already-frozen payload (a TRegTask's,
+    for example) be deep-copied and frozen again."""
+    import types
+    if isinstance(obj, (dict, types.MappingProxyType)):
+        return {k: thaw(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [thaw(v) for v in obj]
+    return obj
+
+
 class EvaluationTask:
     """One frozen task instance from a bank/allocation.
 
@@ -101,7 +113,8 @@ class EvaluationTask:
         object.__setattr__(self, "_task_id", task_id)
         object.__setattr__(self, "_family", family)
         object.__setattr__(self, "_bank_id", bank_id)
-        object.__setattr__(self, "_payload", deep_freeze(copy.deepcopy(payload or {})))
+        # thaw first: a frozen nested payload cannot be deep-copied
+        object.__setattr__(self, "_payload", deep_freeze(copy.deepcopy(thaw(payload or {}))))
 
     @property
     def task_id(self) -> str:
