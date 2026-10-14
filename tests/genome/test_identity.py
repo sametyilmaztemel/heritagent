@@ -80,8 +80,6 @@ def base_genome() -> dict:
         id="regulation removed"),
     pytest.param(lambda g: g["genes"]["skills"].reverse(),
         id="expression-relevant skill reorder"),
-    pytest.param(lambda g: g.update(schema_version="0.2"),
-        id="schema version change"),
 ])
 def test_heritable_functional_change_produces_new_genome_id(mutation):
     genome = base_genome()
@@ -145,6 +143,83 @@ def test_claimed_genome_id_is_never_an_input_to_its_own_hash():
     for fake in ("G-ffffffffffffffff", "G-deadbeef", "totally-arbitrary"):
         genome["genome_id"] = fake
         assert compute_genome_id(genome) == expected
+
+
+# -- schema_version contract: EAG '0.1' only ---------------------------------
+
+
+@pytest.mark.parametrize("bad_version", ["0.2", "1.0", "0.10", 0.1, None, True])
+def test_unsupported_schema_version_fails_closed(bad_version):
+    """This identity contract hashes EAG '0.1' genomes only: any other
+    schema_version (value OR type) fails closed instead of minting a new
+    id — a future EAG version requires its own contract/ADR."""
+    genome = base_genome()
+    genome["schema_version"] = bad_version
+    with pytest.raises(GenomeValidationError, match="schema_version"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError, match="schema_version"):
+        genome_identity_hash_hex(genome)
+
+
+def test_supported_schema_version_hashes():
+    genome = base_genome()
+    assert genome["schema_version"] == "0.1"
+    assert GENOME_ID_PATTERN.match(compute_genome_id(genome))
+
+
+# -- self-contained artifact-ref integrity (fail closed) ---------------------
+
+
+def test_malformed_artifact_uri_fails_closed():
+    genome = base_genome()
+    genome["genes"]["skills"][0]["artifact"] = "not-a-registry-uri"
+    with pytest.raises(GenomeValidationError, match=r"genes.skills\[0\]"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_uri_gene_name_mismatch_fails_closed():
+    genome = base_genome()
+    genome["genes"]["skills"][0]["gene_id"] = "renamed_gene"
+    with pytest.raises(GenomeValidationError, match="URI name"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_uri_version_mismatch_fails_closed():
+    genome = base_genome()
+    genome["genes"]["skills"][0]["version"] = 2
+    with pytest.raises(GenomeValidationError, match="URI version"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_uri_kind_mismatch_fails_closed():
+    genome = base_genome()
+    genome["genes"]["skills"][0]["artifact"] = (
+        "registry://policies/look_before_heat_v1@1/sha256:" + DIGEST)
+    with pytest.raises(GenomeValidationError, match="kind"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_unknown_gene_type_fails_closed():
+    genome = base_genome()
+    genome["genes"]["skills"][0]["type"] = "regulatory"  # kind would be regulators
+    with pytest.raises(GenomeValidationError, match="kind"):
+        compute_genome_id(genome)
+
+
+def test_policy_ref_artifact_integrity_also_enforced():
+    """Every functional gene ref is checked — not just skills[]."""
+    genome = base_genome()
+    genome["genes"]["cognition"]["planner"]["artifact"] = "garbage"
+    with pytest.raises(GenomeValidationError, match="genes.cognition.planner"):
+        compute_genome_id(genome)
 
 
 # -- ordering / canonicalization determinism ---------------------------------

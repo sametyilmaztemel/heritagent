@@ -64,6 +64,9 @@ from trajectory.storage.canonical import canonical_json, sha256_hex
 GENOME_ID_DOMAIN = "heritagent:eag-genome-id:v1"
 GENOME_ID_HEX_CHARS = 16
 GENOME_ID_PATTERN = re.compile(r"^G-[0-9a-f]{16}$")
+# the only EAG manifest version this identity contract can hash; anything
+# else fails closed (a future version requires its own contract/ADR)
+_SUPPORTED_SCHEMA_VERSION = "0.1"
 
 # the functional identity of one gene reference (provenance/origin are
 # audit metadata and are deliberately NOT part of the identity domain)
@@ -92,6 +95,34 @@ def _functional_gene_ref(ref, path: str) -> dict:
         raise GenomeValidationError(
             [f"identity payload {path}: gene reference is missing the "
              f"functional identity keys {sorted(missing)}"])
+    # Self-contained artifact-ref integrity (fail closed, A2): grammar +
+    # name/version/kind coherence are checked with the AUTHORITATIVE
+    # registry helpers — no URI parsing duplicated here. Registry
+    # RESOLUTION is deliberately out of scope for identity canonicalization
+    # (no bytes lookup, no digest existence check, no I/O); ref-level
+    # integrity must already hold when an id is minted, even on
+    # construction paths that run before load_genome().
+    from genome.validation.registry import KIND_BY_TYPE, parse_uri
+    try:
+        parts = parse_uri(ref["artifact"])
+    except GenomeValidationError as exc:
+        raise GenomeValidationError(
+            [f"identity payload {path}: {e}" for e in exc.errors]) from None
+    errors: list[str] = []
+    if parts["name"] != ref["gene_id"]:
+        errors.append(f"artifact URI name {parts['name']!r} != gene_id "
+                       f"{ref['gene_id']!r}")
+    if int(parts["version"]) != ref["version"]:
+        errors.append(f"artifact URI version {parts['version']} != gene "
+                       f"version {ref['version']}")
+    expected_kind = KIND_BY_TYPE.get(ref["type"])
+    if parts["kind"] != expected_kind:
+        errors.append(f"artifact URI kind {parts['kind']!r} does not match "
+                       f"gene type {ref['type']!r} (expected "
+                       f"{expected_kind!r})")
+    if errors:
+        raise GenomeValidationError(
+            [f"identity payload {path}: {e}" for e in errors])
     return {key: _plain(ref[key]) for key in _FUNCTIONAL_REF_KEYS}
 
 
@@ -157,6 +188,16 @@ def canonical_genome_identity_payload(genome: dict) -> dict:
             ["identity payload: genome must be an object"])
     if "schema_version" not in source:
         errors.append("identity payload: genome is missing 'schema_version'")
+    elif source["schema_version"] != _SUPPORTED_SCHEMA_VERSION:
+        # fail closed on inconsistent schema version: this implementation
+        # hashes EAG '0.1' genomes under the 'heritagent:eag-genome-id:v1'
+        # contract only; a future EAG version needs a new contract (and,
+        # if functional interpretation changes, a new domain separator +
+        # ADR) — it must never silently mint ids under this one
+        errors.append(
+            f"identity payload: unsupported schema_version "
+            f"{source['schema_version']!r}; this identity contract hashes "
+            f"EAG {_SUPPORTED_SCHEMA_VERSION!r} genomes only")
     if "genes" not in source:
         errors.append("identity payload: genome is missing 'genes'")
     if errors:
