@@ -28,7 +28,11 @@ or, when the task is complete:
 Thought: <one sentence of reasoning>
 Final Answer: <the final answer>"""
 
-_FINAL_RE = re.compile(r"Final Answer:\s*(.+)\s*$", re.DOTALL)
+# "Final Answer:" is a marker only at the start of a line; elsewhere it is
+# prose (a Thought, or a string inside Action Input). The answer runs to
+# the end of the reply.
+_FINAL_RE = re.compile(r"^[ \t]*Final Answer:(.*)\Z", re.MULTILINE | re.DOTALL)
+_ACTION_LINE_RE = re.compile(r"^[ \t]*Action(?: Input)?:", re.MULTILINE)
 _THOUGHT_RE = re.compile(r"Thought:\s*(.+)")
 _ACTION_RE = re.compile(r"Action:\s*([A-Za-z0-9_\-]+)\s*$", re.MULTILINE)
 _INPUT_RE = re.compile(r"Action Input:\s*(\{.*\})\s*$", re.DOTALL)
@@ -69,13 +73,19 @@ class ReActPlanner:
 
     @staticmethod
     def parse(text: str) -> StepDecision:
-        if "Final Answer:" in text:
-            match = _FINAL_RE.search(text)
-            if not match:
+        final = _FINAL_RE.search(text)
+        if final:
+            # Exactly one step: a reply that both acts and finishes would end
+            # the run without sending its action, so it fails closed.
+            if _ACTION_LINE_RE.search(text):
+                raise PlanParseError("reply contains both an Action and a Final Answer; "
+                                     "exactly one step is allowed")
+            answer = final.group(1).strip()
+            if not answer:
                 raise PlanParseError("Final Answer present but empty")
             thought = _THOUGHT_RE.search(text)
             return StepDecision(thought=thought.group(1).strip() if thought else "",
-                                action=None, final_answer=match.group(1).strip())
+                                action=None, final_answer=answer)
         thought_match = _THOUGHT_RE.search(text)
         action_match = _ACTION_RE.search(text)
         input_match = _INPUT_RE.search(text)
