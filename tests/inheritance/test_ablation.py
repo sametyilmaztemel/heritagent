@@ -152,8 +152,7 @@ def test_lower_bound_and_tau_c_boundaries(tmp_path, registry, base_config, envel
     # resample mean is k/20; the 2.5th percentile lands on 0.0 -> LB == 0
     # -> FAIL despite the point estimate meeting tau_c
     allocation2 = make_allocation(tmp_path, registry)
-    evaluator2 = make_evaluator(tmp_path, registry, base_config, envelope,
-                                 bootstrap_seed=12345)
+    evaluator2 = make_evaluator(tmp_path, registry, base_config, envelope)
     outcomes2 = {}
     for i in range(20):
         outcomes2[(f"abl-{i}", "with_trait")] = (i == 0, with_gene(True))
