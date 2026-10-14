@@ -41,6 +41,214 @@ sys.path.insert(0, str(REPO_ROOT))
 
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
+# Locked EXP-0001 preregistration invariants (issue #6, SPEC section 33).
+PREREGISTERED_STATUS = "preregistered-locked"
+# EXP-0001 lifecycle vocabulary: preregistration is validated at EVERY
+# stage — running/completed does NOT exempt a manifest from its locked
+# prereg (drift must still fail CI). "executed" is not canonical vocabulary
+# in this repository and is not allowed.
+EXP0001_LIFECYCLE_STATUSES = {PREREGISTERED_STATUS, "running", "completed",
+                               "incomplete", "aborted"}
+EXP0001_ID = "EXP-0001"
+PREREG_GATE_STAGES = ("replay", "ablation", "generalization_combined",
+                      "interaction_regression_overhead", "final_promoted")
+PREREG_CAP_FIELDS = ("accelerator_nodes_max", "episodes_max",
+                     "model_calls_max", "wall_clock_hours_max")
+LOCKED_MINING_SEEDS = [11, 23, 41]
+# locked PRIMARY support criteria (design section 5 / ADR-0002): pre-registered
+# expectations may never replace or alter these decision rules
+LOCKED_H2_CRITERION = "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
+LOCKED_H1_CRITERION = "C-A > 0, CI excl. 0"
+LOCKED_SEED_CRITERION = "direction holds in >= 2/3 mining seeds"
+
+
+def _valid_iso_date(value) -> bool:
+    from datetime import date
+    if not isinstance(value, str):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _generic_prereg_checks(prereg: dict, err) -> None:
+    """Minimal structural checks that apply to EVERY experiment manifest:
+    a preregistration block claims `locked` and, when present, a valid
+    ISO-YYYY-MM-DD lock date. EXP-0001-specific values are NOT imposed on
+    future experiments."""
+    if prereg.get("locked") is not True:
+        err("preregistration.locked must be true")
+    if "locked_at" in prereg and \
+            not _valid_iso_date(prereg["locked_at"]):
+        err(f"preregistration.locked_at must be an ISO YYYY-MM-DD date, "
+            f"got {prereg['locked_at']!r}")
+
+
+def _enforce_exp0001_locked_values(manifest: dict, prereg: dict, err) -> None:
+    """EXP-0001's locked scientific preregistration: enforced at EVERY
+    lifecycle status (preregistered-locked, running, completed, incomplete,
+    aborted) — a status change never exempts the locked values."""
+    if prereg.get("expected_results_filled") is not True:
+        err("preregistration.expected_results_filled must be true (the "
+            "preregistration is locked and can never revert to unfilled)")
+    results = prereg.get("expected_results")
+    if not isinstance(results, dict):
+        err("preregistration.expected_results must be a mapping")
+        return
+
+    def heldout_block(hypothesis: str):
+        block = results.get(hypothesis)
+        if not isinstance(block, dict):
+            err(f"expected_results.{hypothesis} must be a mapping")
+            return None
+        if not isinstance(block.get("direction"), str) or not block["direction"]:
+            err(f"expected_results.{hypothesis}.direction must be a "
+                f"non-empty string")
+        heldout = block.get("heldout_success_pp")
+        if not isinstance(heldout, dict):
+            err(f"expected_results.{hypothesis}.heldout_success_pp must be "
+                f"a mapping")
+            return None
+        central = heldout.get("central")
+        spread = heldout.get("range")
+        if not isinstance(central, (int, float)) or isinstance(central, bool):
+            err(f"expected_results.{hypothesis}.heldout_success_pp.central "
+                f"must be numeric, got {central!r}")
+            return None
+        if not (isinstance(spread, list) and len(spread) == 2 and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                for v in spread)):
+            err(f"expected_results.{hypothesis}.heldout_success_pp.range "
+                f"must be [min, max] numerics, got {spread!r}")
+            return None
+        if not spread[0] <= central <= spread[1]:
+            err(f"expected_results.{hypothesis}: range {spread} must "
+                f"satisfy min <= central ({central}) <= max")
+        return block
+
+    h2 = heldout_block("h2")
+    h1 = heldout_block("h1")
+    if isinstance(h2, dict):
+        regression = h2.get("regression_difference_pp")
+        if not isinstance(regression, dict) or \
+                not isinstance(regression.get("direction"), str):
+            err("expected_results.h2.regression_difference_pp must be a "
+                "mapping with a direction")
+        elif not (isinstance(regression.get("expected_reduction_range"), list)
+                  and len(regression["expected_reduction_range"]) == 2):
+            err("expected_results.h2.regression_difference_pp."
+                "expected_reduction_range must be [min, max]")
+    if isinstance(h1, dict) and isinstance(h2, dict):
+        if h2.get("direction") == h1.get("direction"):
+            err("expected_results.h2.direction and expected_results.h1."
+                "direction must describe distinct arm contrasts")
+
+    gate = results.get("gate_survival_per_seed")
+    if not isinstance(gate, dict):
+        err("expected_results.gate_survival_per_seed must be a mapping")
+    else:
+        frozen = gate.get("frozen_candidates")
+        if not isinstance(frozen, int) or isinstance(frozen, bool) or frozen <= 0:
+            err("gate_survival_per_seed.frozen_candidates must be a "
+                "positive int, got {0!r}".format(frozen))
+        else:
+            previous = None
+            for stage in PREREG_GATE_STAGES:
+                value = gate.get(stage)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    err(f"gate_survival_per_seed.{stage} must be an int, "
+                        f"got {value!r}")
+                    continue
+                if not 0 <= value <= frozen:
+                    err(f"gate_survival_per_seed.{stage}={value} outside "
+                        f"0..K ({frozen})")
+                if previous is not None and value > previous:
+                    err(f"gate_survival_per_seed.{stage}={value} exceeds the "
+                        f"preceding stage expectation {previous}")
+                previous = value
+
+    cap = results.get("compute_cap")
+    if not isinstance(cap, dict):
+        err("expected_results.compute_cap must be a mapping")
+    else:
+        for field in PREREG_CAP_FIELDS:
+            value = cap.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                err(f"compute_cap.{field} must be a positive int, got {value!r}")
+        if cap.get("mining_seeds") != LOCKED_MINING_SEEDS:
+            err(f"compute_cap.mining_seeds must be exactly "
+                f"{LOCKED_MINING_SEEDS}, got {cap.get('mining_seeds')!r}")
+
+    # no T_eval threshold-tuning fields inside the preregistration block
+    def scan(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                flattened = str(key).lower().replace("_", "").replace("-", "")
+                if "teval" in flattened:
+                    err(f"prereg must not introduce T_eval-driven fields: "
+                        f"{path}.{key}")
+                scan(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                scan(value, f"{path}[{index}]")
+
+    scan(prereg, "preregistration")
+
+    # the PRIMARY support criteria are locked decision rules — expectations
+    # never replace them, at any lifecycle status
+    statistics = (manifest.get("evaluation") or {}).get("statistics") or {}
+    for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
+                          ("h1_supported_if", LOCKED_H1_CRITERION),
+                          ("seed_consistency", LOCKED_SEED_CRITERION)):
+        actual = statistics.get(field)
+        if actual != locked:
+            err(f"locked primary support criterion {field} changed: "
+                f"{actual!r} != {locked!r}")
+
+
+def check_preregistration(manifest: dict, label: str) -> list[str]:
+    """Manifest preregistration checks (issue #6, SPEC section 33).
+
+    Lifecycle-safe and scoped: a preregistration block claiming
+    ``locked`` gets the generic checks (locked flag, ISO lock date). The
+    EXP-0001-specific locked scientific values are enforced ONLY for
+    ``experiment.id == EXP-0001`` — but at EVERY lifecycle status:
+    ``running`` / ``completed`` / ``incomplete`` / ``aborted`` must keep
+    the exact prereg (drift still fails CI), and ``preregistered-locked``
+    is the only valid pre-execution status. Future experiment manifests
+    (EXP-0002, ...) are never constrained by EXP-0001's seeds, criteria
+    strings, gate shape or caps."""
+    issues: list[str] = []
+
+    def err(message: str) -> None:
+        issues.append(f"{label}: {message}")
+
+    experiment = manifest.get("experiment")
+    if not isinstance(experiment, dict):
+        return issues  # not an experiment manifest body
+    prereg = experiment.get("preregistration")
+    if prereg is None:
+        return issues  # pre-preregistration manifests are allowed
+    if not isinstance(prereg, dict):
+        err(f"preregistration must be a mapping, got {type(prereg).__name__}")
+        return issues
+
+    _generic_prereg_checks(prereg, err)
+
+    if experiment.get("id") != EXP0001_ID:
+        return issues  # future experiments: generic checks only
+
+    status = experiment.get("status")
+    if status not in EXP0001_LIFECYCLE_STATUSES:
+        err(f"invalid EXP-0001 lifecycle status {status!r}; allowed: "
+            f"{sorted(EXP0001_LIFECYCLE_STATUSES)}")
+    # locked values are enforced REGARDLESS of the (valid or invalid)
+    # status — a status change never exempts the preregistration
+    _enforce_exp0001_locked_values(manifest, prereg, err)
+    return issues
+
 FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\s*\)")
@@ -174,6 +382,8 @@ def check_manifests() -> list[str]:
             continue
         if not isinstance(data, dict):
             errors.append(f"{rel(path)}: top level is {type(data).__name__}, expected a mapping")
+            continue
+        errors.extend(check_preregistration(data, rel(path)))
     print(f"manifests: {len(paths)} checked")
     return errors
 

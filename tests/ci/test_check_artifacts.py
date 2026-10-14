@@ -146,3 +146,282 @@ def test_fallback_walk_only_without_git(ca, monkeypatch, tmp_path):
     (tmp_path / ".git").mkdir()  # a broken work tree: git must decide, not the walk
     with pytest.raises(Exception):
         ca.tracked("*.md")
+
+
+# -- preregistration manifest invariants (issue #6, SPEC section 33) ---------
+
+
+# the LOCKED primary support criteria, mirrored here so fixture and checker
+# cannot silently drift (cross-checked against the script constants below)
+LOCKED_CRITERIA = {
+    "h2_supported_if": "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0",
+    "h1_supported_if": "C-A > 0, CI excl. 0",
+    "seed_consistency": "direction holds in >= 2/3 mining seeds",
+}
+
+
+def valid_prereg_manifest():
+    """A minimal manifest satisfying every preregistration invariant
+    (mirrors the locked EXP-0001 prereg)."""
+    return {
+        "experiment": {
+            "id": "EXP-0001",
+            "status": "preregistered-locked",
+            "preregistration": {
+                "locked": True,
+                "expected_results_filled": True,
+                "expected_results": {
+                    "h2": {
+                        "direction": "C>B",
+                        "heldout_success_pp": {"central": 7, "range": [5, 10]},
+                        "regression_difference_pp": {
+                            "direction": "C<B",
+                            "expected_reduction_range": [3, 8],
+                        },
+                    },
+                    "h1": {
+                        "direction": "C>A",
+                        "heldout_success_pp": {"central": 10, "range": [5, 15]},
+                    },
+                    "gate_survival_per_seed": {
+                        "frozen_candidates": 10,
+                        "replay": 6,
+                        "ablation": 4,
+                        "generalization_combined": 4,
+                        "interaction_regression_overhead": 3,
+                        "final_promoted": 3,
+                    },
+                    "compute_cap": {
+                        "accelerator_nodes_max": 1,
+                        "episodes_max": 7000,
+                        "model_calls_max": 225000,
+                        "wall_clock_hours_max": 96,
+                        "mining_seeds": [11, 23, 41],
+                    },
+                },
+            },
+        },
+        "evaluation": {
+            "statistics": dict(LOCKED_CRITERIA),
+        },
+    }
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("check_artifacts_prereg", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def prereg_errors(mutate):
+    manifest = valid_prereg_manifest()
+    mutate(manifest)
+    return _load_module().check_preregistration(manifest, "EXP-0001-test")
+
+
+def test_valid_prereg_manifest_passes():
+    assert _load_module().check_preregistration(
+        valid_prereg_manifest(), "EXP-0001-test") == []
+
+
+def test_manifest_without_preregistration_is_allowed():
+    manifest = {"experiment": {"id": "EXP-XXXX", "status": "design-revised"}}
+    assert _load_module().check_preregistration(manifest, "m") == []
+
+
+def test_missing_or_false_prereg_flags_rejected():
+    assert any("expected_results_filled must be true" in e
+                for e in prereg_errors(lambda m: m["experiment"]["preregistration"]
+                                        .update(expected_results_filled=False)))
+    assert any("locked must be true" in e
+                for e in prereg_errors(lambda m: m["experiment"]["preregistration"]
+                                        .update(locked=False)))
+
+
+def test_exp0001_lifecycle_statuses_all_pass_with_same_prereg():
+    """preregistration is validated at EVERY lifecycle status: moving to
+    running/completed/incomplete/aborted never exempts the locked prereg
+    (the identical prereg block passes at each stage)."""
+    for status in ("preregistered-locked", "running", "completed",
+                    "incomplete", "aborted"):
+        errors = prereg_errors(lambda m, s=status: m["experiment"].update(status=s))
+        assert errors == [], (status, errors)
+
+
+def test_invalid_exp0001_lifecycle_statuses_rejected():
+    for status in ("executed", "design-revised", "design", None, 42):
+        errors = prereg_errors(
+            lambda m, s=status: m["experiment"].update(status=s))
+        assert any("invalid EXP-0001 lifecycle status" in e
+                    for e in errors), status
+
+
+def test_drift_still_rejected_during_and_after_execution():
+    """A status change never exempts the locked values: h2/seed/prereg
+    drift fails at running AND completed."""
+    def h2_drift(status):
+        def mutate(manifest):
+            manifest["experiment"]["status"] = status
+            manifest["evaluation"]["statistics"]["h2_supported_if"] = \
+                "C-B >= +7pp on T_eval, CI excl. 0"
+        return mutate
+    assert any("h2_supported_if" in e and "changed" in e
+                for e in prereg_errors(h2_drift("running")))
+    assert any("h2_supported_if" in e and "changed" in e
+                for e in prereg_errors(h2_drift("completed")))
+
+    def seed_drift(status):
+        def mutate(manifest):
+            manifest["experiment"]["status"] = status
+            manifest["experiment"]["preregistration"]["expected_results"]\
+                ["compute_cap"]["mining_seeds"] = [11, 23]
+        return mutate
+    assert any("must be exactly [11, 23, 41]" in e
+                for e in prereg_errors(seed_drift("running")))
+    assert any("must be exactly [11, 23, 41]" in e
+                for e in prereg_errors(seed_drift("completed")))
+
+    def results_missing(manifest):
+        manifest["experiment"]["status"] = "running"
+        del manifest["experiment"]["preregistration"]["expected_results"]
+    assert any("expected_results must be a mapping" in e
+                for e in prereg_errors(results_missing))
+
+    def filled_reverted(manifest):
+        manifest["experiment"]["status"] = "running"
+        manifest["experiment"]["preregistration"]["expected_results_filled"] = False
+    assert any("can never revert to unfilled" in e
+                for e in prereg_errors(filled_reverted))
+
+
+def test_future_experiment_isolation():
+    """A future manifest passes with its own lifecycle vocabulary and is
+    NOT constrained by EXP-0001's seeds, criteria strings, gate shape or
+    caps."""
+    manifest = {
+        "experiment": {
+            "id": "EXP-0002",
+            "status": "design-revised",
+            "preregistration": {"locked": True,
+                                 "expected_results_filled": False},
+        },
+        "evaluation": {"statistics": {"h2_supported_if": "TBD",
+                                       "h1_supported_if": "TBD"}},
+    }
+    assert _load_module().check_preregistration(manifest, "EXP-0002") == []
+    # EXP-0001-specific values are not imposed: other seeds / criteria / caps
+    manifest["experiment"]["preregistration"]["expected_results_filled"] = True
+    manifest["experiment"]["preregistration"]["expected_results"] = {
+        "compute_cap": {"episodes_max": 50, "mining_seeds": [7]},
+    }
+    assert _load_module().check_preregistration(manifest, "EXP-0002") == []
+
+
+def test_locked_at_must_be_iso_date():
+    def bad_date(manifest):
+        manifest["experiment"]["preregistration"]["locked_at"] = "10/14/2026"
+    assert any("ISO YYYY-MM-DD" in e for e in prereg_errors(bad_date))
+    def bad_type(manifest):
+        manifest["experiment"]["preregistration"]["locked_at"] = 20261014
+    assert any("ISO YYYY-MM-DD" in e for e in prereg_errors(bad_type))
+    def not_a_date(manifest):
+        manifest["experiment"]["preregistration"]["locked_at"] = "2026-13-99"
+    assert any("ISO YYYY-MM-DD" in e for e in prereg_errors(not_a_date))
+
+
+def test_real_manifest_locked_at_is_corrected_date():
+    """The prereg lock date is the actual first-recording commit date
+    (2026-10-14), not a backdated one."""
+    manifest = _load_manifest()
+    prereg = manifest["experiment"]["preregistration"]
+    assert prereg["locked_at"] == "2026-10-14"
+    from datetime import date
+    date.fromisoformat(prereg["locked_at"])  # valid ISO calendar date
+
+
+def test_expectation_range_must_bracket_central():
+    def mutate(manifest):
+        heldout = manifest["experiment"]["preregistration"]["expected_results"]["h2"]["heldout_success_pp"]
+        heldout.update(central=12)  # outside [5, 10]
+    assert any("min <= central" in e for e in prereg_errors(mutate))
+
+
+def test_gate_survival_bounds_and_monotonicity():
+    def below_zero(manifest):
+        gate = manifest["experiment"]["preregistration"]["expected_results"]["gate_survival_per_seed"]
+        gate.update(replay=-1)
+    def above_k(manifest):
+        gate = manifest["experiment"]["preregistration"]["expected_results"]["gate_survival_per_seed"]
+        gate.update(final_promoted=11)
+    def exceeds_preceding(manifest):
+        gate = manifest["experiment"]["preregistration"]["expected_results"]["gate_survival_per_seed"]
+        gate.update(final_promoted=5)  # > interaction_regression_overhead (3)
+    assert any("outside 0..K" in e for e in prereg_errors(below_zero))
+    assert any("outside 0..K" in e for e in prereg_errors(above_k))
+    assert any("exceeds the preceding stage" in e for e in prereg_errors(exceeds_preceding))
+
+
+def test_hard_caps_positive_and_seeds_locked():
+    def zero_cap(manifest):
+        cap = manifest["experiment"]["preregistration"]["expected_results"]["compute_cap"]
+        cap.update(episodes_max=0)
+    def wrong_seeds(manifest):
+        cap = manifest["experiment"]["preregistration"]["expected_results"]["compute_cap"]
+        cap.update(mining_seeds=[11, 23])
+    assert any("must be a positive int" in e for e in prereg_errors(zero_cap))
+    assert any("must be exactly [11, 23, 41]" in e for e in prereg_errors(wrong_seeds))
+
+
+def test_locked_criteria_constants_match_checker(ca):
+    """The mirrored fixture constants and the script's locked constants
+    must stay identical."""
+    assert LOCKED_CRITERIA["h2_supported_if"] == ca.LOCKED_H2_CRITERION
+    assert LOCKED_CRITERIA["h1_supported_if"] == ca.LOCKED_H1_CRITERION
+    assert LOCKED_CRITERIA["seed_consistency"] == ca.LOCKED_SEED_CRITERION
+
+
+def test_primary_support_criteria_must_stay_unchanged():
+    def move_h2(manifest):
+        manifest["evaluation"]["statistics"]["h2_supported_if"] = "C-B >= +7pp on T_eval, CI excl. 0"
+    def move_h1(manifest):
+        manifest["evaluation"]["statistics"]["h1_supported_if"] = "C-A >= +10pp, CI excl. 0"
+    assert any("h2_supported_if" in e and "changed" in e
+                for e in prereg_errors(move_h2))
+    assert any("h1_supported_if" in e and "changed" in e
+                for e in prereg_errors(move_h1))
+
+
+def test_no_t_eval_tuning_fields_in_prereg():
+    def add_teval_field(manifest):
+        manifest["experiment"]["preregistration"]["expected_results"]["t_eval_tuning"] = {
+            "threshold_source": "T_eval"}
+    assert any("T_eval" in e for e in prereg_errors(add_teval_field))
+
+
+def test_required_prereg_sections_must_exist():
+    def drop_results(manifest):
+        manifest["experiment"]["preregistration"]["expected_results"] = "todo"
+    def drop_gate(manifest):
+        del manifest["experiment"]["preregistration"]["expected_results"]["gate_survival_per_seed"]
+    def drop_cap(manifest):
+        del manifest["experiment"]["preregistration"]["expected_results"]["compute_cap"]
+    assert any("must be a mapping" in e for e in prereg_errors(drop_results))
+    assert any("gate_survival_per_seed must be a mapping" in e for e in prereg_errors(drop_gate))
+    assert any("compute_cap must be a mapping" in e for e in prereg_errors(drop_cap))
+
+
+def _load_manifest():
+    """Parse the REAL tracked EXP-0001 manifest (requires pyyaml; skipped
+    in envs without it — the CI artifacts job always has it)."""
+    yaml = pytest.importorskip("yaml")
+    root = Path(__file__).resolve().parents[2]
+    path = root / "experiments" / "manifests" / "EXP-0001-minimal-cig.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_real_exp0001_manifest_satisfies_prereg_invariants(ca):
+    """End-to-end: the REAL tracked manifest passes the lifecycle-aware
+    invariant checker."""
+    data = _load_manifest()
+    assert ca.check_preregistration(data, "EXP-0001-minimal-cig.yaml") == []

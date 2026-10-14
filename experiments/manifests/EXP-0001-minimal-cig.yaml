@@ -1,16 +1,65 @@
 # EXP-0001 — Minimal CIG experiment (machine-readable manifest, SPEC section 24 format)
 # Design locked 2026-10-02; REVISED after critic round 1 and round 2 (2026-10-02, PR #2 / issue #5).
-# Status: design-revised, re-review requested. See EXP-0001-design.md (sections 2-5, 9-10).
+# Status: preregistered-locked (2026-10-14) — expected results and compute cap locked in
+# section 8 of EXP-0001-design.md BEFORE any EXP-0001 execution; no EXP-0001 outcome data
+# had been collected or inspected at lock time (SPEC section 33).
+#
+# PREREGISTRATION IMMUTABILITY: once EXP-0001 execution has started, the expected results,
+# thresholds, support criteria, gate-survival expectations and compute caps below are
+# immutable under the same EXP-0001 identity. A required change preserves the current run
+# as incomplete/aborted and pre-registers an amendment / new experiment revision BEFORE
+# any additional outcome collection, with the change recorded in the audit trail.
+#
+# EXPECTATIONS ARE NOT DECISION RULES: the expected_results values below are directional
+# forecasts for post-run review only. The locked primary support criteria in
+# evaluation.statistics (h2_supported_if / h1_supported_if / seed_consistency) are the ONLY
+# decision rules; an expected value never moves a threshold (expected C-B +7pp does NOT
+# move the locked +5pp H2 threshold). Null/negative outcomes remain valid results.
 
 experiment:
   id: EXP-0001
   name: minimal-causal-inheritance-gate
   hypothesis: [H2, H1, H5-partial]
   milestone: 0
-  status: design-revised-re-review-requested
+  status: preregistered-locked         # not running/completed: the experiment has not started
   preregistration:
     locked: true
-    expected_results_filled: false   # must be true before run starts (SPEC section 33)
+    expected_results_filled: true
+    locked_at: "2026-10-14"            # before EXP-0001 execution; no outcome data inspected
+    expected_results:
+      h2:
+        direction: C>B                                       # expectation, NOT a threshold
+        heldout_success_pp:
+          central: 7
+          range: [5, 10]
+        regression_difference_pp:
+          direction: C<B
+          expected_reduction_range: [3, 8]
+        note: "null/negative outcomes remain valid scientific results"
+      h1:
+        direction: C>A                                       # expectation, NOT a threshold
+        heldout_success_pp:
+          central: 10
+          range: [5, 15]
+      gate_survival_per_seed:        # rough expectation per mining seed, NOT a quota (K=10)
+        frozen_candidates: 10
+        replay: 6
+        ablation: 4
+        generalization_combined: 4
+        generalization_in_scope_rough: "5-6"
+        generalization_out_of_scope_harmless_rough: "7-9"
+        interaction_regression_overhead: 3
+        attrition_note: "overhead check mostly passes; attrition primarily regression + occasional harmful pair"
+        final_promoted: 3
+      compute_cap:                   # hard resource envelope
+        accelerator_nodes_max: 1
+        episodes_max: 7000           # hard cap; normal expectation ~6000
+        model_calls_max: 225000      # hard cap; normal expectation ~180-200k
+        wall_clock_hours_max: 96
+        mining_seeds: [11, 23, 41]
+        on_cap_exceeded: stop-mark-incomplete-record-reason   # never silently enlarge; larger cap => new prereg amendment BEFORE new data collection
+        throughput_note: "hardware throughput differences never justify changing scientific thresholds"
+    immutability: once-execution-starts-immutable-under-same-experiment-id
 
 model:
   name: Qwen2.5-7B-Instruct
