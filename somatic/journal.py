@@ -81,9 +81,18 @@ def read_journal_records(path: Path) -> list[dict]:
     """Strictly parse journal lines; corruption fails closed (no recovery
     path in v0.1 — somatic memory is never silently salvaged)."""
     from trajectory.recorder.errors import MalformedTrajectoryError
-    from trajectory.storage.jsonl import jsonl_lines
+    from trajectory.storage.jsonl import finite_float, split_jsonl
+    data = Path(path).read_bytes()
+    if data and not data.endswith(b"\n"):
+        # every commit writes its record and newline together: an
+        # unterminated last record is a torn write or an external edit, and
+        # an append would glue the next record onto its line
+        raise MalformedTrajectoryError(
+            f"{path}: journal does not end with a newline, so its last record is "
+            f"unterminated (a torn write or an external edit); it is never repaired "
+            f"silently")
     records: list[dict] = []
-    for index, raw in enumerate(jsonl_lines(path)):  # b"\n" only, never splitlines()
+    for index, raw in enumerate(split_jsonl(data)):  # b"\n" only, never splitlines()
         try:
             line = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -92,13 +101,17 @@ def read_journal_records(path: Path) -> list[dict]:
         if not line.strip():
             continue
         try:
-            records.append(json.loads(line, parse_constant=_reject_non_finite_constant))
+            record = json.loads(line, parse_constant=_reject_non_finite_constant,
+                                parse_float=finite_float)
         except json.JSONDecodeError as exc:
             raise MalformedTrajectoryError(
                 f"{path}: malformed journal JSON at line {index + 1}: {exc}") from None
         except ValueError as exc:
             raise MalformedTrajectoryError(
                 f"{path}: non-standard JSON at line {index + 1}: {exc}") from None
+        if not isinstance(record, dict):
+            raise MalformedTrajectoryError(f"{path}: journal line {index + 1} is not a JSON object")
+        records.append(record)
     return records
 
 
