@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from evaluation.exp0001.ledger import RunLedger
+from evaluation.exp0001.ledger import LedgerError, RunLedger
 from evaluation.exp0001.protocol import PROTOCOL
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets, run_agent
@@ -37,6 +37,11 @@ def trajectory_id_for(run_id: str, key: str) -> str:
     """A trajectory id fixed by the run and the episode key, so the ledger,
     the trajectory file and later references agree without a random id."""
     return "T-" + hashlib.sha256(f"{run_id}|{key}".encode("utf-8")).hexdigest()[:12]
+
+
+def _settings_record(settings: GenerationSettings) -> dict:
+    return {"temperature": settings.temperature, "max_tokens": settings.max_tokens,
+            "seed": settings.seed, "stop": list(settings.stop)}
 
 
 def protocol_budgets() -> Budgets:
@@ -118,9 +123,18 @@ class EpisodeExecutor:
     def run(self, spec: EpisodeSpec) -> EpisodeResult:
         if not self._ledger.admit(spec.key):  # recorded already: resume
             outcome = dict(self._ledger.done_record(spec.key)["outcome"])
+            recorded = outcome.pop("settings")
+            if recorded != _settings_record(spec.settings):
+                # the ledger's outcome would be acknowledged under settings it
+                # never ran with (GateEpisodeRunner contract)
+                raise LedgerError(f"{spec.key!r} was recorded with settings {recorded}, not "
+                                  f"{_settings_record(spec.settings)}")
+            outcome["trajectory_path"] = str(self._dir / outcome.pop("trajectory_file"))
             outcome["expressed_gene_ids"] = tuple(outcome.get("expressed_gene_ids", ()))
             return EpisodeResult(key=spec.key, resumed=True, **outcome)
-        path = self._dir / f"{spec.key.replace('/', '__')}.jsonl"
+        trajectory_id = trajectory_id_for(self._run_id, spec.key)
+        # a fixed-length file name: a key embeds game and gene ids of any length
+        path = self._dir / f"{trajectory_id}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             # a crash after the trajectory was written but before the ledger
@@ -129,8 +143,7 @@ class EpisodeExecutor:
         env = self._env_factory(spec.split, spec.task_id)  # (split, game_id)
         try:
             task = env.start()
-            recorder = TrajectoryRecorder(self._context(spec), path,
-                                          trajectory_id=trajectory_id_for(self._run_id, spec.key))
+            recorder = TrajectoryRecorder(self._context(spec), path, trajectory_id=trajectory_id)
             try:
                 kwargs = {"clock": self._clock} if self._clock is not None else {}
                 result = run_agent(config=spec.config, model=self._model, env=env, task=task,
@@ -157,13 +170,16 @@ class EpisodeExecutor:
         for event in result.events.of_kind("skills_expressed"):
             expressed.extend(g for g in event.data["skills"] if g not in expressed)
         outcome = {"task_id": spec.task_id, "family": spec.family, "success": bool(episode.won),
-                   "trajectory_id": finalized.trajectory_id, "trajectory_path": str(path),
+                   "trajectory_id": finalized.trajectory_id,
+                   "trajectory_file": path.name,  # relative: the run directory may move
                    "model_calls": len(calls), "steps": episode.steps,
                    "invalid_commands": episode.invalid_commands, "status": result.status,
                    "expressed_gene_ids": expressed,
                    "prompt_tokens": calls[-1].data["cumulative_prompt_tokens"] if calls else 0,
                    "completion_tokens":
-                       calls[-1].data["cumulative_completion_tokens"] if calls else 0}
+                       calls[-1].data["cumulative_completion_tokens"] if calls else 0,
+                   "settings": _settings_record(spec.settings)}
         self._ledger.record(spec.key, model_calls=len(calls), outcome=outcome)
-        return EpisodeResult(key=spec.key, resumed=False,
-                             **{**outcome, "expressed_gene_ids": tuple(expressed)})
+        result = {k: v for k, v in outcome.items() if k not in ("settings", "trajectory_file")}
+        return EpisodeResult(key=spec.key, resumed=False, trajectory_path=str(path),
+                             **{**result, "expressed_gene_ids": tuple(expressed)})

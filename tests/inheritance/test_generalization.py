@@ -5,6 +5,7 @@ import pytest
 
 from genome.validation.errors import RecordConsistencyError
 from inheritance.generalization import (
+    VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT,
     GeneralizationAllocation,
     GeneralizationEvaluator,
 )
@@ -236,6 +237,9 @@ def test_a_vacuous_out_of_scope_stage_runs_no_episode_and_passes(tmp_path, regis
     child = result.out_scope_child["measurements"]
     assert child["vacuous"] is True and child["stage_pass"] is True
     assert child["delta"] is None and child["scope_episodes"] == []
+    assert child["locked_threshold"] == {"min_delta": None,
+                                         "rule": VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT}
+    assert "pooled in-scope delta" in child["vacuous_reason"]
     assert child["allocation"]["out_scope_vacuous"] is True
     assert child["allocation"]["family_universe"] == list(UNIVERSE)
     assert "vacuous" not in result.in_scope_child["measurements"]

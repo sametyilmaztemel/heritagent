@@ -8,7 +8,9 @@ code commit): the code commit, the model identity and weights hash, the
 split, pilot and pool hashes, the miner prompt and schema hashes, G0's
 canonical genome id and digest, the candidate cap and ranking rule, the CIG
 threshold version and values, both bootstrap rules, the generation settings
-and stop, the episode budget, the hard caps and the mining seeds."""
+and stop, the episode budget, the hard caps and the mining seeds, and the
+miner's teacher model. The split and pilot manifests must verify from
+their own hashes and equal the pre-registered ones."""
 
 from __future__ import annotations
 
@@ -17,7 +19,11 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from evaluation.exp0001.protocol import PROTOCOL
+from evaluation.exp0001.protocol import (
+    LOCKED_PILOT_SHA256,
+    LOCKED_SPLIT_MANIFEST_SHA256,
+    PROTOCOL,
+)
 from evaluation.metrics.final_statistics import FINAL_RULE
 
 RUN_START_SCHEMA = "heritagent/exp0001-run-start/0.1"
@@ -70,12 +76,52 @@ def _require_str(value, name: str) -> str:
     return value
 
 
+def _is_hex(value, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and \
+        all(c in "0123456789abcdef" for c in value)
+
+
+def verify_pre_run_artifacts(split_manifest: dict, pilot_manifest: dict | None, *,
+                             expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
+                             expected_pilot_sha256: str = LOCKED_PILOT_SHA256) -> None:
+    """The split (and pilot) manifest must verify from its own hashes and be
+    the committed one (manifest run_protocol); anything else is another
+    experiment."""
+    from evaluation.benchmarks.alfworld.splits import SplitError, verify_manifest
+    from evaluation.exp0001.pilot import verify_pilot_manifest
+    try:
+        verify_manifest(split_manifest)
+        if pilot_manifest is not None:
+            verify_pilot_manifest(pilot_manifest, split_manifest)
+    except SplitError as exc:
+        raise ProvenanceError(f"a pre-run artifact does not verify: {exc}") from exc
+    if split_manifest["manifest_sha256"] != expected_split_sha256:
+        raise ProvenanceError(f"split manifest {split_manifest['manifest_sha256']} is not the "
+                              f"pre-registered one ({expected_split_sha256})")
+    if pilot_manifest is not None and pilot_manifest["pilot_sha256"] != expected_pilot_sha256:
+        raise ProvenanceError(f"pilot manifest {pilot_manifest['pilot_sha256']} is not the "
+                              f"pre-registered one ({expected_pilot_sha256})")
+
+
+def _model_block(model: Mapping, name: str, *, tokenizer: bool) -> dict:
+    keys = ("model_id", "revision", "backend") + (("tokenizer",) if tokenizer else ())
+    for key in keys:  # the manifest pins the revision at run time
+        _require_str(model.get(key), f"{name}.{key}")
+    return {k: model.get(k) for k in ("model_id", "revision", "backend", "backend_version")
+            + (("tokenizer",) if tokenizer else ())}
+
+
 def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping,
-                           weights: Mapping, split_manifest: dict, pilot_manifest: dict,
-                           g0_genome: dict, run_id: str, started_at: str) -> dict:
-    """Assemble the record. ``model`` is the adapter metadata (model_id,
-    revision, backend, backend_version) plus the tokenizer identity;
-    ``weights`` is ``sha256_files`` output for the served weights."""
+                           teacher: Mapping, weights: Mapping, split_manifest: dict,
+                           pilot_manifest: dict, g0_genome: dict, run_id: str,
+                           started_at: str,
+                           expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
+                           expected_pilot_sha256: str = LOCKED_PILOT_SHA256) -> dict:
+    """Assemble the record. ``model`` is the agent adapter's metadata
+    (model_id, revision, backend, backend_version) plus the identity of the
+    token counter's tokenizer; ``teacher`` is the miner's adapter metadata;
+    ``weights`` is ``sha256_files`` output for the served weights. The split
+    and pilot manifests must verify and be the pre-registered ones."""
     from genome.validation.identity import compute_genome_id
     from inheritance.ablation import BOOTSTRAP_CLUSTER_ORDER, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_SEED
     from inheritance.gate import PRIMARY_THRESHOLDS, THRESHOLD_VERSION
@@ -90,11 +136,13 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
         raise ProvenanceError("code_dirty must be a bool")
     if code_dirty:
         raise ProvenanceError("the run must start from a clean checkout (code_dirty is True)")
-    for key in ("model_id", "backend", "tokenizer"):
-        _require_str(model.get(key), f"model.{key}")
-    if not isinstance(weights, Mapping) or not isinstance(weights.get("sha256"), str) \
-            or len(weights["sha256"]) != 64:
-        raise ProvenanceError("weights must carry the sha256 of the served weights")
+    model_block = _model_block(model, "model", tokenizer=True)
+    teacher_block = _model_block(teacher, "teacher", tokenizer=False)
+    if not isinstance(weights, Mapping) or not _is_hex(weights.get("sha256"), 64):
+        raise ProvenanceError("weights must carry the sha256 (64 hex) of the served weights")
+    verify_pre_run_artifacts(split_manifest, pilot_manifest,
+                             expected_split_sha256=expected_split_sha256,
+                             expected_pilot_sha256=expected_pilot_sha256)
     _require_str(run_id, "run_id")
     _require_str(started_at, "started_at")
     if g0_genome.get("genome_id") != compute_genome_id(g0_genome):
@@ -106,8 +154,8 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
         "run_id": run_id,
         "started_at": started_at,
         "code": {"commit": code_commit, "dirty": False},
-        "model": {k: model.get(k) for k in ("model_id", "revision", "backend",
-                                            "backend_version", "tokenizer")},
+        "model": model_block,
+        "teacher": teacher_block,
         "weights": {"sha256": weights["sha256"], "files": dict(weights.get("files", {}))},
         "splits": {"manifest_sha256": split_manifest["manifest_sha256"],
                    "plan": split_manifest["plan"],

@@ -39,14 +39,16 @@ class LedgerGateRunner:
         if settings is None or settings.temperature != 0.0:
             raise RunnerContractError("gate episodes run at the locked temperature 0")
         split = task.payload.get("split")
-        if split not in ("train", "valid_unseen"):
-            raise RunnerContractError(f"task {task.task_id!r} carries no ALFWorld split")
+        if split != "train" or task.payload.get("pool") == "t_eval":
+            # contamination rule: T_eval is never visible to the gate
+            raise RunnerContractError(f"gate task {task.task_id!r} must be a train game, got "
+                                      f"split {split!r}; T_eval never enters the gate")
         identity = (task.task_id, condition, config_fingerprint(config))
         occurrence = self._seen[identity]
         self._seen[identity] += 1
         key = f"{self._scope}/{task.task_id}/{condition}/{identity[2]}-{occurrence}"
         result = self._executor.run(EpisodeSpec(
-            key=key, task_id=task.task_id, family=task.family, split=split, config=config,
+            key=key, task_id=task.task_id, family=task.family, split="train", config=config,
             settings=settings,
             tags={"stage": self._scope, "condition": condition, "bank_id": task.bank_id,
                   "skills": [s.gene_id for s in config.skills]}))

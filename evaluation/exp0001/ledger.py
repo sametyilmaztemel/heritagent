@@ -7,7 +7,14 @@ key and its model-call count; the lifecycle moves only forward
 the ledger admits it only if no hard cap would be exceeded; otherwise the
 run is stopped and marked incomplete with its reason, and nothing can be
 admitted afterwards. A resumed run reads the ledger back and skips every
-key it already holds, so no episode runs twice."""
+key it already holds, so no recorded episode runs twice.
+
+Every admission first appends an ``attempt`` record with the calls it
+reserves (an episode's worst case, or the miner's one call per pair). An
+attempt that a crash left without its finishing record is charged its
+whole reservation when the ledger is read back, so calls made before a
+crash still count against the caps (conservatively), and the number of
+aborted attempts stays on record."""
 
 from __future__ import annotations
 
@@ -42,6 +49,8 @@ class RunLedger:
         self._caps = dict(caps)
         self._done: dict[str, dict] = {}
         self._charged: dict[str, dict] = {}  # model calls outside episodes (the miner's)
+        self._aborted: list[dict] = []  # attempts a crash left unfinished
+        self._open: dict[str, int] = {}  # attempts admitted by this process: key -> reserved
         self._model_calls = 0
         self._state = "running"
         self._reason: str | None = None
@@ -77,10 +86,20 @@ class RunLedger:
         if header.get("caps") != self._caps:
             raise LedgerError(f"{self._path} was opened with other caps {header.get('caps')}")
         self._started = float(header["started_clock"])
+        open_attempts: dict[str, list[dict]] = {}
         for record in records[1:]:
             kind = record.get("type")
             if self._state in TERMINAL:
                 raise LedgerError(f"{self._path}: a record follows the terminal state")
+            if kind == "attempt":
+                key, reserved = record.get("key"), record.get("reserved")
+                if not isinstance(key, str) or isinstance(reserved, bool) \
+                        or not isinstance(reserved, int) or reserved < 0:
+                    raise LedgerError(f"{self._path}: bad attempt record {record!r}")
+                if key in self._done or key in self._charged:
+                    raise LedgerError(f"{self._path}: attempt after {key!r} was recorded")
+                open_attempts.setdefault(key, []).append(record)
+                continue
             if kind in ("episode", "calls"):
                 key = record.get("key")
                 if not isinstance(key, str) or key in self._done or key in self._charged:
@@ -90,10 +109,16 @@ class RunLedger:
                     raise LedgerError(f"{self._path}: bad model_calls for {key!r}")
                 (self._done if kind == "episode" else self._charged)[key] = record
                 self._model_calls += calls
+                if open_attempts.get(key):
+                    open_attempts[key].pop()  # the attempt this record finished
             elif kind in TERMINAL:
                 self._state, self._reason = kind, record.get("reason")
             else:
                 raise LedgerError(f"{self._path}: unknown record type {kind!r}")
+        for attempts in open_attempts.values():
+            for attempt in attempts:
+                self._aborted.append(attempt)
+                self._model_calls += attempt["reserved"]
 
     def _append(self, record: dict) -> None:
         line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -115,7 +140,12 @@ class RunLedger:
 
     @property
     def model_calls(self) -> int:
+        """Recorded calls, plus the reservation of every aborted attempt."""
         return self._model_calls
+
+    @property
+    def aborted_attempts(self) -> int:
+        return len(self._aborted)
 
     def is_done(self, key: str) -> bool:
         return key in self._done
@@ -125,8 +155,8 @@ class RunLedger:
 
     def _stop(self, reason: str) -> None:
         self._state, self._reason = "incomplete", reason
-        self._append({"type": "incomplete", "reason": reason,
-                      "episodes": self.episodes, "model_calls": self._model_calls})
+        self._append({"type": "incomplete", "reason": reason, "episodes": self.episodes,
+                      "model_calls": self._model_calls, "aborted_attempts": len(self._aborted)})
         raise CapExceeded(reason)
 
     def abandon(self, reason: str) -> None:
@@ -137,8 +167,8 @@ class RunLedger:
         if not isinstance(reason, str) or not reason.strip():
             raise LedgerError("an incomplete run records its reason")
         self._state, self._reason = "incomplete", reason
-        self._append({"type": "incomplete", "reason": reason,
-                      "episodes": self.episodes, "model_calls": self._model_calls})
+        self._append({"type": "incomplete", "reason": reason, "episodes": self.episodes,
+                      "model_calls": self._model_calls, "aborted_attempts": len(self._aborted)})
 
     def admit(self, key: str) -> bool:
         """True if the episode should run now, False if the ledger already
@@ -150,7 +180,10 @@ class RunLedger:
             return False
         if self.episodes + 1 > self._caps["episodes_max"]:
             self._stop(f"hard cap: episodes_max {self._caps['episodes_max']} would be exceeded")
-        self._check_calls(max_model_calls_per_episode())
+        worst = max_model_calls_per_episode()
+        self._check_calls(worst)
+        self._append({"type": "attempt", "key": key, "reserved": worst})
+        self._open[key] = worst
         return True
 
     def admit_calls(self, key: str, worst_case: int) -> bool:
@@ -164,6 +197,8 @@ class RunLedger:
         if isinstance(worst_case, bool) or not isinstance(worst_case, int) or worst_case < 0:
             raise LedgerError(f"worst_case must be a non-negative int, got {worst_case!r}")
         self._check_calls(worst_case)
+        self._append({"type": "attempt", "key": key, "reserved": worst_case})
+        self._open[key] = worst_case
         return True
 
     def record_calls(self, key: str, *, model_calls: int) -> None:
@@ -177,6 +212,7 @@ class RunLedger:
         self._append(record)
         self._charged[key] = record
         self._model_calls += model_calls
+        self._finish(key)
 
     def is_charged(self, key: str) -> bool:
         return key in self._charged
@@ -202,10 +238,22 @@ class RunLedger:
         self._append(record)
         self._done[key] = record
         self._model_calls += model_calls
+        self._finish(key)
+
+    def _finish(self, key: str) -> None:
+        """A finishing record closes the latest open attempt of its key, as a
+        reload reads it: this process's own attempt, else the latest aborted
+        one, whose reservation is then no longer charged."""
+        if self._open.pop(key, None) is not None:
+            return
+        for index in range(len(self._aborted) - 1, -1, -1):
+            if self._aborted[index]["key"] == key:
+                self._model_calls -= self._aborted.pop(index)["reserved"]
+                return
 
     def complete(self) -> None:
         if self._state != "running":
             raise LedgerError(f"the run is already {self._state}")
         self._state = "complete"
         self._append({"type": "complete", "episodes": self.episodes,
-                      "model_calls": self._model_calls})
+                      "model_calls": self._model_calls, "aborted_attempts": len(self._aborted)})

@@ -39,6 +39,8 @@ def make_record(registry, **overrides):  # noqa: F811
     args = dict(code_commit=COMMIT, code_dirty=False,
                 model={"model_id": "Qwen/Qwen2.5-7B-Instruct", "revision": "abc", "backend": "vllm",
                        "backend_version": "0.6", "tokenizer": "Qwen2.5 tokenizer@abc"},
+                teacher={"model_id": "Qwen/Qwen2.5-7B-Instruct", "revision": "abc",
+                         "backend": "vllm", "backend_version": "0.6"},
                 weights={"sha256": "b" * 64, "files": {"model.safetensors": "c" * 64}},
                 split_manifest=load("EXP-0001-splits.json"),
                 pilot_manifest=load("EXP-0001-pilot.json"),
@@ -68,8 +70,11 @@ def test_the_record_names_everything_a_result_must_carry(registry):  # noqa: F81
 @pytest.mark.parametrize("override,message", [
     ({"code_commit": "abc"}, "full 40-hex commit"),
     ({"code_dirty": True}, "clean checkout"),
-    ({"model": {"model_id": "m", "backend": "vllm"}}, "model.tokenizer"),
-    ({"weights": {"sha256": "short"}}, "sha256 of the served weights"),
+    ({"model": {"model_id": "m", "revision": "r", "backend": "vllm"}}, "model.tokenizer"),
+    ({"model": {"model_id": "m", "backend": "vllm", "tokenizer": "t"}}, "model.revision"),
+    ({"teacher": {"model_id": "m", "revision": " ", "backend": "vllm"}}, "teacher.revision"),
+    ({"weights": {"sha256": "short"}}, "sha256 .64 hex. of the served weights"),
+    ({"weights": {"sha256": "zz" * 32}}, "sha256 .64 hex. of the served weights"),
     ({"run_id": " "}, "run_id"),
 ])
 def test_an_incomplete_record_fails_closed(registry, override, message):  # noqa: F811
@@ -213,3 +218,134 @@ def test_a_protocol_stop_marks_the_run_incomplete_with_its_reason(tmp_path):
         ledger.abandon("again")
     reopened = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock())
     assert reopened.state == "incomplete" and reopened.reason.startswith("t_reg")
+
+
+def test_the_record_binds_the_pre_registered_artifacts(registry):  # noqa: F811
+    import copy
+    splits, pilot = load("EXP-0001-splits.json"), load("EXP-0001-pilot.json")
+    tampered = copy.deepcopy(splits)  # a T_eval game swapped into T_mine, hashes left as they were
+    tampered["pools"]["t_mine"]["games"][0], tampered["pools"]["t_eval"]["games"][0] = \
+        tampered["pools"]["t_eval"]["games"][0], tampered["pools"]["t_mine"]["games"][0]
+    with pytest.raises(ProvenanceError, match="does not verify"):
+        make_record(registry, split_manifest=tampered)
+    stale_pilot = copy.deepcopy(pilot)
+    stale_pilot["games"] = stale_pilot["games"][1:]
+    with pytest.raises(ProvenanceError, match="does not verify"):
+        make_record(registry, pilot_manifest=stale_pilot)
+    with pytest.raises(ProvenanceError, match="not the pre-registered one"):
+        make_record(registry, expected_split_sha256="0" * 64)
+    with pytest.raises(ProvenanceError, match="not the pre-registered one"):
+        make_record(registry, expected_pilot_sha256="0" * 64)
+    record = make_record(registry)
+    assert record["teacher"]["model_id"] == "Qwen/Qwen2.5-7B-Instruct"
+    assert record["model"]["revision"] == "abc"
+
+
+def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
+    record = make_record(registry)
+    assert set(record) == {"schema", "experiment", "run_id", "started_at", "code", "model",
+                           "teacher", "weights", "splits", "pilot", "miner", "g0", "candidate_set",
+                           "gate", "final_statistics", "generation", "protocol",
+                           "required_at_run_time", "record_sha256"}
+    assert record["pilot"]["pilot_sha256"] == load("EXP-0001-pilot.json")["pilot_sha256"]
+    assert len(record["miner"]["prompt_sha256"]) == 64 == len(record["miner"]["output_schema_sha256"])
+    assert record["candidate_set"] == {"cap": 10, "ranking": ["miner-estimated-generality",
+                                                             "discovery-order"]}
+    assert record["gate"]["threshold_version"] == "EXP-0001-CIG-M0-v1"
+    assert record["splits"]["plan"]["seed"] == 0
+    assert record["weights"]["sha256"] == "b" * 64
+    assert record["protocol"]["budgets"] == {"max_steps": 50, "max_total_retries": 10,
+                                             "max_tokens_per_request": 512}
+
+
+def test_a_frozen_artifact_is_never_replaced(tmp_path):
+    from evaluation.exp0001.provenance import freeze_json
+    path = tmp_path / "gate.json"
+    assert freeze_json(path, {"a": (1, 2)}) == {"a": [1, 2]}
+    assert freeze_json(path, {"a": [1, 2]}) == {"a": [1, 2]}  # identical: a no-op
+    with pytest.raises(ProvenanceError, match="frozen with other content"):
+        freeze_json(path, {"a": [1, 3]})
+
+
+def test_the_keyed_hash_rules_match_the_adr_literally():
+    """Golden values computed with hashlib from the ADR-0007 formulas, not
+    with the production functions (E1, E3, E6)."""
+    from evaluation.exp0001.allocations import generalization_rank
+    from evaluation.exp0001.lifetime import t_reg_rank
+    game = "pick_and_place_simple-Box-None-ArmChair-212/trial_T20190908_214946_567644"
+    assert attempt_sampling_seed(11, game, 0) == 1009155567
+    assert attempt_sampling_seed(41, "x", 2) == 1584960060
+    assert t_reg_rank("x") == "6aea84556f329decfc95454ae28e8dee42de8490eb7b51cd383673e094221847"
+    assert generalization_rank("pick_and_place_simple", "x") == \
+        "fc7c49b643c2ae28764d98b3ad381f09f9394b29555f219bddaece3505e405ce"
+
+
+def test_the_protocol_constants_are_the_manifests():
+    """pyyaml is not a test dependency: the locked lines are read with patterns."""
+    import re
+    from evaluation.exp0001.protocol import (
+        CANDIDATE_CAP,
+        LOCKED_PILOT_SHA256,
+        LOCKED_SPLIT_MANIFEST_SHA256,
+        MINING_SEEDS,
+    )
+    from tests.evaluation.test_exp0001_artifacts import MANIFESTS
+    text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    for name in ("episodes_max", "model_calls_max", "wall_clock_hours_max", "accelerator_nodes_max"):
+        assert int(re.search(rf"^\s+{name}: (\d+)", text, re.MULTILINE).group(1)) == CAPS[name]
+    assert re.search(r"^\s+mining_seeds: \[11, 23, 41\]", text, re.MULTILINE)
+    assert MINING_SEEDS == (11, 23, 41)
+    assert int(re.search(r"^\s+cap: (\d+)\s+# K", text, re.MULTILINE).group(1)) == CANDIDATE_CAP
+    assert f"sha256: {LOCKED_SPLIT_MANIFEST_SHA256}" in text and \
+        f"sha256: {LOCKED_PILOT_SHA256}" in text
+    assert load("EXP-0001-splits.json")["manifest_sha256"] == LOCKED_SPLIT_MANIFEST_SHA256
+    assert load("EXP-0001-pilot.json")["pilot_sha256"] == LOCKED_PILOT_SHA256
+
+
+def test_an_aborted_attempt_is_charged_its_reservation(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock())
+    assert ledger.admit("e0")  # the process dies during e0
+    reopened = RunLedger(path, run_id="r", clock=Clock())
+    worst = max_model_calls_per_episode()
+    assert (reopened.aborted_attempts, reopened.model_calls, reopened.episodes) == (1, worst, 0)
+    assert reopened.admit("e0")  # run again
+    reopened.record("e0", model_calls=3, outcome={})
+    assert (reopened.aborted_attempts, reopened.model_calls) == (1, worst + 3)
+    again = RunLedger(path, run_id="r", clock=Clock())
+    assert (again.aborted_attempts, again.model_calls, again.episodes) == (1, worst + 3, 1)
+
+
+def test_frozen_teacher_calls_without_a_charge_finish_the_aborted_attempt(tmp_path):
+    """A crash after the candidate set was frozen but before its calls were
+    recorded: the resumed run records them, and the aborted reservation is
+    replaced, as a reload reads it."""
+    path = tmp_path / "ledger.jsonl"
+    RunLedger(path, run_id="r", clock=Clock()).admit_calls("mining/11", 40)
+    resumed = RunLedger(path, run_id="r", clock=Clock())
+    assert (resumed.aborted_attempts, resumed.model_calls) == (1, 40)
+    resumed.record_calls("mining/11", model_calls=38)
+    assert (resumed.aborted_attempts, resumed.model_calls) == (0, 38)
+    again = RunLedger(path, run_id="r", clock=Clock())
+    assert (again.aborted_attempts, again.model_calls) == (0, 38)
+
+
+def test_a_reopened_ledger_keeps_its_caps_and_its_start(tmp_path):
+    path, clock = tmp_path / "ledger.jsonl", Clock()
+    RunLedger(path, run_id="r", clock=clock)
+    with pytest.raises(LedgerError, match="other caps"):
+        RunLedger(path, run_id="r", clock=clock, caps={**CAPS, "episodes_max": 10 ** 6})
+    clock.now += 96 * 3600  # exactly the cap: not exceeded
+    assert RunLedger(path, run_id="r", clock=clock).admit("e0")
+    clock.now += 1  # past it, after a restart: the first start still counts
+    with pytest.raises(CapExceeded, match="wall_clock_hours_max"):
+        RunLedger(path, run_id="r", clock=clock).admit("e1")
+
+
+def test_nothing_follows_a_terminal_record(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock())
+    ledger.complete()
+    path.write_bytes(path.read_bytes() + b'{"type": "attempt", "key": "e0", "reserved": 60}\n')
+    with pytest.raises(LedgerError, match="follows the terminal state"):
+        RunLedger(path, run_id="r", clock=Clock())

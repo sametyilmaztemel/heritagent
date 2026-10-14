@@ -13,6 +13,7 @@ from evaluation.benchmarks.alfworld.splits import (
     build_split_manifest,
     collect_games,
 )
+from evaluation.exp0001.backends import ClosingEnvironment
 from evaluation.exp0001.allocations import (
     AllocationError,
     even_split,
@@ -24,9 +25,14 @@ from evaluation.exp0001.allocations import (
 from evaluation.exp0001.episodes import EpisodeExecutor
 from evaluation.exp0001.gate_runner import LedgerGateRunner
 from evaluation.exp0001.ledger import RunLedger
-from evaluation.exp0001.pipeline import Exp0001Run, cig_id
+from evaluation.exp0001.pilot import build_pilot_manifest
+from evaluation.exp0001.pipeline import Exp0001Run, RunError, cig_id
 from evaluation.exp0001.protocol import CAPS, MINING_SEEDS
-from evaluation.exp0001.provenance import build_run_start_record
+from evaluation.exp0001.provenance import (
+    ProvenanceError,
+    build_run_start_record,
+    canonical_sha256,
+)
 from genome.validation.registry import TraitRegistry
 from inheritance.runner import RunnerContractError
 from runtime.loop import Budgets
@@ -41,7 +47,6 @@ from tests.evaluation.test_alfworld_splits import (
     make_split,
     write_game,
 )
-from tests.evaluation.test_exp0001_artifacts import load
 from tests.evaluation.test_exp0001_lifetime import Clock, Game
 from tests.runtime.conftest import react_action, react_final
 
@@ -67,10 +72,11 @@ class Agent(ScriptedAdapter):
 
     def __init__(self, fail_at=None):
         super().__init__()
-        self.calls, self.fail_at = 0, fail_at
+        self.calls, self.fail_at, self.settings = 0, fail_at, []
 
     def generate(self, messages, settings):
         self.calls += 1
+        self.settings.append(settings)
         if self.calls == self.fail_at:
             raise RuntimeError("backend died")
         text = "\n".join(m.content for m in messages)
@@ -87,20 +93,17 @@ class Agent(ScriptedAdapter):
 class Teacher(ScriptedAdapter):
     def __init__(self, proposals=PROPOSALS):
         super().__init__()
-        self.proposals, self.calls = proposals, 0
+        self.proposals, self.calls, self.settings = proposals, 0, []
 
     def structured_generate(self, messages, settings, schema):
         self.calls += 1
+        self.settings.append(settings)
         text = json.dumps({"proposals": self.proposals}, sort_keys=True)
         self._validate_structured(text, schema)
         return GenerationResult(text=text, finish_reason="stop")
 
 
-class Words:
-    identity = "scripted-word-counter-v1"
-
-    def count_tokens(self, text):
-        return len(text.split())
+PILOTS = {}  # split manifest hash -> its synthetic pilot manifest
 
 
 @pytest.fixture(scope="module")
@@ -112,27 +115,53 @@ def splits(tmp_path_factory):
         for i in range(n):
             write_game(unseen_dir, family, 500 + i)
     unseen = collect_games(unseen_dir, "valid_unseen")
-    return build_split_manifest(train, unseen, full_plan())
+    manifest = build_split_manifest(train, unseen, full_plan())
+    PILOTS[manifest["manifest_sha256"]] = build_pilot_manifest(train, manifest)
+    return manifest
 
 
-def run_start(tmp_path, splits):
-    return build_run_start_record(
+class Words:
+    identity = "scripted-word-counter-v1"
+
+    def count_tokens(self, text):
+        return len(text.split())
+
+
+SCRIPTED = {"model_id": "scripted-test-model", "revision": "test-revision",
+            "backend": "scripted", "backend_version": None}
+
+
+def run_start(tmp_path, splits, caps=None, model=None):
+    record = build_run_start_record(
         code_commit="a" * 40, code_dirty=False,
-        model={"model_id": "scripted", "revision": "r", "backend": "scripted",
-               "backend_version": None, "tokenizer": "scripted-words"},
+        model=model or {**SCRIPTED, "tokenizer": Words.identity}, teacher=SCRIPTED,
         weights={"sha256": "b" * 64}, split_manifest=splits,
-        pilot_manifest=load("EXP-0001-pilot.json"),
+        pilot_manifest=PILOTS[splits["manifest_sha256"]],
         g0_genome=build_g0_seed_genome(TraitRegistry(tmp_path / "g0-registry")),
-        run_id=RUN_ID, started_at="2026-10-20T09:00:00Z")
+        run_id=RUN_ID, started_at="2026-10-20T09:00:00Z",
+        expected_split_sha256=splits["manifest_sha256"],
+        expected_pilot_sha256=PILOTS[splits["manifest_sha256"]]["pilot_sha256"])
+    if caps is not None:  # a test-only record with other caps, re-hashed like a real one
+        record["protocol"]["caps"] = dict(caps)
+        record["record_sha256"] = canonical_sha256(
+            {k: v for k, v in record.items() if k != "record_sha256"})
+    return record
 
 
-def make_run(run_dir, splits, *, agent=None, teacher=None, caps=CAPS):
+class CountingGame(Game):
+    closed = 0
+
+    def close(self):
+        CountingGame.closed += 1
+
+
+def make_run(run_dir, splits, *, agent=None, teacher=None, caps=None, counter=None, record=None):
     return Exp0001Run(
-        run_dir=run_dir, run_start=run_start(run_dir.parent, splits), split_manifest=splits,
-        model=agent or Agent(), teacher=teacher or Teacher(),
-        env_factory=lambda split, game_id: AlfworldEnvironment(Game(game_id), game_id=game_id),
-        token_counter=Words(), ledger_clock=Clock(), episode_clock=Clock(),
-        sleep=lambda _: None, caps=caps)
+        run_dir=run_dir, run_start=record or run_start(run_dir.parent, splits, caps),
+        split_manifest=splits, model=agent or Agent(), teacher=teacher or Teacher(),
+        env_factory=lambda split, game_id: ClosingEnvironment(CountingGame(game_id), game_id),
+        token_counter=counter or Words(), ledger_clock=Clock(), episode_clock=Clock(),
+        sleep=lambda _: None, expected_split_sha256=splits["manifest_sha256"])
 
 
 def ledger_keys(run_dir):
@@ -144,16 +173,19 @@ def ledger_keys(run_dir):
 def clean(tmp_path_factory, splits):
     run_dir = tmp_path_factory.mktemp("clean") / "run"
     agent, teacher = Agent(), Teacher()
+    before = CountingGame.closed
     report = make_run(run_dir, splits, agent=agent, teacher=teacher).run()
-    return run_dir, report, agent, teacher
+    return run_dir, report, agent, teacher, CountingGame.closed - before
 
 
 def test_a_scripted_run_goes_end_to_end(clean, splits):
-    run_dir, report, agent, teacher = clean
-    assert report["status"] == "complete"
+    run_dir, report, agent, teacher, closed = clean
+    assert report["status"] == "complete" and report["aborted_attempts"] == 0
     # 540 lifetime + per seed 2 candidates x 130 gate episodes + 7 x 194 final
-    assert report["episodes"] == 540 + 3 * 260 + 7 * (134 + 40 + 20) == agent.calls
+    assert report["episodes"] == 540 + 3 * 260 + 7 * (134 + 40 + 20) == agent.calls == closed
     assert report["model_calls"] == agent.calls + teacher.calls
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.state == "complete"
     for seed in MINING_SEEDS:
         gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
         good, bad = sorted(gate["verdicts"], key=lambda g: not g.startswith("check_receptacle"))
@@ -171,12 +203,32 @@ def test_a_scripted_run_goes_end_to_end(clean, splits):
             assert skill["origin"] == "assimilation"
             assert skill["provenance"]["cig_record"] == gate["aggregate_ids"][skill["gene_id"]]
         assert arms["C"]["generation"] == 1 and arms["C"]["parent"] == report_g0(run_dir)
+        assert all(s["provenance"]["source_trajectory"].startswith("T-")
+                   for s in arms["B"]["genes"]["skills"])
+        candidates = json.loads((run_dir / f"seed-{seed}" / "candidates.json").read_text())
+        assert {r["mining_seed"] for r in candidates["mining_records"]} == {seed}
     stats = report["statistics"]
     assert stats["status"] == "complete"
     assert stats["t_eval"]["contrasts"]["C-B"]["point_estimate"] == {"exact": "1/1", "float": 1.0}
     assert stats["h2"]["rule_met"] is True and stats["h1"]["rule_met"] is True
     assert report["genome_sizes"]["per_arm"]["A"]["runs"]["once"]["skill_genes"] == 0
     assert report["adaptation_cost"]["per_arm"]["C"]["pooled"]["solved"] == 60
+
+
+def test_the_generation_settings_are_the_protocols(clean):
+    """ADR-0007 E1/E8: lifetime at 0.7 with the attempt seeds, gate at 0 with
+    the mining seed, final evaluation at 0 with no seed; the miner at 0.7
+    with the mining seed."""
+    _, _, agent, teacher, _ = clean
+    lifetime = [s for s in agent.settings if s.temperature == 0.7]
+    gate = [s for s in agent.settings if s.temperature == 0.0 and s.seed is not None]
+    final = [s for s in agent.settings if s.temperature == 0.0 and s.seed is None]
+    assert len(lifetime) == 540 and len(gate) == 3 * 260 and len(final) == 7 * 194
+    assert len(lifetime) + len(gate) + len(final) == len(agent.settings)
+    assert {s.seed for s in gate} == set(MINING_SEEDS)
+    assert all(s.stop == ("\nObservation:",) and s.max_tokens == 512 for s in agent.settings)
+    assert {(s.temperature, s.seed) for s in teacher.settings} == {(0.7, seed)
+                                                                 for seed in MINING_SEEDS}
 
 
 def report_g0(run_dir):
@@ -192,13 +244,14 @@ def test_t_eval_is_touched_only_by_the_final_evaluation(clean, splits):
 
 
 def test_a_finished_run_is_read_back_not_rerun(clean, splits):
-    run_dir, report, _, _ = clean
+    run_dir, report, _, _, _ = clean
     agent, teacher = Agent(), Teacher()
     assert make_run(run_dir, splits, agent=agent, teacher=teacher).run() == report
     assert agent.calls == teacher.calls == 0
 
 
-def test_a_crashed_run_resumes_to_the_same_report(tmp_path, clean, splits):
+def test_a_crashed_run_resumes_to_the_same_report_from_a_moved_directory(tmp_path, clean,
+                                                                           splits):
     run_dir = tmp_path / "run"
     with pytest.raises(RuntimeError, match="backend died"):
         make_run(run_dir, splits, agent=Agent(fail_at=700)).run()  # in seed 11's gate
@@ -206,10 +259,107 @@ def test_a_crashed_run_resumes_to_the_same_report(tmp_path, clean, splits):
     assert not (run_dir / "seed-11" / "gate.json").exists()
     seed11_pairs = len(json.loads((run_dir / "seed-11" / "candidates.json").read_text())[
         "mining_records"])  # one teacher call per pair
+    moved = tmp_path / "elsewhere" / "run"  # the ledger holds no absolute path
+    moved.parent.mkdir()
+    run_dir.rename(moved)
     teacher = Teacher()
-    report = make_run(run_dir, splits, teacher=teacher).run()
+    report = make_run(moved, splits, teacher=teacher).run()
     assert teacher.calls == clean[3].calls - seed11_pairs  # seed 11 is not mined again
-    assert report == clean[1]
+    # the episode the crash aborted stays charged its worst case (60 calls)
+    assert report["aborted_attempts"] == 1
+    assert report["model_calls"] == clean[1]["model_calls"] + 60
+    assert {**report, "aborted_attempts": 0, "model_calls": 0} == \
+        {**clean[1], "aborted_attempts": 0, "model_calls": 0}
+
+
+def test_a_crash_between_the_gate_artifact_and_the_journal_is_finished_on_resume(
+        tmp_path, clean, splits, monkeypatch):
+    run_dir = tmp_path / "run"
+
+    def crash(self, seed, candidates, gate):
+        raise RuntimeError("killed after gate.json")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Exp0001Run, "_apply_decisions", crash)
+        with pytest.raises(RuntimeError, match="killed after gate.json"):
+            make_run(run_dir, splits).run()
+    assert (run_dir / "seed-11" / "gate.json").exists()
+    assert make_run(run_dir, splits).run() == clean[1]
+
+
+def test_a_tampered_gate_artifact_fails_closed(tmp_path, splits, monkeypatch):
+    run_dir = tmp_path / "run"
+    with monkeypatch.context() as patch:
+        patch.setattr(Exp0001Run, "_apply_decisions",
+                      lambda self, *a: (_ for _ in ()).throw(RuntimeError("stop")))
+        with pytest.raises(RuntimeError, match="stop"):
+            make_run(run_dir, splits).run()
+    path = run_dir / "seed-11" / "gate.json"
+    gate = json.loads(path.read_text())
+    bad = next(g for g, v in gate["verdicts"].items() if v == "reject")
+    gate["verdicts"][bad] = "promote"  # arm C would take a rejected candidate
+    path.write_text(json.dumps(gate))
+    with pytest.raises(RunError, match="not its aggregate record's"):
+        make_run(run_dir, splits).run()
+
+
+def test_a_tampered_candidate_set_fails_closed(tmp_path, splits, monkeypatch):
+    run_dir = tmp_path / "run"
+    with monkeypatch.context() as patch:
+        patch.setattr(Exp0001Run, "_gate",
+                      lambda self, *a: (_ for _ in ()).throw(RuntimeError("stop")))
+        with pytest.raises(RuntimeError, match="stop"):
+            make_run(run_dir, splits).run()
+    path = run_dir / "seed-11" / "candidates.json"
+    frozen = json.loads(path.read_text())
+    frozen["candidates"] = frozen["candidates"][:1]
+    path.write_text(json.dumps(frozen))
+    with pytest.raises(RunError, match="does not match its digest"):
+        make_run(run_dir, splits).run()
+
+
+def test_the_run_binds_its_run_start_record(tmp_path, splits):
+    import copy
+    with pytest.raises(ProvenanceError, match="model adapter"):
+        make_run(tmp_path / "a", splits, record=run_start(
+            tmp_path, splits, model={**SCRIPTED, "model_id": "Qwen/Qwen2.5-7B-Instruct",
+                                     "tokenizer": Words.identity}))
+
+    class Other(Words):
+        identity = "another-tokenizer"
+
+    with pytest.raises(ProvenanceError, match="token counter"):
+        make_run(tmp_path / "b", splits, counter=Other())
+    tampered = copy.deepcopy(splits)
+    tampered["pools"]["t_mine"]["games"][0], tampered["pools"]["t_eval"]["games"][0] = \
+        tampered["pools"]["t_eval"]["games"][0], tampered["pools"]["t_mine"]["games"][0]
+    with pytest.raises(ProvenanceError, match="does not verify"):
+        Exp0001Run(run_dir=tmp_path / "c", run_start=run_start(tmp_path, splits),
+                   split_manifest=tampered, model=Agent(), teacher=Teacher(),
+                   env_factory=None, token_counter=Words(),
+                   expected_split_sha256=splits["manifest_sha256"])
+    with pytest.raises(ProvenanceError, match="not the pre-registered one"):
+        Exp0001Run(run_dir=tmp_path / "d", run_start=run_start(tmp_path, splits),
+                   split_manifest=splits, model=Agent(), teacher=Teacher(),
+                   env_factory=None, token_counter=Words())  # the default: the committed hash
+    assert not any((tmp_path / name).exists() for name in "abcd")  # nothing was written
+
+
+def test_one_writer_per_run_directory(tmp_path, splits):
+    first = make_run(tmp_path / "run", splits)
+    with pytest.raises(RunError, match="in use"):
+        make_run(tmp_path / "run", splits)
+    first.close()
+    make_run(tmp_path / "run", splits).close()
+
+
+def test_a_long_skill_name_does_not_break_trajectory_files(tmp_path, splits):
+    long_name = "check the receptacle " * 12  # a 252-character skill name
+    report = make_run(tmp_path / "run", splits, teacher=Teacher([proposal(long_name, GOOD, [F[0]],
+                                                                          0.9)]),
+                      caps={**CAPS, "episodes_max": 540 + 30}).run()
+    assert report["status"] == "incomplete" and report["stage"] == "gate/11"
+    assert "episodes_max" in report["reason"]
 
 
 def test_a_hard_cap_stops_the_run_incomplete(tmp_path, splits):
@@ -247,6 +397,9 @@ def test_a_candidate_for_every_family_gets_a_vacuous_out_of_scope_stage(tmp_path
         assert gate["verdicts"][gene] == "promote"
         out = gate["children"][f"{cig_id(seed, 0)}/S{seed}-generalization_out_of_scope"]
         assert out["measurements"]["vacuous"] is True and out["measurements"]["stage_pass"]
+        assert out["measurements"]["locked_threshold"]["min_delta"] is None
+        stage = gate["aggregates"][cig_id(seed, 0)]["stages"]["generalization_out_of_scope"]
+        assert stage["pass"] is True and stage["threshold"].startswith("vacuous")
         inside = gate["children"][f"{cig_id(seed, 0)}/S{seed}-generalization_in_scope"]
         plan = inside["measurements"]["allocation"]["in_scope_family_plan"]
         assert plan == even_split(10, F) and set(plan) == set(F)
@@ -317,4 +470,28 @@ def test_the_gate_runner_keys_and_contract(tmp_path, registry):  # noqa: F811
                            evaluation_settings(seed=11).__class__(temperature=0.7))
     with pytest.raises(RunnerContractError, match="split"):
         runner.run_episode(EvaluationTask("g2", F[0]), config, budgets, "with_trait", settings)
+    for payload in ({"split": "valid_unseen"}, {"split": "train", "pool": "t_eval"}):
+        with pytest.raises(RunnerContractError, match="T_eval never enters the gate"):
+            runner.run_episode(EvaluationTask("g3", F[0], payload=payload), config, budgets,
+                               "with_trait", settings)
+    assert ledger.episodes == 2
+
+
+def test_an_arm_that_assimilates_nothing_is_g0_itself(clean):
+    from evaluation.exp0001.arms import ArmError, arm_genomes
+    run_dir = clean[0]
+    store = TraitRegistry(run_dir / "registry")
+    g0 = build_g0_seed_genome(store)
+    candidates = json.loads((run_dir / "seed-11" / "candidates.json").read_text())["candidates"]
+    gate = json.loads((run_dir / "seed-11" / "gate.json").read_text())
+    rejected = {gene: "reject" for gene in gate["verdicts"]}
+    arms = arm_genomes(g0, candidates, rejected, gate["aggregate_ids"], store, 11)
+    assert arms["C"] == g0 and arms["C"]["parent"] is None
+    assert len(arms["B"]["genes"]["skills"]) == 2 and arms["B"]["parent"] == g0["genome_id"]
+    assert arm_genomes(g0, [], {}, {}, store, 11) == {"B": g0, "C": g0}
+    with pytest.raises(ArmError, match="exactly one verdict"):
+        arm_genomes(g0, candidates, {}, gate["aggregate_ids"], store, 11)
+    with pytest.raises(ArmError, match="canonical G0"):
+        arm_genomes({**g0, "generation": 1}, candidates, rejected, gate["aggregate_ids"],
+                    store, 11)
 

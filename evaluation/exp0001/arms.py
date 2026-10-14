@@ -11,8 +11,10 @@ source trajectory and the aggregate CIG record of its gate run (arm B
 assimilates without regard to that record's verdict, which stays on
 record). The G1 genome is generation 1, its parent is G0, and its
 ``genome_id`` is the canonical content id: origin and provenance are not
-functional, so B and C genomes with the same skills share one id, and a C
-genome without validated skills is G0's id."""
+functional, so B and C genomes with the same skills share one id. An arm
+that adds no skill (the gate promoted nothing, or the miner proposed
+nothing) is G0 itself, not a generation-1 record with G0's id as its own
+parent."""
 
 from __future__ import annotations
 
@@ -45,6 +47,8 @@ def germline_ref(envelope: Mapping, *, cig_record: str, arm: str, mining_seed: i
 def g1_genome(g0: Mapping, refs: Sequence[dict], registry) -> dict:
     if g0.get("generation") != 0 or g0.get("genome_id") != compute_genome_id(dict(g0)):
         raise ArmError("the founder must be the canonical G0 genome")
+    if not refs:  # nothing assimilated: the arm runs G0 unchanged
+        return copy.deepcopy(dict(g0))
     genome = copy.deepcopy(dict(g0))
     genome["generation"] = 1
     genome["parent"] = g0["genome_id"]

@@ -30,7 +30,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - Eligible tasks are the T_mine tasks G0 solved in at least one lifetime episode of any seed.
   - The 40 eligible tasks with the smallest `sha256("heritagent-treg|0|<task_id>")` form T_reg, one set for every seed (ADR-0006 D8).
   - Each task's baseline is its earliest success, in seed order and then attempt order.
-  - Fewer than 40 eligible tasks fails closed; changing the rule then needs a pre-execution amendment.
+  - Fewer than 40 eligible tasks fails closed. A shortfall is known only after the 540 lifetime episodes, when the manifest's immutability clause already applies, so a changed rule then needs a new experiment revision.
 - **E4 Transfer subset (owner).** The adaptation-cost transfer subset is the 20-task ablation pool. The gate used these tasks for arm C's selection, so the measure can favour C. It is descriptive only (ADR-0006 D6).
 - **E5 Per-episode budgets and the cap rule (owner, on builder-2's proposal).**
   - `Budgets(max_steps=50, max_total_retries=10, max_tokens_per_request=512)`, identical in every arm and stage.
@@ -41,20 +41,26 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 
     A resumed run reads its ledger back and never runs a recorded episode twice.
   - The miner's teacher calls (one per mining pair) count against `model_calls_max` too; they are not episodes.
+  - Every admission is recorded before it runs, with the calls it reserves. An episode or a mining batch that a crash leaves unfinished is charged its whole reservation, so calls made before a crash still count (conservatively), and the number of aborted attempts is reported.
+  - The caps in force are the ones the frozen run-start record carries; a run cannot be resumed under other caps.
 - **E6 Stage-3 allocation (owner, on builder-2's proposal).**
   - In-scope: the 10 games split as evenly as possible over the applicability families; the remainder goes one game each to the first families in name order (2 families: 5 + 5; 3: 4 + 3 + 3).
   - Out-of-scope: the same split of 10 over the other families.
   - Per family, the games with the smallest `sha256("heritagent-gen|0|<family>|<game_id>")`. Every candidate that needs n games of a family gets the same n (cross-trait reuse, logged in the CIG records).
-  - A candidate whose applicability names all six families leaves no out-of-scope family. Its out-of-scope stage is then **vacuous**: no episode runs and the stage passes, with the reason in its child record. Its 10 in-scope games cover every family (2, 2, 2, 2, 1, 1 by the split above), so the in-scope rule (Δ ≥ 0) already asks for no harm in every family. The evaluator accepts an empty out-of-scope allocation only with the frozen family universe, and only when the stored artifact's applicability names all of it.
+  - A candidate whose applicability names all six families leaves no out-of-scope family. Its out-of-scope stage is then **vacuous**: no episode runs and the stage passes, with the reason in its child record. Its 10 in-scope games cover every family (2, 2, 2, 2, 1, 1 by the split above). The pooled in-scope delta (Δ ≥ 0 over those 10 games) is then its only harm check; no per-family or out-of-scope threshold is applied, and its child record and aggregate say so. The evaluator accepts an empty out-of-scope allocation only with the family universe the allocation carries (EXP-0001 passes ALFWorld's six families), and only when the stored artifact's applicability names all of it.
   - Replay follows from the design and is recorded here: the source task is the T_mine task of the candidate's source trajectory (its mining pair's success), and the 4 variants are the 4 games of `replay_bank[<that task's family>]`.
 - **E7 Arm genomes (owner, on builder-2's proposal).**
   - G1 is generation 1 with parent G0. The added skills follow the frozen rank order.
   - Each added skill is a germline ref with `origin: assimilation`, its source trajectory and the aggregate CIG record of its gate run. Arm B's skills carry their record too, whatever its verdict, so every assimilated gene traces to its evidence.
-  - Origin and provenance are not part of the genome id (ADR-0001 A2): B and C genomes with the same skills share one id, and a C genome without promoted skills has G0's id.
+  - Origin and provenance are not part of the genome id (ADR-0001 A2): B and C genomes with the same skills share one id.
+  - An arm that adds no skill (the gate promoted nothing, or the miner proposed nothing) is G0 itself, not a generation-1 record that names its own id as parent.
 - **E8 Run order (owner, on builder-2's proposal).**
   - All three lifetimes, then T_reg, then per seed the miner, the gate and the arm genomes, then the final evaluation and the final statistics. T_eval is touched only in the final evaluation.
   - The final evaluation runs every arm at temperature 0 with no sampling seed (arm A once, ADR-0006 D7). The gate keeps its locked settings (seed = the mining seed).
-  - Every stage result is a write-once artifact in the run directory; a crash resumes from the ledger and the artifacts.
+  - Every stage result is a write-once artifact in the run directory; a crash resumes from the ledger and the artifacts. T_reg and the arm genomes are re-derived on every resume and must equal their frozen artifacts.
+  - The gate's decisions are written to its artifact before the somatic journal takes them, and the report before the ledger's terminal record, so a crash between the two is finished on resume. A crash inside an episode or a mining batch re-runs that unit; its partial calls stay charged (E5).
+  - One process writes a run directory at a time (an exclusive lock).
+  - The run binds to its run-start record: the split and pilot manifests must verify from their hashes and be the committed ones, and the agent model, the teacher, the token counter's tokenizer and the caps must be the ones the record names.
   - CIG ids are `CIG-<seed><rank + 1>` (two digits each), with `CIG-<seed>00` as the seed's batch id.
 
 **Reason.**
@@ -63,15 +69,16 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - **E3:** "solved in any lifetime" is the most feasible reading of "G0 solved". With 9 attempts per task, almost every T_mine task qualifies near p ≈ 0.3. The keyed-hash draw is interpreter-independent, like the split draw.
 - **E4:** it is literally a 20-task T_gate subset, already frozen and stratified.
 - **E5:** these are the loop's own defaults for tokens, with a retry budget large enough for the G0 retry gene (3 retries per call). The worst-case call count makes the cap check conservative: no episode can start that could push the run past the cap.
-- **E6:** the even split treats every declared family alike. One keyed order per family keeps cross-candidate comparisons paired. For an all-family applicability, failing closed would end the run after its 540 lifetime episodes; eliminating the candidate would penalize the most general skills and could bias the comparison against arm C. The vacuous stage keeps harmlessness checked through the in-scope rule over every family.
+- **E6:** the even split treats every declared family alike. One keyed order per family keeps cross-candidate comparisons paired. For an all-family applicability, failing closed would end the run after its 540 lifetime episodes; eliminating the candidate would penalize the most general skills and could bias the comparison against arm C. The vacuous stage keeps a harm check through the pooled in-scope rule, weaker than a per-family check (see Research implication).
 - **E7:** the CIG record on every assimilated gene keeps the audit chain of ADR-0001 R1 for both treated arms; the record's verdict shows which of B's genes the gate rejected.
-- **E8:** the order is forced by E3 and the gate's regression stage. Write-once artifacts make the miner's temperature-0.7 teacher calls happen once, so a resumed run cannot mine a different candidate set.
+- **E8:** the order is forced by E3 and the gate's regression stage. Once a seed's candidate set is frozen, its temperature-0.7 teacher calls are never made again, so a resumed run cannot mine a different set for that seed.
 - All choices were made before any EXP-0001 or pilot episode. None was chosen for its effect on an outcome.
 
 **Research implication.**
 - **E1:** the lifetime becomes 540 episodes (+360 over design §7's 180). This adds about 10–20k model calls to the cap pressure noted in the takeover note §5.12 (status M).
 - **E3:** T_reg's "solved" comes from temperature-0.7 episodes, while G1 evaluation runs at temperature 0. Even arm A can therefore fail some T_reg tasks. The H2 regression contrast reg(C) − reg(B) is unaffected (ADR-0006 D4).
-- **E6:** an all-family candidate is checked for harm on 10 games across the six families (Δ ≥ 0), not on 10 games outside its scope (Δ ≥ −0.05); its CIG record says so.
+- **E6:** an all-family candidate is checked for harm only by the pooled in-scope delta on 10 games across the six families (Δ ≥ 0, one or two games per family), not on 10 games outside its scope (Δ ≥ −0.05): a harm in one family can be offset by a gain in another. Its CIG record says so.
+- **E3/E1:** the calibration pilot measures G0 at temperature 0 only, while T_reg eligibility and the pair yield depend on the temperature-0.7 success rate. Whether the pilot should also project those is an open question for the owner (it would change the frozen pilot manifest).
 - **E8:** all three lifetimes run before any gate, so a stopped run may hold lifetime data for seeds whose gate never ran.
 - No novelty or causal claim.
 
@@ -79,5 +86,5 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 
 **Compatibility impact.**
 - New modules, artifacts and tests.
-- E6 changes one existing behaviour: `GeneralizationAllocation` accepts an empty out-of-scope allocation when it carries the family universe and the applicability names all of it, and the evaluator then runs 20 episodes instead of 40. Every other allocation, and its child records, are unchanged.
+- E6 changes one existing behaviour: `GeneralizationAllocation` accepts an empty out-of-scope allocation when it carries the family universe and the applicability names all of it, and the evaluator then runs 20 episodes instead of 40. Every other allocation, and its child records, are unchanged. For such a candidate it supersedes the locked `inheritance.stages.generalization.out_of_scope` line (10 tasks), which the manifest's `run_protocol` block notes; the stage line itself changes only through the Codex/owner path.
 - The locked manifest gains a `run_protocol` block that points at the committed artifacts and their hashes.

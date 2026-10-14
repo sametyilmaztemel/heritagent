@@ -301,3 +301,36 @@ def test_an_episode_key_runs_once_per_ledger(tmp_path, registry):  # noqa: F811
     second = run.run(spec)
     assert model.calls == 1 and not first.resumed and second.resumed
     assert ledger.done_record("pilot/x")["outcome"]["trajectory_id"] == first.trajectory_id
+
+
+class StepLimitGame(Game):
+    """Ends (done) on the first step without a win: ALFWorld's step limit."""
+
+    def step(self, command):
+        return "Nothing happens.", 0.0, True, {"won": False, "admissible_commands": []}
+
+
+def test_an_episode_that_ends_without_a_win_is_a_failure(tmp_path, registry):  # noqa: F811
+    """ADR-0003 D6: success is ALFWorld's won, not the environment ending."""
+    seed = MINING_SEEDS[0]
+    model = SeededModel(wins=wins_for(("S",)))  # the model sends "win" ...
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    run = EpisodeExecutor(
+        model=model, env_factory=lambda split, g: AlfworldEnvironment(StepLimitGame(g), game_id=g),
+        ledger=ledger, trajectories_dir=tmp_path / "t", run_id=RUN_ID, code_commit=COMMIT,
+        clock=Clock(), sleep=lambda _: None)
+    (result,) = run_lifetime(run, tasks(1), g0_runtime_config(registry), seed)[:1]
+    assert result.status == "environment_terminal"  # ... but the game ends unwon
+    assert result.success is False
+    assert ledger.done_record(result.key)["outcome"]["success"] is False
+    assert load_normalized(result.trajectory_path).outcome["success"] is False
+
+
+def test_a_resumed_episode_must_carry_the_settings_it_ran_with(tmp_path, registry):  # noqa: F811
+    from dataclasses import replace
+    from evaluation.exp0001.ledger import LedgerError
+    run, _ = executor(tmp_path, SeededModel())
+    spec = lifetime_specs(tasks(1), g0_runtime_config(registry), MINING_SEEDS[0])[0]
+    run.run(spec)
+    with pytest.raises(LedgerError, match="recorded with settings"):
+        run.run(replace(spec, settings=replace(spec.settings, seed=spec.settings.seed + 1)))

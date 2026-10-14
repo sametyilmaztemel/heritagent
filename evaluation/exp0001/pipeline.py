@@ -9,11 +9,14 @@ per seed, on T_eval, T_reg and the transfer subset) and the final
 statistics. T_eval is touched only by the final evaluation.
 
 Every stage result is a write-once artifact in the run directory and
-every episode a ledger record, so a stopped run resumes without running
-any episode or teacher call twice. A hard cap, or a protocol rule that
-fails closed, stops the run as incomplete with its reason; an incomplete
-run gets no primary verdict (ADR-0006 D5). Nothing here labels a result
-as validated (SPEC section 32)."""
+every episode a ledger record, so a stopped run resumes without running a
+recorded episode, or a frozen seed's teacher calls, again. A crash inside
+an episode or a mining batch re-runs that unit, and its reservation stays
+charged. The gate's decisions reach their artifact before the somatic
+journal, and the report before the ledger's terminal record. A hard cap,
+or a protocol rule that fails closed, stops the run as incomplete with its
+reason; an incomplete run gets no primary verdict (ADR-0006 D5). Nothing
+here labels a result as validated (SPEC section 32)."""
 
 from __future__ import annotations
 
@@ -46,12 +49,17 @@ from evaluation.exp0001.lifetime import (
 )
 from evaluation.exp0001.protocol import (
     CANDIDATE_CAP,
-    CAPS,
+    LOCKED_SPLIT_MANIFEST_SHA256,
     MAX_TOKENS_PER_REQUEST,
     MINING_SEEDS,
     MINING_TEMPERATURE,
 )
-from evaluation.exp0001.provenance import ProvenanceError, freeze_json, verify_run_start_record
+from evaluation.exp0001.provenance import (
+    ProvenanceError,
+    freeze_json,
+    verify_pre_run_artifacts,
+    verify_run_start_record,
+)
 from evaluation.metrics.final_statistics import (
     ArmRun,
     FinalEvaluationInput,
@@ -106,15 +114,36 @@ def _t_reg_allocation(doc: Mapping) -> RegressionAllocation:
 
 
 class Exp0001Run:
+    """One EXP-0001 run in one run directory. The directory is locked for
+    the object's run (one writer); the caps, the model, the teacher and the
+    token counter must be the ones the frozen run-start record names."""
+
     def __init__(self, *, run_dir: Path, run_start: dict, split_manifest: dict, model, teacher,
                  env_factory: Callable[[str, str], object], token_counter,
                  ledger_clock: Callable[[], float] = time.time,
                  episode_clock: Callable[[], float] | None = None,
-                 sleep: Callable[[float], None] = time.sleep, caps: Mapping = CAPS):
+                 sleep: Callable[[float], None] = time.sleep,
+                 expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256):
         self.dir = Path(run_dir)
         verify_run_start_record(run_start)
+        # the split manifest must verify, be the pre-registered one, and be
+        # the one the record names
+        verify_pre_run_artifacts(split_manifest, None, expected_split_sha256=expected_split_sha256)
         if run_start["splits"]["manifest_sha256"] != split_manifest["manifest_sha256"]:
             raise ProvenanceError("the run-start record names another split manifest")
+        for name, adapter in (("model", model), ("teacher", teacher)):
+            metadata = adapter.metadata()
+            actual = {"model_id": metadata.model_id, "revision": metadata.revision,
+                      "backend": metadata.backend}
+            recorded = {k: run_start[name][k] for k in actual}
+            if actual != recorded:
+                raise ProvenanceError(f"the {name} adapter is {actual}, the run-start record "
+                                      f"names {recorded}")
+        if token_counter.identity != run_start["model"]["tokenizer"]:
+            raise ProvenanceError(f"the token counter is {token_counter.identity!r}, the run-start "
+                                  f"record names {run_start['model']['tokenizer']!r}")
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._lock = _lock_run_dir(self.dir)
         self.registry = TraitRegistry(self.dir / "registry")
         self.g0 = build_g0_seed_genome(self.registry)
         if run_start["g0"]["genome_id"] != self.g0["genome_id"]:
@@ -126,8 +155,9 @@ class Exp0001Run:
         self.token_counter = token_counter
         self.g0_config = compile_runtime_config(self.g0, self.registry)
         self.budgets = protocol_budgets()
+        # the caps in force are the recorded ones: never enlarged silently
         self.ledger = RunLedger(self.dir / "ledger.jsonl", run_id=run_start["run_id"],
-                                clock=ledger_clock, caps=caps)
+                                clock=ledger_clock, caps=run_start["protocol"]["caps"])
         self.executor = EpisodeExecutor(
             model=model, env_factory=env_factory, ledger=self.ledger,
             trajectories_dir=self.dir / "trajectories", run_id=run_start["run_id"],
@@ -136,6 +166,12 @@ class Exp0001Run:
         self.t_mine = t_mine_tasks(split_manifest)
         self._final_cells: dict | None = None
 
+    def close(self) -> None:
+        """Release the run directory."""
+        if self._lock is not None:
+            self._lock.close()
+            self._lock = None
+
     # -- stages -------------------------------------------------------------
     def _mine(self, seed: int, results) -> list[dict]:
         path = self.dir / f"seed-{seed}" / "candidates.json"
@@ -143,24 +179,30 @@ class Exp0001Run:
         key = f"mining/{seed}"
         if frozen is None:
             batch = mining_batch(results, self.t_mine, seed)
-            # one teacher call per pair (traits.miner.TraitMiner.mine)
-            if not self.ledger.admit_calls(key, len(batch.pairs)):
-                raise RunError(f"{key} was charged but its frozen candidate set is missing")
+            # one teacher call per pair (traits.miner.TraitMiner.mine); a crash
+            # before the frozen set re-mines, and the aborted attempt stays charged
+            self.ledger.admit_calls(key, len(batch.pairs))
             miner = TraitMiner(self.teacher, self.registry,
                                settings=MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
                                                        max_tokens=MINER_MAX_TOKENS,
                                                        max_proposals=CANDIDATE_CAP),
                                born_generation=0)
             mined = miner.mine(batch)
-            self.ledger.record_calls(key, model_calls=len(batch.pairs))
             frozen = freeze_json(path, {
                 "schema": CANDIDATES_SCHEMA, "mining_seed": seed,
                 "candidates": list(mined.candidates),
                 "candidate_set_sha256": mined.candidate_set_sha256,
                 "mining_records": list(mined.mining_records), "rejected": list(mined.rejected)})
+        if not self.ledger.is_charged(key):
+            # frozen before the calls were recorded (or a crash in between):
+            # one teacher call per mining record
+            self.ledger.record_calls(key, model_calls=len(frozen["mining_records"]))
         digest = sha256_hex(canonical_json(frozen["candidates"]).encode("utf-8"))
         if digest != frozen["candidate_set_sha256"]:  # the miner's own digest rule
             raise RunError(f"{path}: the candidate set does not match its digest")
+        if frozen["mining_seed"] != seed or len(frozen["candidates"]) > CANDIDATE_CAP:
+            raise RunError(f"{path} is not seed {seed}'s frozen candidate set of at most "
+                           f"{CANDIDATE_CAP}")
         return frozen["candidates"]
 
     def _somatic(self, seed: int, candidates) -> SomaticStore:
@@ -169,19 +211,54 @@ class Exp0001Run:
                  else SomaticStore.create(path, self.registry))
         for envelope in candidates:
             gene, version = envelope["candidate"]["gene_id"], envelope["candidate"]["version"]
-            state = store.state(gene, version)
-            if state is None:
+            if store.state(gene, version) is None:
                 store.add_candidate(envelope)
-            elif state != "candidate":
-                raise RunError(f"seed {seed}: {gene!r} is already {state} but the gate artifact "
-                               f"is missing; the decision cannot be re-run")
         return store
+
+    def _check_gate(self, seed: int, candidates, gate: Mapping) -> None:
+        """A gate artifact must decide exactly the frozen candidates, and its
+        verdicts must be the ones its aggregate records carry."""
+        genes = {c["candidate"]["gene_id"]: c["candidate"] for c in candidates}
+        if set(gate["verdicts"]) != set(genes) or set(gate["aggregate_ids"]) != set(genes):
+            raise RunError(f"seed {seed}: gate.json does not decide exactly the frozen candidates")
+        for gene, verdict in gate["verdicts"].items():
+            aggregate = gate["aggregates"].get(gate["aggregate_ids"][gene])
+            if aggregate is None or aggregate.get("verdict") != verdict \
+                    or aggregate.get("candidate_gene_id") != gene:
+                raise RunError(f"seed {seed}: gate.json's verdict for {gene!r} is not its "
+                               f"aggregate record's")
+            bound = (aggregate.get("artifacts") or {}).get("candidate") or {}
+            if bound.get("artifact") not in (None, genes[gene]["artifact"]):
+                raise RunError(f"seed {seed}: {gene!r} was gated on another artifact")
+
+    def _apply_decisions(self, seed: int, candidates, gate: Mapping) -> None:
+        """The gate artifact is written first; the somatic journal then takes
+        its decisions, so a crash in between is finished on resume."""
+        somatic = self._somatic(seed, candidates)
+        for envelope in candidates:
+            gene, version = envelope["candidate"]["gene_id"], envelope["candidate"]["version"]
+            state = "validated" if gate["verdicts"][gene] == "promote" else "rejected"
+            current = somatic.state(gene, version)
+            if current == "candidate":
+                somatic.decide(gene, version, state, [gate["aggregate_ids"][gene]])
+            elif current != state:
+                raise RunError(f"seed {seed}: {gene!r} is {current} in the somatic journal, the "
+                               f"gate artifact says {state}")
+        issues = somatic.verify()
+        somatic.close()
+        if issues:
+            raise RunError(f"seed {seed}: the somatic journal does not verify: {issues}")
 
     def _gate(self, seed: int, candidates, t_reg: RegressionAllocation, results) -> dict:
         path = self.dir / f"seed-{seed}" / "gate.json"
         done = _load(path)
-        if done is not None:
-            return done
+        if done is None:
+            done = self._run_gate(seed, candidates, t_reg, results, path)
+        self._check_gate(seed, candidates, done)
+        self._apply_decisions(seed, candidates, done)
+        return done
+
+    def _run_gate(self, seed: int, candidates, t_reg, results, path: Path) -> dict:
         content = {t.task_id: t.content_sha256 for t in self.t_mine}
         by_trajectory = {r.trajectory_id: r for r in results}
         # every allocation is built, and fails closed, before any gate episode
@@ -196,7 +273,7 @@ class Exp0001Run:
             plans.append((rank, envelope, replay_allocation(self.splits, source_task),
                           generalization_allocation(self.splits, envelope, self.registry)))
         ablation, interaction = ablation_allocation(self.splits), interaction_allocation(self.splits)
-        somatic = self._somatic(seed, candidates)
+        self._somatic(seed, candidates).close()  # the persistent journal holds the candidates
 
         inputs = []
         for rank, envelope, replay_plan, generalization_plan in plans:
@@ -215,19 +292,21 @@ class Exp0001Run:
                 candidate_envelope=envelope, frozen_rank=rank, replay_evaluation=replay,
                 ablation_evaluation=ablated, generalization_allocation=generalization_plan,
                 regression_allocation=t_reg, parent_cig_id=cig_id(seed, rank), mining_seed=seed))
+        # the gate commits into an in-memory mirror of the journal; its
+        # artifact is frozen before the persistent journal takes the decisions
+        mirror = SomaticStore.create(None, self.registry)
+        for envelope in candidates:
+            mirror.add_candidate(envelope)
         records = CigRecordStore()
         outcome = CigGateOrchestrator(
             registry=self.registry, base_config=self.g0_config,
             runner=LedgerGateRunner(self.executor, f"gate/{seed}/stage3-4", self.budgets),
             budgets=self.budgets, parent_cig_id=cig_id(seed, None), mining_seed=seed,
             token_counter=self.token_counter, interaction_allocation=interaction,
-            somatic_store=somatic, cig_record_store=records).run(inputs)
+            somatic_store=mirror, cig_record_store=records).run(inputs)
         if not outcome.committed:
             raise RunError(f"seed {seed}: the gate did not commit its decisions")
         records.require_consistent()
-        issues = somatic.verify()
-        if issues:
-            raise RunError(f"seed {seed}: the somatic journal does not verify: {issues}")
         return freeze_json(path, {
             "schema": GATE_SCHEMA, "mining_seed": seed,
             "verdicts": outcome.verdicts,
@@ -236,12 +315,11 @@ class Exp0001Run:
             "aggregates": records.aggregates, "children": records.children})
 
     def _arms(self, seed: int, candidates, gate: Mapping) -> dict:
-        path = self.dir / f"seed-{seed}" / "arms.json"
-        done = _load(path)
-        if done is None:
-            genomes = arm_genomes(self.g0, candidates, gate["verdicts"], gate["aggregate_ids"],
-                                  self.registry, seed)
-            done = freeze_json(path, {"schema": ARMS_SCHEMA, "mining_seed": seed, **genomes})
+        genomes = arm_genomes(self.g0, candidates, gate["verdicts"], gate["aggregate_ids"],
+                              self.registry, seed)
+        # rebuilt every time: a frozen arms.json with other content fails closed
+        done = freeze_json(self.dir / f"seed-{seed}" / "arms.json",
+                           {"schema": ARMS_SCHEMA, "mining_seed": seed, **genomes})
         return {"B": done["B"], "C": done["C"]}
 
     def _evaluate(self, arm: str, label: str, genome: dict, tasks, task_set: str,
@@ -292,22 +370,39 @@ class Exp0001Run:
             t_reg_task_ids=tuple(t.task_id for t in t_reg.tasks), runs=runs,
             complete=complete, incomplete_reason=reason)
 
+    def _report(self, status: str, stage: str, reason: str | None, **content) -> dict:
+        return {"schema": REPORT_SCHEMA, "status": status, "stage": stage, "reason": reason,
+                "episodes": self.ledger.episodes, "model_calls": self.ledger.model_calls,
+                "aborted_attempts": self.ledger.aborted_attempts, **content}
+
     # -- the run ----------------------------------------------------------------
     def run(self) -> dict:
+        try:
+            return self._run()
+        finally:
+            self.close()
+
+    def _run(self) -> dict:
+        report_path = self.dir / "report.json"
         if self.ledger.state != "running":  # a finished run is never run again
-            report = _load(self.dir / "report.json")
+            report = _load(report_path)
             if report is None:
-                raise RunError(f"the run is {self.ledger.state} but has no report")
+                if self.ledger.state != "incomplete":
+                    raise RunError(f"the run is {self.ledger.state} but has no report")
+                # stopped by a cap, then a crash before its report was written
+                report = freeze_json(report_path, self._report(
+                    "incomplete", "unknown (report rebuilt from the ledger)", self.ledger.reason,
+                    statistics=None))
             return report
         stage, t_reg = "lifetime", None
         try:
             lifetimes = {seed: run_lifetime(self.executor, self.t_mine, self.g0_config, seed)
                          for seed in MINING_SEEDS}
             stage = "t_reg"
-            t_reg_doc = _load(self.dir / "t_reg.json")
-            if t_reg_doc is None:
-                t_reg_doc = freeze_json(self.dir / "t_reg.json", t_reg_record(
-                    derive_t_reg(lifetimes, self.t_mine), eligible_count(lifetimes)))
+            # re-derived every time from the ledger; a frozen t_reg.json with
+            # other content fails closed
+            t_reg_doc = freeze_json(self.dir / "t_reg.json", t_reg_record(
+                derive_t_reg(lifetimes, self.t_mine), eligible_count(lifetimes)))
             t_reg = _t_reg_allocation(t_reg_doc)
             genomes: dict = {("A", None): self.g0}
             for seed in MINING_SEEDS:
@@ -321,17 +416,30 @@ class Exp0001Run:
             final = self._final({key: genomes[key] for key in sorted(
                 genomes, key=lambda k: (k[0], -1 if k[1] is None else k[1]))}, t_reg)
         except (CapExceeded, LifetimeError, AllocationError) as exc:
-            reason = str(exc)
-            if not isinstance(exc, CapExceeded):
-                self.ledger.abandon(f"{stage}: {reason}")
-            report = {"schema": REPORT_SCHEMA, "status": "incomplete", "stage": stage,
-                      "reason": self.ledger.reason, "episodes": self.ledger.episodes,
-                      "model_calls": self.ledger.model_calls, "statistics": None}
+            reason = self.ledger.reason if isinstance(exc, CapExceeded) else f"{stage}: {exc}"
+            statistics = None
             if stage == "final" and self._final_cells is not None:
-                report["statistics"] = analyze_final_evaluation(
-                    self._final_input(t_reg, complete=False, reason=self.ledger.reason))
-            return freeze_json(self.dir / "report.json", report)
-        self.ledger.complete()
-        return freeze_json(self.dir / "report.json", {
-            "schema": REPORT_SCHEMA, "status": "complete", "stage": "done", "reason": None,
-            "episodes": self.ledger.episodes, "model_calls": self.ledger.model_calls, **final})
+                statistics = analyze_final_evaluation(
+                    self._final_input(t_reg, complete=False, reason=reason))
+            # the report is frozen before a protocol stop reaches the ledger
+            report = freeze_json(report_path, self._report("incomplete", stage, reason,
+                                                           statistics=statistics))
+            if self.ledger.state == "running":
+                self.ledger.abandon(reason)
+            return report
+        report = freeze_json(report_path, self._report("complete", "done", None, **final))
+        self.ledger.complete()  # after the report, so a crash in between re-runs to it
+        return report
+
+
+def _lock_run_dir(run_dir: Path):
+    """An exclusive advisory lock on the run directory for one writer; a
+    second process (or object) on the same directory fails closed."""
+    import fcntl
+    handle = open(run_dir / ".lock", "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise RunError(f"{run_dir} is in use by another run") from exc
+    return handle

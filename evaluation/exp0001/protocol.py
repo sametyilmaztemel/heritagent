@@ -19,6 +19,9 @@ MAX_TOKENS_PER_REQUEST = 512
 MAX_TOTAL_RETRIES = 10
 CAPS = MappingProxyType({"episodes_max": 7000, "model_calls_max": 225_000,
                          "wall_clock_hours_max": 96, "accelerator_nodes_max": 1})
+# the committed pre-run artifacts (manifest run_protocol); a run binds to them
+LOCKED_SPLIT_MANIFEST_SHA256 = "2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c"
+LOCKED_PILOT_SHA256 = "6286d0fa3072f3a179fbe70d543ec3a6a3e4020f05977111fc05ddb02d57e90c"
 
 PROTOCOL = MappingProxyType({
     "mining_seeds": MINING_SEEDS,

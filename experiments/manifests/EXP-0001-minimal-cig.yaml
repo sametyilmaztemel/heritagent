@@ -126,7 +126,7 @@ run_protocol:                         # ADR-0007 (E1-E8 owner decisions, 2026-10
   transfer_subset: ablation-pool
   budgets: {max_steps: 50, max_total_retries: 10, max_tokens_per_request: 512}   # E5
   cap_check: worst-case-before-each-episode   # E5: max_steps + max_total_retries calls; teacher calls count too
-  generalization_allocation: {split: even-over-families, draw: sha256-keyed-per-family, seed: 0, all_family_applicability: vacuous-out-of-scope}   # E6
+  generalization_allocation: {split: even-over-families, draw: sha256-keyed-per-family, seed: 0, all_family_applicability: vacuous-out-of-scope}   # E6; for an all-family candidate this supersedes inheritance.stages.generalization.out_of_scope (10 tasks)
   arm_genomes: {origin: assimilation, provenance: [source_trajectory, aggregate_cig_record], skill_order: frozen-rank}   # E7
   run_order: [lifetimes-all-seeds, t_reg, per-seed-miner-gate-arms, final-evaluation]   # E8
   final_evaluation: {temperature: 0.0, sampling_seed: none, arm_a: once}   # E8

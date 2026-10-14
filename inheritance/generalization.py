@@ -5,9 +5,10 @@ applicability (read from the content-addressed skill artifact, never from
 caller labels); pass iff paired delta >= 0.
 Out-of-scope: 10 instances outside the declared applicability; pass iff
 paired delta >= -0.05. When the applicability names every family of the
-frozen family universe, no out-of-scope family exists: the stage is
-vacuous (no episode, a recorded vacuous pass) and the in-scope tasks must
-cover every family (ADR-0007 E6, owner decision).
+family universe the allocation carries, no out-of-scope family exists:
+the stage is vacuous (no episode, a recorded vacuous pass, no threshold
+applied) and the in-scope tasks must cover every family (ADR-0007 E6,
+owner decision). The pooled in-scope delta is then the only harm check.
 Frozen family-count plans per scope; observed counts must match exactly;
 every task carries canonical `generalization_bank[<family>]` provenance;
 no replacement within the trait; cross-trait reuse allowed (logged in
@@ -50,9 +51,12 @@ OUT_SCOPE_MIN_DELTA = -0.05
 IN_SCOPE_THRESHOLD_TEXT = "paired delta_in >= 0.0"
 OUT_SCOPE_THRESHOLD_TEXT = "paired delta_out >= -0.05"
 VACUOUS_OUT_OF_SCOPE_REASON = (
-    "vacuous: the frozen applicability names every family of the frozen "
-    "family universe, so no out-of-scope family exists; the in-scope check "
-    "(delta >= 0 over every family) stands for harmlessness (ADR-0007 E6)")
+    "vacuous: the frozen applicability names every family of the family "
+    "universe, so no out-of-scope family exists and no out-of-scope "
+    "threshold is applied; the only harm check is the pooled in-scope delta "
+    "(>= 0) over 10 games spanning every family, not a per-family check "
+    "(ADR-0007 E6)")
+VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT = "not applied: vacuous out-of-scope stage (ADR-0007 E6)"
 
 
 @dataclass(frozen=True)
@@ -404,5 +408,7 @@ class GeneralizationEvaluator:
         if scope == "out_of_scope" and allocation.out_scope_vacuous:
             child["measurements"]["vacuous"] = True
             child["measurements"]["vacuous_reason"] = VACUOUS_OUT_OF_SCOPE_REASON
+            child["measurements"]["locked_threshold"] = {
+                "min_delta": None, "rule": VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT}
         load_cig(child)
         return child
