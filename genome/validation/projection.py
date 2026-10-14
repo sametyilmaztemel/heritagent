@@ -68,14 +68,17 @@ def _project_policy(payload: dict) -> dict:
 
 
 def _keys_in(node, found: set[str]) -> None:
-    """Collect every object key at any depth of a JSON-like value."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            found.add(key)
-            _keys_in(value, found)
-    elif isinstance(node, list):
-        for item in node:
-            _keys_in(item, found)
+    """Collect every object key at any depth of a JSON-like value.
+    Iterative, so a deeply nested payload still gets the typed error
+    rather than a RecursionError (review of #61)."""
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            found.update(item)
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
 
 
 def _assert_no_evaluation_only(projection: dict) -> None:

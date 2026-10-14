@@ -11,7 +11,11 @@ the regulation map's keys, which are gene ids."""
 import pytest
 
 from genome.validation.errors import GenomeValidationError
-from genome.validation.projection import EVALUATION_ONLY_KEYS, project_for_runtime
+from genome.validation.projection import (
+    EVALUATION_ONLY_KEYS,
+    _assert_no_evaluation_only,
+    project_for_runtime,
+)
 from runtime.expression import compile_runtime_config
 from runtime.seed_g0 import build_g0_seed_genome
 
@@ -75,7 +79,9 @@ def test_a_regulated_gene_whose_id_is_a_key_word_compiles(registry, word):
 
 @pytest.mark.parametrize("key", EVALUATION_ONLY_KEYS)
 def test_a_nested_key_in_a_procedure_step_is_still_rejected(registry, key):
-    payload = skill_payload(procedure=[{"id": "S1", "text": "probe", key: {"x": 1}}])
+    # in the second of two steps: every list item is walked (review of #61)
+    payload = skill_payload(procedure=[{"id": "S1", "text": "find"},
+                                       {"id": "S2", "text": "probe", key: {"x": 1}}])
     with pytest.raises(GenomeValidationError, match=rf"leaked evaluation-only keys: \['{key}'\]"):
         project_for_runtime(genome_with_skill(registry, payload), registry)
 
@@ -99,3 +105,15 @@ def test_every_leaked_key_is_named_in_the_locked_order(registry):
     with pytest.raises(GenomeValidationError,
                        match=r"\['gate_reports', 'cig_record', 'provenance'\]"):
         project_for_runtime(genome_with_skill(registry, payload), registry)
+
+
+def test_a_deeply_nested_key_gets_the_typed_error():
+    """Review of #61: a key buried 5000 levels deep is reported as a leak,
+    not as a RecursionError (the walk is iterative)."""
+    deep = {"fitness": 1}
+    for _ in range(5000):
+        deep = {"meta": [deep]}
+    projection = {"genome_id": "G-00000000", "schema_version": "0.1",
+                  "genes": {"skills": [{"name": "x", "notes": deep}]}, "regulation": {}}
+    with pytest.raises(GenomeValidationError, match=r"\['fitness'\]"):
+        _assert_no_evaluation_only(projection)
