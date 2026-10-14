@@ -54,6 +54,21 @@ def test_a_reply_that_both_acts_and_finishes_is_rejected(reply):
         ReActPlanner.parse(reply)
 
 
+DECORATIONS = ["  ", "\t", "- ", "* ", "> ", ">> ", "1. ", "2) ", "# ", "`", "**",
+               "\u00a0", "\u3000", "\u200b", "\ufeff", "\u2022 "]
+
+
+@pytest.mark.parametrize("prefix", DECORATIONS)
+def test_a_decorated_action_with_a_final_answer_is_rejected(prefix):
+    """Review of #55: the action path accepts Action lines behind list or
+    quote decoration, so the mixed-step check must see them too."""
+    action = (f"Thought: Place the egg.\n{prefix}Action: act\n"
+              f"{prefix}Action Input: {{\"command\": \"look\"}}")
+    assert ReActPlanner.parse(action).action.name == "act"  # one step: still an action
+    with pytest.raises(PlanParseError, match="both an Action and a Final Answer"):
+        ReActPlanner.parse(f"{action}\nFinal Answer: The egg has been placed.")
+
+
 def test_a_final_answer_marker_inside_a_thought_is_prose():
     reply = ("Thought: I am not ready for a Final Answer: yet.\n"
              "Action: act\nAction Input: {\"command\": \"look\"}")
