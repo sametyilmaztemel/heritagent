@@ -28,6 +28,7 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 
 ## Hard rules
 
+- No `Co-Authored-By: Claude` line in any commit message, squash message or PR body (owner decision, 2026-10-14): Claude must not appear among the repository's contributors. Claude squash-merges its own PRs with an explicit message, so GitHub adds no co-author line either. The owner approved one history rewrite of `main` to remove the earlier lines (takeover note §5.13); that was the only exception to the next rule.
 - Never push directly to `main`: it changes only by merging a reviewed, green PR. Never push to Zcode's `issue-*` branches or to another session's `claude/*` branch.
 - Never edit `SPEC.md`, `research/decisions/ADR-*`, `experiments/manifests/*`, `research/hypotheses/` or `research/novelty-ledger.md` without an accepted ADR or an explicit Critic handoff.
 - Anti-overclaim (SPEC §34): *first / novel / better / causal / general / model-independent / evolutionary improvement / inheritance* only with experimental evidence.
