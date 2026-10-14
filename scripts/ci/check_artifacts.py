@@ -41,6 +41,20 @@ sys.path.insert(0, str(REPO_ROOT))
 
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 
+# Locked EXP-0001 preregistration invariants (issue #6, SPEC section 33).
+PREREGISTERED_STATUS = "preregistered-locked"
+FORBIDDEN_PRERUN_STATUSES = {"running", "completed", "executed"}
+PREREG_GATE_STAGES = ("replay", "ablation", "generalization_combined",
+                      "interaction_regression_overhead", "final_promoted")
+PREREG_CAP_FIELDS = ("accelerator_nodes_max", "episodes_max",
+                     "model_calls_max", "wall_clock_hours_max")
+LOCKED_MINING_SEEDS = [11, 23, 41]
+# locked PRIMARY support criteria (design section 5 / ADR-0002): pre-registered
+# expectations may never replace or alter these decision rules
+LOCKED_H2_CRITERION = "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
+LOCKED_H1_CRITERION = "C-A > 0, CI excl. 0"
+LOCKED_SEED_CRITERION = "direction holds in >= 2/3 mining seeds"
+
 FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\s*\)")
@@ -159,6 +173,157 @@ def check_example_genomes() -> list[str]:
     return errors
 
 
+def check_preregistration(manifest: dict, label: str) -> list[str]:
+    """Machine-readable preregistration invariants for experiment manifests
+    (issue #6, SPEC section 33): expectations filled and internally
+    consistent, gate-survival expectations monotone within 0..K, hard caps
+    positive, mining seeds locked, primary H2/H1 support criteria
+    UNCHANGED (expectations are never decision rules), no T_eval
+    threshold-tuning fields inside the prereg, and no post-run status
+    before the experiment has started."""
+    issues: list[str] = []
+
+    def err(message: str) -> None:
+        issues.append(f"{label}: {message}")
+
+    experiment = manifest.get("experiment")
+    if not isinstance(experiment, dict):
+        return issues  # not an experiment manifest body
+    prereg = experiment.get("preregistration")
+    if prereg is None:
+        return issues  # pre-preregistration manifests are allowed
+    if not isinstance(prereg, dict):
+        err(f"preregistration must be a mapping, got {type(prereg).__name__}")
+        return issues
+    status = experiment.get("status")
+    if status in FORBIDDEN_PRERUN_STATUSES:
+        err(f"experiment.status {status!r} is a post-run status; the "
+            f"experiment has not started")
+    if prereg.get("locked") is not True:
+        err("preregistration.locked must be true")
+    filled = prereg.get("expected_results_filled") is True
+    if not filled:
+        err("preregistration.expected_results_filled must be true")
+    elif status != PREREGISTERED_STATUS:
+        err(f"experiment.status must be {PREREGISTERED_STATUS!r} when "
+            f"expected_results_filled, got {status!r}")
+
+    results = prereg.get("expected_results")
+    if not isinstance(results, dict):
+        err("preregistration.expected_results must be a mapping")
+        return issues
+
+    def heldout_block(hypothesis: str):
+        block = results.get(hypothesis)
+        if not isinstance(block, dict):
+            err(f"expected_results.{hypothesis} must be a mapping")
+            return None
+        if not isinstance(block.get("direction"), str) or not block["direction"]:
+            err(f"expected_results.{hypothesis}.direction must be a "
+                f"non-empty string")
+        heldout = block.get("heldout_success_pp")
+        if not isinstance(heldout, dict):
+            err(f"expected_results.{hypothesis}.heldout_success_pp must be "
+                f"a mapping")
+            return None
+        central = heldout.get("central")
+        spread = heldout.get("range")
+        if not isinstance(central, (int, float)) or isinstance(central, bool):
+            err(f"expected_results.{hypothesis}.heldout_success_pp.central "
+                f"must be numeric, got {central!r}")
+            return None
+        if not (isinstance(spread, list) and len(spread) == 2 and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                for v in spread)):
+            err(f"expected_results.{hypothesis}.heldout_success_pp.range "
+                f"must be [min, max] numerics, got {spread!r}")
+            return None
+        if not spread[0] <= central <= spread[1]:
+            err(f"expected_results.{hypothesis}: range {spread} must "
+                f"satisfy min <= central ({central}) <= max")
+        return block
+
+    h2 = heldout_block("h2")
+    h1 = heldout_block("h1")
+    if isinstance(h2, dict):
+        regression = h2.get("regression_difference_pp")
+        if not isinstance(regression, dict) or \
+                not isinstance(regression.get("direction"), str):
+            err("expected_results.h2.regression_difference_pp must be a "
+                "mapping with a direction")
+        elif not (isinstance(regression.get("expected_reduction_range"), list)
+                  and len(regression["expected_reduction_range"]) == 2):
+            err("expected_results.h2.regression_difference_pp."
+                "expected_reduction_range must be [min, max]")
+    if isinstance(h1, dict) and isinstance(h2, dict):
+        if h2.get("direction") == h1.get("direction"):
+            err("expected_results.h2.direction and expected_results.h1."
+                "direction must describe distinct arm contrasts")
+
+    gate = results.get("gate_survival_per_seed")
+    if not isinstance(gate, dict):
+        err("expected_results.gate_survival_per_seed must be a mapping")
+    else:
+        frozen = gate.get("frozen_candidates")
+        if not isinstance(frozen, int) or isinstance(frozen, bool) or frozen <= 0:
+            err("gate_survival_per_seed.frozen_candidates must be a "
+                "positive int, got {0!r}".format(frozen))
+        else:
+            previous = None
+            for stage in PREREG_GATE_STAGES:
+                value = gate.get(stage)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    err(f"gate_survival_per_seed.{stage} must be an int, "
+                        f"got {value!r}")
+                    continue
+                if not 0 <= value <= frozen:
+                    err(f"gate_survival_per_seed.{stage}={value} outside "
+                        f"0..K ({frozen})")
+                if previous is not None and value > previous:
+                    err(f"gate_survival_per_seed.{stage}={value} exceeds the "
+                        f"preceding stage expectation {previous}")
+                previous = value
+
+    cap = results.get("compute_cap")
+    if not isinstance(cap, dict):
+        err("expected_results.compute_cap must be a mapping")
+    else:
+        for field in PREREG_CAP_FIELDS:
+            value = cap.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                err(f"compute_cap.{field} must be a positive int, got {value!r}")
+        if cap.get("mining_seeds") != LOCKED_MINING_SEEDS:
+            err(f"compute_cap.mining_seeds must be exactly "
+                f"{LOCKED_MINING_SEEDS}, got {cap.get('mining_seeds')!r}")
+
+    # no T_eval threshold-tuning fields inside the preregistration block
+    def scan(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                flattened = str(key).lower().replace("_", "").replace("-", "")
+                if "teval" in flattened:
+                    err(f"prereg must not introduce T_eval-driven fields: "
+                        f"{path}.{key}")
+                scan(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                scan(value, f"{path}[{index}]")
+
+    scan(prereg, "preregistration")
+
+    # the PRIMARY support criteria are locked decision rules — expectations
+    # never replace them
+    statistics = (manifest.get("evaluation") or {}).get("statistics") or {}
+    for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
+                          ("h1_supported_if", LOCKED_H1_CRITERION),
+                          ("seed_consistency", LOCKED_SEED_CRITERION)):
+        actual = statistics.get(field)
+        if actual != locked:
+            err(f"locked primary support criterion {field} changed: "
+                f"{actual!r} != {locked!r}")
+    return issues
+
+
 def check_manifests() -> list[str]:
     import yaml
 
@@ -174,6 +339,8 @@ def check_manifests() -> list[str]:
             continue
         if not isinstance(data, dict):
             errors.append(f"{rel(path)}: top level is {type(data).__name__}, expected a mapping")
+            continue
+        errors.extend(check_preregistration(data, rel(path)))
     print(f"manifests: {len(paths)} checked")
     return errors
 
