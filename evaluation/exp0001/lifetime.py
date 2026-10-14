@@ -90,6 +90,21 @@ def run_lifetime(executor: EpisodeExecutor, tasks: Sequence[LifetimeTask],
     return tuple(executor.run(spec) for spec in lifetime_specs(tasks, config, mining_seed))
 
 
+def run_lifetimes(executor: EpisodeExecutor, tasks: Sequence[LifetimeTask],
+                  config: RuntimeConfig,
+                  mining_seeds: Sequence[int] = MINING_SEEDS) -> dict[int, tuple[EpisodeResult, ...]]:
+    """Every seed's lifetime in one batch (E8: all lifetimes first), so
+    parallel workers are never idle between seeds; the episodes are those
+    of ``run_lifetime`` per seed, in the same order."""
+    specs = {seed: lifetime_specs(tasks, config, seed) for seed in mining_seeds}
+    results = executor.run_many([spec for seed in mining_seeds for spec in specs[seed]])
+    by_seed, start = {}, 0
+    for seed in mining_seeds:
+        by_seed[seed] = tuple(results[start:start + len(specs[seed])])
+        start += len(specs[seed])
+    return by_seed
+
+
 def _attempt(result: EpisodeResult, mining_seed: int) -> int:
     prefix = f"lifetime/{mining_seed}/{result.task_id}/"
     if not result.key.startswith(prefix):

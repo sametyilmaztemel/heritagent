@@ -81,4 +81,4 @@ Repo: https://github.com/sametyilmaztemel/heritagent (public). Tracking:
 
 ## Suggested next step
 
-#13 Phase A (the EXP-0001 orchestration, pre-run artifacts and run protocol, ADR-0006 and ADR-0007) is in review on PR #68; no EXP-0001 or pilot episode has run. Next: Phase B on a GPU node (the calibration pilot, then the compute-cap decision), then the EXP-0001 run.
+#13 Phase A (the EXP-0001 orchestration, pre-run artifacts and run protocol, ADR-0006 and ADR-0007) is merged. The run executes on one Colab A100 80 GB with parallel episodes (ADR-0008); `notebooks/EXP-0001-pilot.ipynb` and `notebooks/EXP-0001-run.ipynb` drive it through `python -m evaluation.exp0001.cli`. No EXP-0001 or pilot episode has run. Next: the calibration pilot, then the compute-cap decision, then the EXP-0001 run.

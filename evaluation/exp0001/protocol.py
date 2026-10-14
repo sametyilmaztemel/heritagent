@@ -1,5 +1,6 @@
 """The frozen EXP-0001 run protocol (ADR-0007; owner decisions E1-E8 of
-2026-10-14, plus the locked manifest values it builds on).
+2026-10-14, as amended by ADR-0008 D2-D3; plus the locked manifest values
+it builds on).
 
 Everything the orchestrator decides by rule is fixed here, before any
 episode, and recorded in the run-start record."""
@@ -43,10 +44,13 @@ PROTOCOL = MappingProxyType({
     "budgets": {"max_steps": 50, "max_total_retries": MAX_TOTAL_RETRIES,
                 "max_tokens_per_request": MAX_TOKENS_PER_REQUEST},
     "caps": CAPS,
-    "cap_rule": "before each episode: stop if episodes + 1 > episodes_max, if model_calls + "
-                "(max_steps + max_total_retries) > model_calls_max, or if the wall clock since "
-                "run start exceeds wall_clock_hours_max; a stopped run is incomplete; the "
-                "miner's teacher calls count against model_calls_max",
+    "cap_rule": "before each episode: stop if episodes + episodes in flight + 1 > "
+                "episodes_max, if model_calls + the reservations in flight + (max_steps + "
+                "max_total_retries) > model_calls_max, or if the active run time exceeds "
+                "wall_clock_hours_max; a stopped run is incomplete; the miner's teacher calls "
+                "count against model_calls_max",
+    "wall_clock_basis": "active run time: the sum of the ledger sessions' spans, each from "
+                        "the process opening the ledger to its last record (ADR-0008 D2)",
     "generalization_allocation": "10 in-scope games split evenly over the applicability "
                                  "families and 10 out-of-scope games over the others (remainder "
                                  "to the first families by name); per family the games with the "
