@@ -348,7 +348,7 @@ class GeneralizationEvaluator:
                     "temperature": self._settings.temperature,
                     "max_tokens": self._settings.max_tokens,
                     "seed": self._mining_seed,
-                    "stop": [],
+                    "stop": list(self._settings.stop),
                 },
                 "stage_pass": passed,
             },

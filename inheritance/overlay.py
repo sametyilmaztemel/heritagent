@@ -129,5 +129,8 @@ def build_evaluation_configs(base_config: RuntimeConfig, envelope: dict,
 
 def evaluation_settings(max_tokens: int = 512, seed: int | None = None) -> GenerationSettings:
     """Locked evaluation settings: temperature 0, one deterministic run per
-    (task instance, condition). Nonzero temperatures are rejected."""
-    return GenerationSettings(temperature=0.0, max_tokens=max_tokens, seed=seed)
+    (task instance, condition), and the ReAct protocol's stop sequences
+    (ADR-0003 A2). Nonzero temperatures are rejected."""
+    from runtime.policies.planner_react import STOP_SEQUENCES
+    return GenerationSettings(temperature=0.0, max_tokens=max_tokens, seed=seed,
+                              stop=STOP_SEQUENCES)

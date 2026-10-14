@@ -381,4 +381,4 @@ def test_locked_settings_derived_from_budgets(tmp_path, registry, base_config, e
     assert evaluator._locked_settings.temperature == 0.0
     assert evaluator._locked_settings.max_tokens == budgets.max_tokens_per_request
     assert evaluator._locked_settings.seed == MINING_SEED  # mining seed as fixed seed
-    assert evaluator._locked_settings.stop == ()
+    assert evaluator._locked_settings.stop == ("\nObservation:",)  # ADR-0003 A2
