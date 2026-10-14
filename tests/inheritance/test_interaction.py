@@ -112,11 +112,11 @@ def test_canonical_evidence_is_durable_and_hash_domain(world):
                                  "trajectory_id", "expressed_gene_ids"}
     assert record["paired_outcomes"][0]["expressed_gene_ids"] == \
         ["a_pair", "z_pair"]
-    # EXACT locked settings incl. stop
+    # EXACT locked settings incl. the protocol stop (ADR-0003 A2)
     assert record["locked_settings"] == {"temperature": 0.0,
                                           "max_tokens": 64,
                                           "seed": MINING_SEED,
-                                          "stop": []}
+                                          "stop": ["\nObservation:"]}
     # frozen: mutating the returned copy does not corrupt future reads
     record["delta_pair"] = 99.0
     assert evidence.canonical_evidence["delta_pair"] == evidence.delta_pair

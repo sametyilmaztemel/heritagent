@@ -24,12 +24,12 @@ from typing import Protocol
 
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
-from runtime.model_adapters import GenerationSettings
 from runtime.skills import skill_block
 
 from inheritance.overlay import (
     EvaluationConfigs,
     build_evaluation_configs,
+    evaluation_settings,
 )
 from inheritance.runner import (
     EvaluationTask,
@@ -215,11 +215,10 @@ class RegressionEvaluator:
         self._budgets = budgets
         self._parent_cig_id = parent_cig_id
         self._mining_seed = mining_seed
-        # locked settings derived from the same candidate mining seed +
-        # budgets contract as the other stages
-        self._settings = GenerationSettings(
-            temperature=0.0, max_tokens=budgets.max_tokens_per_request,
-            seed=mining_seed)
+        # the same locked settings as every other stage: mining seed, the
+        # request budget and the ReAct protocol stop (ADR-0003 A2)
+        self._settings = evaluation_settings(
+            max_tokens=budgets.max_tokens_per_request, seed=mining_seed)
         self._locked = {"temperature": self._settings.temperature,
                          "max_tokens": self._settings.max_tokens,
                          "seed": self._settings.seed,

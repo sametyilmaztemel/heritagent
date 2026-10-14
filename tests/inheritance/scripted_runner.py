@@ -41,7 +41,7 @@ class ScriptedRunner:
             temperature=(settings.temperature if self.acknowledge_settings
                           else self.reported_temperature),
             max_tokens=settings.max_tokens,
-            seed=settings.seed)
+            seed=settings.seed, stop=settings.stop)
         return EpisodeOutcome(
             task_id=task.task_id, condition=condition, success=success,
             expressed_gene_ids=tuple(expressed),

@@ -183,7 +183,7 @@ def test_single_candidate_promotes_when_all_stages_pass(tmp_path):
     reg = stage4["regression"]
     assert reg["eval_generation_settings"] == {
         "temperature": 0.0, "max_tokens": 64,
-        "seed": MINING_SEED, "stop": []}
+        "seed": MINING_SEED, "stop": ["\nObservation:"]}  # ADR-0003 A2
 
 
 def test_interaction_two_eligible_twenty_calls_shared_evidence(tmp_path):
