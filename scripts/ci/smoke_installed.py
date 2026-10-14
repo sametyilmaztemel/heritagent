@@ -21,6 +21,7 @@ def main() -> int:
     repo_root = Path(sys.argv[1]).resolve()
 
     import evaluation.benchmarks.alfworld.splits  # noqa: F401
+    import evaluation.metrics.final_statistics  # noqa: F401
     import genome
     import inheritance.gate  # noqa: F401  (imports the whole gate stack)
     import somatic.store
