@@ -28,6 +28,11 @@ or, when the task is complete:
 Thought: <one sentence of reasoning>
 Final Answer: <the final answer>"""
 
+# ADR-0003 A2: generation stops where the model starts an observation line.
+# Observations come from the environment, never from the model; the text
+# before the stop is parsed as one step, as usual.
+STOP_SEQUENCES = ("\nObservation:",)
+
 # "Final Answer:" is a marker only at the start of a line; elsewhere it is
 # prose (a Thought, or a string inside Action Input). The answer runs to
 # the end of the reply.
@@ -58,6 +63,8 @@ def tool_catalog_block(tools: list[ToolSpec]) -> str:
 
 
 class ReActPlanner:
+    stop_sequences = STOP_SEQUENCES
+
     def __init__(self, config: dict):
         if config.get("style") != "react":
             raise ValueError("ReActPlanner requires a 'react' style policy config")

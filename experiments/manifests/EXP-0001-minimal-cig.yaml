@@ -17,6 +17,7 @@ model:
   serving: vllm-local
   revision: pin-at-run-time          # record weights hash at run start
   eval_temperature: 0.0
+  eval_stop: ["\nObservation:"]    # ADR-0003 A2: ReAct generation stops before an observation line
   mining_temperature: 0.7
   determinism_policy:                # critic round 2, R1
     executions_per_task_condition: 1 # exactly one run per (task instance, condition) in all gate stages
