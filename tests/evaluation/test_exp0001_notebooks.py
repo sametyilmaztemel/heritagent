@@ -12,7 +12,7 @@ import pytest
 from evaluation.exp0001 import cli
 
 NOTEBOOKS = Path(__file__).resolve().parents[2] / "notebooks"
-EMPTY = {"flag", "stop"}  # optional flags the cells may leave empty
+EMPTY = {"flag", "stop", "bi_flag"}  # optional flags the cells may leave empty
 
 
 def cli_lines(path):
@@ -36,6 +36,6 @@ def test_every_command_line_of_the_notebook_parses(name):
         argv = shlex.split(filled)[3:]
         args = cli.parser().parse_args(argv)  # an unknown flag exits
         commands.add(args.command)
-    expected = {"gpu-check", "prepare-model", "serve"} | (
+    expected = {"gpu-check", "prepare-model", "serve", "preflight"} | (
         {"pilot"} if "pilot" in name else {"run", "status"})
     assert commands == expected

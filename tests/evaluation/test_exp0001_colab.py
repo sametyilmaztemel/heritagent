@@ -432,3 +432,27 @@ def test_a_resumed_run_must_use_the_code_and_weights_it_started_with(tmp_path):
     with pytest.raises(cli.CliError, match="needs --run-id"):
         cli._run_start(args, tmp_path / "fresh", prepared, None, None, None, "a" * 40, False,
                        "tok")
+
+
+def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, capsys):
+    from evaluation.exp0001.serving import PREPARED_SCHEMA
+    prepared = tmp_path / "prepared.json"
+    prepared.write_text(json.dumps({"schema": PREPARED_SCHEMA, "model_id": "Qwen/Qwen2.5-7B-Instruct",
+                                    "revision": "a" * 40, "path": "/nowhere",
+                                    "weights": {"sha256": "b" * 64}}))
+    served = (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]})
+    server = Server([(200, {"version": "0.29.0"}), served, completion("Thought: ready"),
+                     completion('{"proposals": []}'),
+                     (200, {"version": "0.29.0"}), served,
+                     (200, {"choices": [{"message": {"content": "Thought: ready"}}]})])
+    try:
+        argv = ["preflight", "--prepared", str(prepared), "--server-url", server.url]
+        assert cli.main(argv) == 0
+        assert json.loads(capsys.readouterr().out)["teacher_reply"] == {"proposals": []}
+        assert cli.main(argv) == 2  # no usage block: the run needs exact token counts
+        assert "token usage" in capsys.readouterr().err
+    finally:
+        server.close()
+    teacher = server.requests[3][2]
+    assert teacher["response_format"]["json_schema"]["schema"]["required"] == ["proposals"]
+    assert teacher["temperature"] == 0.7 and server.requests[2][2]["stop"] == ["\nObservation:"]

@@ -4,6 +4,10 @@ The Colab notebooks call these commands; each one can also be run by hand.
   gpu-check       the A100 80 GB check (fails closed on any other GPU)
   prepare-model   download and hash one pinned model revision -> prepared.json
   serve           start ``vllm serve`` on it and wait until it answers
+  preflight       two calls outside any ledger that check the serving stack:
+                  a ReAct-format reply with the stop sequence, and the
+                  miner's structured output under its JSON schema (the
+                  teacher first runs only after the 540 lifetime episodes)
   pilot           the calibration pilot -> pilot-report.json
   run             EXP-0001: write (or check) the run-start record, restore the
                   run directory from its mirror if it is missing, run or
@@ -173,6 +177,28 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_preflight(args) -> int:
+    from runtime.model_adapters.base import GenerationSettings, ModelMessage
+    from runtime.policies.planner_react import STOP_SEQUENCES
+    from traits.miner.miner import output_schema
+
+    prepared = load_prepared(args.prepared)
+    adapter = _adapter(args, prepared)
+    reply = adapter.generate(
+        [ModelMessage("user", "Reply with one line: Thought: ready")],
+        GenerationSettings(temperature=0.0, max_tokens=64, seed=None, stop=STOP_SEQUENCES))
+    if reply.prompt_tokens is None or reply.completion_tokens is None:
+        raise CliError("the server reports no token usage; the run needs exact counts")
+    teacher = adapter.structured_generate(  # validated against the schema by the adapter
+        [ModelMessage("user", "Propose at most one short household-task skill as JSON that "
+                              "follows the given schema.")],
+        GenerationSettings(temperature=0.7, max_tokens=2048, seed=11), output_schema())
+    print(json.dumps({"react_reply": reply.text[:200], "react_tokens": [
+        reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
+        "teacher_finish_reason": teacher.finish_reason}, indent=2))
+    return 0
+
+
 def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
     if mirror_dir is None or (local.exists() and any(local.iterdir())):
         return
@@ -243,6 +269,8 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
     path = local / "run-start.json"
     if path.exists():  # a resumed run: the same code, model and weights, or nothing
         record = _json(path)
+        if args.run_id and record["run_id"] != args.run_id:
+            raise CliError(f"{local} holds run {record['run_id']!r}, not {args.run_id!r}")
         if record["code"]["commit"] != commit or dirty:
             raise CliError(f"the run started at commit {record['code']['commit']}; this checkout "
                            f"is {commit}{' (dirty)' if dirty else ''}. Check out that commit.")
@@ -359,6 +387,11 @@ def parser() -> argparse.ArgumentParser:
                    help="faster, but a reply may then depend on the batch (ADR-0008 D4)")
     p.add_argument("--timeout", type=float, default=1800.0)
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("preflight")
+    p.add_argument("--prepared", type=Path, required=True)
+    p.add_argument("--server-url", default=f"http://127.0.0.1:{DEFAULT_PORT}")
+    p.set_defaults(func=cmd_preflight)
 
     for name, func in (("pilot", cmd_pilot), ("run", cmd_run)):
         p = sub.add_parser(name)
