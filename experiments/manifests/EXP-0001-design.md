@@ -1,6 +1,6 @@
 # EXP-0001 — Minimal Causal Inheritance Gate experiment (design, pre-registration)
 
-**Status: REVISED after critic round 1 (2026-10-02) — re-review requested.** Originally designed and locked 2026-10-02; revised same day per Research/Critic review on PR #2 / issue #5 (see §9). Machine-readable manifest: `EXP-0001-minimal-cig.yaml`. Decision record: `research/decisions/ADR-0002-exp-0001-design.md`. Expected-result fields must still be filled in before the run starts (SPEC §33).
+**Status: PREREGISTERED-LOCKED (2026-10-14, before EXP-0001 execution).** Originally designed and locked 2026-10-02; revised same day per Research/Critic review on PR #2 / issue #5 (see §9); expected results and compute cap pre-registered 2026-10-14, before any EXP-0001 execution (see §8). Machine-readable manifest: `EXP-0001-minimal-cig.yaml`. Decision record: `research/decisions/ADR-0002-exp-0001-design.md`.
 
 This is Milestone 0 (SPEC §29): one model, one domain, one agent, two generations. It exists to test the load-bearing hypothesis H2 before anything else is built (SPEC §27).
 
@@ -84,12 +84,41 @@ Gate outputs are CIG records (schema `cig/0.1`); rejected candidates stay in som
 
 Mining: 3 seeds × 60 tasks = 180 episodes. CIG per seed: 10 candidates × [replay 5×2 + ablation 20×2 + generalization 20×2 + regression 40] = 1,300 episodes → 3,900 across seeds (single deterministic run per (task, condition); ~130 episodes per candidate vs ~350 under the earlier repeated-run design). Final evaluation: 3 arms × (134 + 40 + 20) × 3 mining seeds ≈ 1.75k episodes. The interaction stage adds ≤ ~900 in the worst case (all pairs of 10 validated skills). Total ≈ 5.8–6.7k episodes × ~30 LLM calls ≈ 180–200k local-7B calls — feasible on one GPU node over a few days. **Bank construction (`replay_bank`, `generalization_bank`; ~84 instances) adds no LLM calls** — only per-trait evaluations on bank instances are billed, and per-trait counts are unchanged by the family-indexed layout.
 
-## 8. Pre-registration fields to fill BEFORE run start
+## 8. Pre-registration (LOCKED 2026-10-14, before EXP-0001 execution)
 
-- [ ] Expected result, H2 (direction + rough magnitude): ______
-- [ ] Expected result, H1: ______
-- [ ] Expected number of candidates passing each gate stage: ______
-- [ ] Compute allocation and wall-clock cap: ______
+**Pre-registration completed before EXP-0001 execution; no EXP-0001 outcome data had been collected or inspected when these expectations were locked.** (This statement refers to actual EXP-0001 outcome data only; the synthetic test/dev fixtures used while building the merged CIG implementation are not EXP-0001 outcomes.)
+
+### Expectations are NOT decision rules
+
+The values below are EXPECTATIONS — directional forecasts recorded for post-run review against SPEC §33. They are **not** success thresholds and must never be used to retune anything mid-run. The **PRIMARY SUPPORT CRITERIA** in §5 (locked) remain the only decision rules, unchanged by this pre-registration:
+
+- H2 supported iff: `C−B ≥ +5pp` on T_eval, bootstrap 95% CI excluding 0, AND regression rate(C) < regression rate(B) with the regression-difference CI excluding 0, AND the C−B direction holds in ≥ 2/3 mining seeds;
+- H1 supported iff: `C−A > 0` with bootstrap 95% CI excluding 0.
+
+In particular, the expected C−B central value of +7pp does **not** move the +5pp threshold. Null/negative outcomes remain valid scientific results.
+
+- [x] **Expected result, H2 (direction + rough magnitude):** CIG-gated arm C > unrestricted arm B on held-out `T_eval`, with lower regression. Expected `C−B` held-out success: approximately **+5 to +10 percentage points**, central expectation approximately **+7pp**. Regression rate for C expected approximately **3–8pp lower** than B. These are expectations, NOT success thresholds.
+- [x] **Expected result, H1:** arm C shows positive held-out improvement over the no-inheritance arm A. Expected `C−A`: approximately **+5 to +15 percentage points**, central expectation approximately **+10pp**. Expectation, NOT a success threshold — the H1 support criterion stays `C−A > 0` with bootstrap 95% CI excluding 0.
+- [x] **Expected number of candidates passing each gate stage** — a **rough expectation per mining seed, not a quota** (frozen candidate set: K = 10 per seed):
+  - Stage 1 — Replay: ~**6 / 10**;
+  - Stage 2 — Ablation: ~**4 / 10**;
+  - Stage 3 — Generalization (combined): ~**4 / 10** (audit detail: in-scope pass ~5–6/10; out-of-scope harmlessness ~7–9/10; combined stage-3 pass ~4/10);
+  - Stage 4 — Interaction + regression + overhead: ~**3 / 10** (most candidates are expected to pass the token-overhead check alone; attrition is primarily expected from the 40-task regression stage and occasional harmful-pair interaction);
+  - Final promoted into arm C: ≈ **3 / 10**.
+
+  These numbers may never be used to justify threshold changes during the experiment.
+- [x] **Compute allocation and wall-clock cap (hard resource envelope):**
+  - at most **1 local GPU/accelerator node**;
+  - **7,000 total experiment episodes — hard cap** (normal expectation ≈ 6,000);
+  - **225,000 model calls — hard cap** (normal expectation ≈ 180–200k local-7B calls);
+  - **96 wall-clock hours — hard cap**;
+  - mining seeds fixed: **[11, 23, 41]**.
+
+  **Hard rule:** if any hard cap would be exceeded, stop the experiment, mark the run incomplete, and record the reason. The budget is never silently enlarged; any rerun with a larger cap requires a new preregistration amendment / experiment revision BEFORE new data collection. Hardware throughput differences never justify changing scientific thresholds.
+
+### Pre-registration immutability
+
+Once EXP-0001 execution has started, the expected results, thresholds, support criteria, gate-survival expectations, and compute caps in this §8 are **immutable under the same EXP-0001 identity**. If a change is required, the current run is preserved as incomplete/aborted, an amendment / new experiment revision is pre-registered BEFORE any additional outcome collection, and the change is recorded in the audit trail.
 
 ## 9. Review resolution (critic round 1, 2026-10-02)
 
