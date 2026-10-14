@@ -11,6 +11,7 @@ retries) reaching the teacher prompt."""
 import copy
 import dataclasses
 import json
+import re
 
 import pytest
 
@@ -58,13 +59,31 @@ def test_a_proposal_with_repeated_step_ids_is_rejected_before_the_cap(tmp_path, 
     assert [c["candidate"]["gene_id"].startswith("check_heater_before_use")
             for c in frozen.candidates] == [True]
     rejected = [e for e in frozen.rejected if e["reason"] == "invalid_runtime_payload"]
-    assert len(rejected) == 1 and rejected[0]["proposal_name"] == "repeat_the_probe"
-    assert "procedure step ids must be unique" in rejected[0]["detail"]
+    assert len(rejected) == 1
+    entry = rejected[0]
+    # one machine-addressable disposition per raw proposal (review of #58)
+    assert entry["proposal_name"] == "repeat_the_probe" and entry["proposal_index"] == 0
+    assert entry["discovery_order"] is None
+    assert re.fullmatch(r"repeat_the_probe_[0-9a-f]{8}", entry["gene_id"])
+    assert "procedure step ids must be unique" in entry["detail"]
     assert not any(e["reason"] == "outside_cap" for e in frozen.rejected)
     record = frozen.mining_records[0]
     assert [e["reason"] for e in record["rejected"]] == ["invalid_runtime_payload"]
-    assert not any(key.startswith(f"skills/{rejected[0]['gene_id']}@")
+    assert not any(key.startswith(f"skills/{entry['gene_id']}@")
                    for key in registry._index())  # never bound to the registry
+
+
+def test_the_runtime_boundary_runs_before_applicability_and_dedupe(tmp_path, registry):
+    """An invalid payload is rejected for that reason even when its families
+    are also outside the universe, and an identical second copy is rejected
+    for the same reason, not as a duplicate."""
+    outside = {**copy.deepcopy(REPEATED_STEP_ID),
+               "applicability": {"task_families": ["quantum_chamber"]}}
+    batch, _ = make_batch(tmp_path, registry)
+    frozen = miner_with(registry, [{"proposals": [outside, REPEATED_STEP_ID,
+                                                  copy.deepcopy(REPEATED_STEP_ID)]}]).mine(batch)
+    assert frozen.candidates == ()
+    assert [e["reason"] for e in frozen.rejected] == ["invalid_runtime_payload"] * 3
 
 
 def test_malformed_teacher_output_is_in_the_frozen_rejected_list(tmp_path, registry):
@@ -117,13 +136,13 @@ def test_applicability_family_order_does_not_change_identity(tmp_path, registry)
 
 
 @pytest.mark.parametrize("field", ["benchmark", "split", "environment"])
-@pytest.mark.parametrize("one_sided", [True, False])
-def test_pair_context_must_match_exactly(tmp_path, registry, field, one_sided):
+@pytest.mark.parametrize("values", [("train", None), (None, "train"), ("train", "valid_seen")],
+                         ids=["failure-unset", "success-unset", "different"])
+def test_pair_context_must_match_exactly(tmp_path, registry, field, values):
     success = run_episode(tmp_path, registry, name="s", success=True)
     failure = run_episode(tmp_path, registry, name="f", success=False)
-    success = dataclasses.replace(success, provenance={**success.provenance, field: "train"})
-    failure = dataclasses.replace(failure, provenance={
-        **failure.provenance, field: None if one_sided else "valid_seen"})
+    success = dataclasses.replace(success, provenance={**success.provenance, field: values[0]})
+    failure = dataclasses.replace(failure, provenance={**failure.provenance, field: values[1]})
     with pytest.raises(MinerInputError, match=f"pair members disagree on {field}"):
         MiningPair(success=success, failure=failure, task_family="heat_and_place")
 
@@ -170,3 +189,19 @@ def test_failure_evidence_keeps_parse_failures_rejections_and_retries(tmp_path, 
         "teleport", True, "unknown_tool")
     assert [t["result_content"] for t in tools if t["tool"] == "heat_object"][-1] == "heater offline"
     assert [r["reason"] for s in steps for r in s["retries"]] == ["plan_parse", "tool_failure"]
+
+
+def test_the_failure_evidence_reaches_the_teacher_prompt(tmp_path, registry):
+    """Review of #58: the rendered evidence must be what the teacher sees,
+    not only what the renderer returns."""
+    success = run_episode(tmp_path, registry, name="s", success=True)
+    pair = MiningPair(success=success, failure=failure_with_every_failure_kind(tmp_path, registry),
+                      task_family="heat_and_place")
+    model = ScriptedAdapter([])
+    model.enqueue_structured({"proposals": []})
+    TraitMiner(model=model, registry=registry, settings=MiningSettings(seed=11),
+               born_generation=1).mine(MiningBatch(pairs=(pair,), family_universe=FAMILIES))
+    prompt = "\n".join(m.content for m in model.requests[0].messages)
+    assert render_pair_evidence(pair)[0] in prompt
+    for fragment in ("I am not sure what to do.", "heater offline", "unknown_tool", "plan_parse"):
+        assert fragment in prompt
