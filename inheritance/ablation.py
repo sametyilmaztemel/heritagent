@@ -40,8 +40,11 @@ from inheritance.runner import (
 
 ABLATION_INSTANCE_COUNT = 20
 TAU_C = 0.05
-BOOTSTRAP_SEED = 0            # explicit deterministic default (recorded)
+BOOTSTRAP_SEED = 0            # pre-registered (ADR-0005; EXP-0001 manifest)
 BOOTSTRAP_N_RESAMPLES = 10_000  # ADR-0002 locked
+# ADR-0005: the paired deltas enter the bootstrap ordered by task_id, so the
+# locked seed decides the resamples independently of the allocation order
+BOOTSTRAP_CLUSTER_ORDER = "task_id"
 ABLATION_THRESHOLD_TEXT = ("point estimate delta_success >= 0.05 and paired "
                             "cluster bootstrap 95% lower bound > 0")
 
@@ -193,6 +196,10 @@ class AblationEvaluator:
         if isinstance(bootstrap_seed, bool) or not isinstance(bootstrap_seed, int):
             raise EvaluationSetupError(
                 f"bootstrap seed must be an explicit int, got {bootstrap_seed!r}")
+        if bootstrap_seed != BOOTSTRAP_SEED:
+            raise EvaluationSetupError(
+                f"bootstrap seed {bootstrap_seed} differs from the pre-registered "
+                f"seed {BOOTSTRAP_SEED} (ADR-0005; EXP-0001 manifest)")
         self._registry = registry
         self._base_config = base_config
         self._runner = runner
@@ -217,7 +224,7 @@ class AblationEvaluator:
         + the emitted child CIG record."""
         gene = self._candidate_gene_id
         episodes: list[dict] = []
-        deltas: list[float] = []
+        task_deltas: list[tuple[str, float]] = []
         expression_observations: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
         # locked evaluation settings derived from the fixed budget, shared
@@ -267,8 +274,12 @@ class AblationEvaluator:
                 "fired_without": fired_without,
             })
             d_i = float(outcomes["with_trait"][0]) - float(outcomes["without_trait"][0])
-            deltas.append(d_i)
+            task_deltas.append((task.task_id, d_i))
 
+        # ADR-0005: clusters ordered by task_id (distinct by the allocation
+        # contract); the record keeps this order, so the bound recomputes
+        # from the record alone
+        deltas = [d for _, d in sorted(task_deltas)]
         bootstrap = paired_cluster_bootstrap(
             deltas, seed=self._bootstrap_seed, n_resamples=self._n_resamples)
         passed = stage_passes(bootstrap.point_estimate, bootstrap.lower_bound,
@@ -283,6 +294,7 @@ class AblationEvaluator:
                 "method": bootstrap.method,
                 "seed": bootstrap.seed,
                 "n_resamples": bootstrap.n_resamples,
+                "cluster_order": BOOTSTRAP_CLUSTER_ORDER,
                 "point_estimate": bootstrap.point_estimate,
                 "lower_bound": bootstrap.lower_bound,
                 "upper_bound": bootstrap.upper_bound,
@@ -312,6 +324,7 @@ class AblationEvaluator:
                     "method": bootstrap.method,
                     "seed": bootstrap.seed,
                     "n_resamples": bootstrap.n_resamples,
+                    "cluster_order": BOOTSTRAP_CLUSTER_ORDER,
                     "lower_bound": bootstrap.lower_bound,
                     "upper_bound": bootstrap.upper_bound,
                 },

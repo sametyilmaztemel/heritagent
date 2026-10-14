@@ -92,6 +92,8 @@ PRIMARY_THRESHOLDS = {
     "tau_k_tokens": 512,
     "bootstrap_confidence": 0.95,
     "bootstrap_resamples": 10_000,
+    "bootstrap_seed": 0,                  # ADR-0005, pre-registered
+    "bootstrap_cluster_order": "task_id",  # ADR-0005
 }
 SENSITIVITY_TAU_C_GRID = (0.03, 0.05, 0.08)
 SENSITIVITY_TAU_R_GRID = (0.02, 0.03, 0.05)
