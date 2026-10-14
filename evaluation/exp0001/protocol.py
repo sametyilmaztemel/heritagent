@@ -1,4 +1,4 @@
-"""The frozen EXP-0001 run protocol (ADR-0007; owner decisions E1-E4 of
+"""The frozen EXP-0001 run protocol (ADR-0007; owner decisions E1-E8 of
 2026-10-14, plus the locked manifest values it builds on).
 
 Everything the orchestrator decides by rule is fixed here, before any
@@ -42,7 +42,17 @@ PROTOCOL = MappingProxyType({
     "caps": CAPS,
     "cap_rule": "before each episode: stop if episodes + 1 > episodes_max, if model_calls + "
                 "(max_steps + max_total_retries) > model_calls_max, or if the wall clock since "
-                "run start exceeds wall_clock_hours_max; a stopped run is incomplete",
+                "run start exceeds wall_clock_hours_max; a stopped run is incomplete; the "
+                "miner's teacher calls count against model_calls_max",
+    "generalization_allocation": "10 in-scope games split evenly over the applicability "
+                                 "families and 10 out-of-scope games over the others (remainder "
+                                 "to the first families by name); per family the games with the "
+                                 "smallest sha256('heritagent-gen|0|<family>|<game_id>'); an "
+                                 "all-family applicability gets a vacuous out-of-scope stage",
+    "arm_genomes": "G1 = G0 + skills in frozen rank order, each origin assimilation with its "
+                   "source trajectory and aggregate CIG record; B all candidates, C promoted only",
+    "run_order": ("lifetimes-all-seeds", "t_reg", "per-seed-miner-gate-arms", "final-evaluation"),
+    "final_evaluation": {"temperature": 0.0, "sampling_seed": None, "arm_a": "once"},
 })
 
 

@@ -231,13 +231,26 @@ def test_a_cap_in_the_final_evaluation_gives_no_verdict(tmp_path, splits):
     assert stats["status"] == "incomplete" and stats["h2"] is None and stats["h1"] is None
 
 
-def test_a_candidate_for_every_family_fails_closed_before_the_gate(tmp_path, splits):
+def test_a_candidate_for_every_family_gets_a_vacuous_out_of_scope_stage(tmp_path, splits):
+    """ADR-0007 E6 (owner): no out-of-scope family exists, so that stage is
+    vacuous; the 10 in-scope games cover every family."""
     universal = [proposal("everywhere", GOOD, F, 0.9)]
     run_dir = tmp_path / "run"
-    report = make_run(run_dir, splits, teacher=Teacher(universal)).run()
-    assert report["status"] == "incomplete" and report["stage"] == "gate/11"
-    assert "no out-of-scope family" in report["reason"]
-    assert not [k for k in ledger_keys(run_dir) if k.startswith("gate/")]
+    agent = Agent()
+    report = make_run(run_dir, splits, agent=agent, teacher=Teacher(universal)).run()
+    assert report["status"] == "complete"
+    # per seed: replay 10 + ablation 40 + in-scope 20 + regression 40
+    assert report["episodes"] == 540 + 3 * 110 + 7 * (134 + 40 + 20) == agent.calls
+    for seed in MINING_SEEDS:
+        gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
+        (gene,) = gate["verdicts"]
+        assert gate["verdicts"][gene] == "promote"
+        out = gate["children"][f"{cig_id(seed, 0)}/S{seed}-generalization_out_of_scope"]
+        assert out["measurements"]["vacuous"] is True and out["measurements"]["stage_pass"]
+        inside = gate["children"][f"{cig_id(seed, 0)}/S{seed}-generalization_in_scope"]
+        plan = inside["measurements"]["allocation"]["in_scope_family_plan"]
+        assert plan == even_split(10, F) and set(plan) == set(F)
+    assert report["statistics"]["h2"]["rule_met"] is False  # B equals C in this world
 
 
 def test_the_generalization_split_and_draw(tmp_path, splits):
@@ -259,11 +272,16 @@ def test_the_generalization_split_and_draw(tmp_path, splits):
     assert [t.task_id for t in allocation.in_scope_tasks if t.family == F[1]] == \
         [g["game_id"] for g in first5]
     assert generalization_allocation(splits, envelope, store) == allocation  # fixed draw
-    with pytest.raises(AllocationError, match="no out-of-scope family"):
-        uri = store.put("skill", "everywhere", 1, {**payload,
-                                                      "applicability": {"task_families": list(F)}})
+    uri = store.put("skill", "everywhere", 1, {**payload, "applicability": {"task_families": list(F)}})
+    vacuous = generalization_allocation(splits, {**envelope, "candidate": {
+        **envelope["candidate"], "gene_id": "everywhere", "artifact": uri}}, store)
+    assert vacuous.out_scope_vacuous and dict(vacuous.frozen_out_scope_plan) == {}
+    assert dict(vacuous.frozen_in_scope_plan) == even_split(10, F)
+    with pytest.raises(AllocationError, match="outside ALFWorld"):
+        uri = store.put("skill", "elsewhere", 1, {**payload, "applicability": {
+            "task_families": ["moon_landing"]}})
         generalization_allocation(splits, {**envelope, "candidate": {
-            **envelope["candidate"], "gene_id": "everywhere", "artifact": uri}}, store)
+            **envelope["candidate"], "gene_id": "elsewhere", "artifact": uri}}, store)
 
 
 def test_replay_takes_the_source_familys_bank(splits):

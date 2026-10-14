@@ -11,8 +11,9 @@ Phase A; manifest ``inheritance.stages``; ADR-0007 E6, proposed).
   family's games are taken in the order of a keyed hash, so every
   candidate that needs n games of a family gets the same n (cross-trait
   reuse is allowed and logged; within a trait there is no replacement).
-  A candidate whose applicability leaves no family out of scope fails
-  closed: the locked design has no out-of-scope rule for it.
+  A candidate whose applicability names every family has no out-of-scope
+  family: its out-of-scope stage is vacuous (E6, owner decision), and its
+  10 in-scope games cover every family.
 - Interaction: the 10-game interaction pool, shared by every pair.
 - Regression: the one shared T_reg (ADR-0006 D8; ADR-0007 E3)."""
 
@@ -39,7 +40,8 @@ GENERALIZATION_RULE = {
              "goes one game each to the first families in name order",
     "draw": "per family, the games with the smallest "
             "sha256('heritagent-gen|<seed>|<family>|<game_id>'), seed 0",
-    "no_out_of_scope_family": "fails closed",
+    "no_out_of_scope_family": "a vacuous out-of-scope stage; the in-scope games cover every "
+                              "family",
 }
 BANKED_POOLS = ("replay_bank", "generalization_bank")
 POOL_SPLITS = {"t_mine": "train", "ablation": "train", "interaction": "train",
@@ -123,13 +125,10 @@ def generalization_allocation(split_manifest: Mapping, envelope: dict,
     if unknown:
         raise AllocationError(f"applicability names families outside ALFWorld: {unknown}")
     outside = [f for f in ALFWORLD_TASK_TYPES if f not in applicability]
-    if not outside:
-        raise AllocationError(
-            f"{envelope['candidate']['gene_id']!r} applies to every family, so no out-of-scope "
-            f"family exists; the locked stage 3 has no rule for this (ADR-0007 E6 fails closed)")
     in_plan = even_split(IN_SCOPE_COUNT, applicability)
-    out_plan = even_split(OUT_SCOPE_COUNT, outside)
+    out_plan = even_split(OUT_SCOPE_COUNT, outside) if outside else {}  # empty: vacuous
     return GeneralizationAllocation(
         in_scope_tasks=_draw(split_manifest, in_plan), out_scope_tasks=_draw(split_manifest, out_plan),
         frozen_in_scope_plan=in_plan, frozen_out_scope_plan=out_plan,
-        declared_frozen_applicability=tuple(applicability))
+        declared_frozen_applicability=tuple(applicability),
+        family_universe=ALFWORLD_TASK_TYPES)

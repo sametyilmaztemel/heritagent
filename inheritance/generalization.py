@@ -4,7 +4,10 @@ In-scope: 10 unseen instances sampled from the candidate's FROZEN
 applicability (read from the content-addressed skill artifact, never from
 caller labels); pass iff paired delta >= 0.
 Out-of-scope: 10 instances outside the declared applicability; pass iff
-paired delta >= -0.05.
+paired delta >= -0.05. When the applicability names every family of the
+frozen family universe, no out-of-scope family exists: the stage is
+vacuous (no episode, a recorded vacuous pass) and the in-scope tasks must
+cover every family (ADR-0007 E6, owner decision).
 Frozen family-count plans per scope; observed counts must match exactly;
 every task carries canonical `generalization_bank[<family>]` provenance;
 no replacement within the trait; cross-trait reuse allowed (logged in
@@ -46,6 +49,10 @@ IN_SCOPE_MIN_DELTA = 0.0
 OUT_SCOPE_MIN_DELTA = -0.05
 IN_SCOPE_THRESHOLD_TEXT = "paired delta_in >= 0.0"
 OUT_SCOPE_THRESHOLD_TEXT = "paired delta_out >= -0.05"
+VACUOUS_OUT_OF_SCOPE_REASON = (
+    "vacuous: the frozen applicability names every family of the frozen "
+    "family universe, so no out-of-scope family exists; the in-scope check "
+    "(delta >= 0 over every family) stands for harmlessness (ADR-0007 E6)")
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,10 @@ class GeneralizationAllocation:
     frozen_in_scope_plan: dict
     frozen_out_scope_plan: dict
     declared_frozen_applicability: tuple[str, ...]
+    # the frozen family universe; required only for a vacuous out-of-scope
+    # stage (no out-of-scope tasks), which ADR-0007 E6 allows only when the
+    # applicability names every family of the universe
+    family_universe: tuple[str, ...] = ()
 
     def __post_init__(self):
         import copy as _copy
@@ -75,13 +86,30 @@ class GeneralizationAllocation:
                             types.MappingProxyType(_copy.deepcopy(dict(self.frozen_out_scope_plan))))
         object.__setattr__(self, "declared_frozen_applicability",
                             tuple(sorted(self.declared_frozen_applicability)))
+        object.__setattr__(self, "family_universe", tuple(sorted(self.family_universe)))
 
         ids = [t.task_id for t in self.in_scope_tasks] + \
             [t.task_id for t in self.out_scope_tasks]
         if len(self.in_scope_tasks) != IN_SCOPE_COUNT:
             raise ValueError(f"in-scope allocation requires exactly "
                               f"{IN_SCOPE_COUNT} tasks, got {len(self.in_scope_tasks)}")
-        if len(self.out_scope_tasks) != OUT_SCOPE_COUNT:
+        if self.out_scope_vacuous:
+            universe = set(self.family_universe)
+            if not universe:
+                raise ValueError(
+                    "an empty out-of-scope allocation needs the frozen family "
+                    "universe (vacuous out-of-scope stage, ADR-0007 E6)")
+            if set(self.declared_frozen_applicability) != universe:
+                raise ValueError(
+                    f"the out-of-scope stage is vacuous only when the "
+                    f"applicability {list(self.declared_frozen_applicability)} "
+                    f"names every family of {sorted(universe)}")
+            if dict(self.frozen_out_scope_plan):
+                raise ValueError("a vacuous out-of-scope stage has an empty plan")
+            if {t.family for t in self.in_scope_tasks} != universe:
+                raise ValueError("with a vacuous out-of-scope stage the in-scope "
+                                  "tasks must cover every family of the universe")
+        elif len(self.out_scope_tasks) != OUT_SCOPE_COUNT:
             raise ValueError(f"out-of-scope allocation requires exactly "
                               f"{OUT_SCOPE_COUNT} tasks, got {len(self.out_scope_tasks)}")
         if len(set(ids)) != len(ids):
@@ -91,7 +119,7 @@ class GeneralizationAllocation:
                                      self.frozen_in_scope_plan),
                                     ("out_scope", self.out_scope_tasks,
                                       self.frozen_out_scope_plan)):
-            if not plan:
+            if not plan and not (scope == "out_scope" and self.out_scope_vacuous):
                 raise ValueError(f"{scope} frozen family-count plan must be "
                                   f"non-empty")
             observed: dict[str, int] = {}
@@ -107,7 +135,16 @@ class GeneralizationAllocation:
                         f"{scope} task {task.task_id!r} bank provenance "
                         f"{task.bank_id!r} != canonical {expected_bank!r}")
 
+    @property
+    def out_scope_vacuous(self) -> bool:
+        return not self.out_scope_tasks
+
     def validate_against_applicability(self, frozen_families: tuple[str, ...]) -> None:
+        if self.out_scope_vacuous and set(frozen_families) != set(self.family_universe):
+            raise ValueError(
+                f"the out-of-scope stage is vacuous only when the stored "
+                f"applicability {sorted(frozen_families)} names every family of "
+                f"{list(self.family_universe)}")
         in_scope_families = {t.family for t in self.in_scope_tasks}
         out_scope_families = {t.family for t in self.out_scope_tasks}
         outside = in_scope_families - set(frozen_families)
@@ -127,7 +164,7 @@ class GeneralizationAllocation:
         audit metadata always reports the actual enforced scope."""
         applicability = list(resolved_applicability or
                               self.declared_frozen_applicability)
-        return {
+        metadata = {
             "in_scope_task_ids": [t.task_id for t in self.in_scope_tasks],
             "out_scope_task_ids": [t.task_id for t in self.out_scope_tasks],
             "in_scope_family_plan": dict(self.frozen_in_scope_plan),
@@ -137,6 +174,10 @@ class GeneralizationAllocation:
                                         self.in_scope_tasks + self.out_scope_tasks
                                         if t.bank_id}),
         }
+        if self.out_scope_vacuous:
+            metadata["out_scope_vacuous"] = True
+            metadata["family_universe"] = list(self.family_universe)
+        return metadata
 
 
 @dataclass(frozen=True)
@@ -147,7 +188,7 @@ class GeneralizationEvaluation:
     _in_scope_passed: bool
     _out_scope_passed: bool
     _delta_in: float
-    _delta_out: float
+    _delta_out: float | None  # None for a vacuous out-of-scope stage
     _episodes: tuple[dict, ...]
     _in_scope_child: dict
     _out_scope_child: dict
@@ -170,7 +211,7 @@ class GeneralizationEvaluation:
         return self._delta_in
 
     @property
-    def delta_out(self) -> float:
+    def delta_out(self) -> float | None:
         return self._delta_out
 
     @property
@@ -233,7 +274,8 @@ class GeneralizationEvaluator:
 
     def evaluate(self, allocation: GeneralizationAllocation) -> GeneralizationEvaluation:
         """Validate the allocation against the artifact-declared frozen
-        applicability, run the 40 paired episodes, emit both child records."""
+        applicability, run the 40 paired episodes (20 when the out-of-scope
+        stage is vacuous, ADR-0007 E6), emit both child records."""
         from inheritance.runner import validate_gate_setup
         validate_gate_setup(self._parent_cig_id, self._mining_seed)
         frozen_families = self._frozen_applicability
@@ -289,10 +331,16 @@ class GeneralizationEvaluator:
 
         delta_in, in_scope_summary = run_scope("in_scope",
                                                 allocation.in_scope_tasks)
-        delta_out, out_scope_summary = run_scope("out_scope",
-                                                  allocation.out_scope_tasks)
         in_scope_passed = delta_in >= IN_SCOPE_MIN_DELTA
-        out_scope_passed = delta_out >= OUT_SCOPE_MIN_DELTA
+        if allocation.out_scope_vacuous:  # ADR-0007 E6: no episode, a vacuous pass
+            delta_out = None
+            out_scope_summary = [{"successes_with": 0, "successes_without": 0,
+                                   "task_count": 0}]
+            out_scope_passed = True
+        else:
+            delta_out, out_scope_summary = run_scope("out_scope",
+                                                      allocation.out_scope_tasks)
+            out_scope_passed = delta_out >= OUT_SCOPE_MIN_DELTA
 
         in_child = self._build_child(
             child_id=f"{self._parent_cig_id}/S{self._mining_seed}-generalization_in_scope",
@@ -353,5 +401,8 @@ class GeneralizationEvaluator:
                 "stage_pass": passed,
             },
         }
+        if scope == "out_of_scope" and allocation.out_scope_vacuous:
+            child["measurements"]["vacuous"] = True
+            child["measurements"]["vacuous_reason"] = VACUOUS_OUT_OF_SCOPE_REASON
         load_cig(child)
         return child

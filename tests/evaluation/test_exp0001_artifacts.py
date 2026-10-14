@@ -143,3 +143,8 @@ def test_the_manifest_points_at_the_committed_artifacts(splits):
                      rf"{pilot['pilot_sha256']},", body)
     assert re.search(r"lifetime: \{attempts_per_task: 3, temperature: 0.7,", body)
     assert re.search(r"t_reg: \{eligible: solved-in-any-lifetime-episode, size: 40, seed: 0,", body)
+    assert re.search(r"budgets: \{max_steps: 50, max_total_retries: 10, max_tokens_per_request: 512\}",
+                     body)
+    assert re.search(r"generalization_allocation: \{split: even-over-families, .*"
+                     r"all_family_applicability: vacuous-out-of-scope\}", body)
+    assert "pending" not in block.group(0)  # E1-E8 are owner decisions
