@@ -145,6 +145,83 @@ def test_claimed_genome_id_is_never_an_input_to_its_own_hash():
         assert compute_genome_id(genome) == expected
 
 
+# -- strict primitive types on gene refs (fail closed, no raw TypeError) -----
+
+
+@pytest.mark.parametrize("mutation,match", [
+    pytest.param(lambda r: r.update(version=True), "version must be a strict int",
+                  id="version True (bool alias)"),
+    pytest.param(lambda r: r.update(version=False), "version must be a strict int",
+                  id="version False"),
+    pytest.param(lambda r: r.update(version=1.0), "version must be a strict int",
+                  id="version 1.0 (float alias)"),
+    pytest.param(lambda r: r.update(version="1"), "version must be a strict int",
+                  id="version string"),
+    pytest.param(lambda r: r.update(version=0), "version must be a strict int",
+                  id="version zero"),
+    pytest.param(lambda r: r.update(artifact=123), "artifact must be a non-empty string",
+                  id="artifact int"),
+    pytest.param(lambda r: r.update(artifact=""), "artifact must be a non-empty string",
+                  id="artifact empty string"),
+    pytest.param(lambda r: r.update(type=[]), "gene type must be one of",
+                  id="type list (no raw TypeError)"),
+    pytest.param(lambda r: r.update(type=None), "gene type must be one of",
+                  id="type None"),
+    pytest.param(lambda r: r.update(type="bogus"), "gene type must be one of",
+                  id="unknown type string"),
+    pytest.param(lambda r: r.update(gene_id=""), "gene_id must be a non-empty string",
+                  id="gene_id empty string"),
+    pytest.param(lambda r: r.update(gene_id=42), "gene_id must be a non-empty string",
+                  id="gene_id int"),
+])
+def test_strict_ref_primitives_fail_closed(mutation, match):
+    """Python equality aliases (True == 1, 1.0 == 1) must NOT pass ref
+    validation; malformed values raise GenomeValidationError — never a raw
+    TypeError — at both compute_genome_id() and genome_identity_hash_hex()."""
+    genome = base_genome()
+    mutation(genome["genes"]["skills"][0])
+    with pytest.raises(GenomeValidationError, match=match):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_skill_ref_in_policy_slot_fails_closed():
+    """cognition/memory/execution slots carry policy genes ONLY."""
+    genome = base_genome()
+    genome["genes"]["cognition"]["planner"]["type"] = "skill"
+    with pytest.raises(GenomeValidationError, match="slot"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_policy_ref_in_skills_slot_fails_closed():
+    """skills[] carries skill genes ONLY."""
+    genome = base_genome()
+    genome["genes"]["skills"][0]["type"] = "policy"
+    with pytest.raises(GenomeValidationError, match="slot"):
+        compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
+
+
+def test_malformed_refs_raise_typed_error_not_raw_exception():
+    """No raw Python exception may leak from the identity API on malformed
+    refs."""
+    for mutation in (lambda r: r.update(version=True),
+                      lambda r: r.update(type=[]),
+                      lambda r: r.update(artifact=object())):
+        genome = base_genome()
+        mutation(genome["genes"]["cognition"]["planner"])
+        try:
+            compute_genome_id(genome)
+        except GenomeValidationError:
+            pass
+        except Exception as exc:  # pragma: no cover - assertion below
+            pytest.fail(f"raw {type(exc).__name__} leaked from identity API")
+
+
 # -- schema_version contract: EAG '0.1' only ---------------------------------
 
 
@@ -207,11 +284,15 @@ def test_uri_kind_mismatch_fails_closed():
         genome_identity_hash_hex(genome)
 
 
-def test_unknown_gene_type_fails_closed():
+def test_regulatory_type_in_skills_slot_fails_closed():
+    """regulatory is a KNOWN gene type but structurally impossible in
+    skills[] (slot/ref invariant)."""
     genome = base_genome()
-    genome["genes"]["skills"][0]["type"] = "regulatory"  # kind would be regulators
-    with pytest.raises(GenomeValidationError, match="kind"):
+    genome["genes"]["skills"][0]["type"] = "regulatory"
+    with pytest.raises(GenomeValidationError, match="slot"):
         compute_genome_id(genome)
+    with pytest.raises(GenomeValidationError):
+        genome_identity_hash_hex(genome)
 
 
 def test_policy_ref_artifact_integrity_also_enforced():
@@ -450,8 +531,11 @@ def test_infinity_value_fails_closed():
 
 
 def test_non_json_value_fails_closed():
+    """A non-JSON value that passes the strict ref primitives (e.g. inside
+    a regulation predicate) still fails closed at canonicalization."""
     genome = base_genome()
-    genome["genes"]["cognition"]["planner"]["artifact"] = {"nested": {1, 2}}
+    genome["regulation"]["look_before_heat_v1"]["express_when"]["all_of"][0][
+        "value"] = {1, 2}
     with pytest.raises(GenomeValidationError, match="canonicalizable"):
         compute_genome_id(genome)
 
