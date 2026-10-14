@@ -40,8 +40,11 @@ from inheritance.runner import (
 
 ABLATION_INSTANCE_COUNT = 20
 TAU_C = 0.05
-BOOTSTRAP_SEED = 0            # explicit deterministic default (recorded)
+BOOTSTRAP_SEED = 0            # pre-registered (ADR-0005; EXP-0001 manifest)
 BOOTSTRAP_N_RESAMPLES = 10_000  # ADR-0002 locked
+# ADR-0005: the paired deltas enter the bootstrap ordered by task_id, so the
+# locked seed decides the resamples independently of the allocation order
+BOOTSTRAP_CLUSTER_ORDER = "task_id"
 ABLATION_THRESHOLD_TEXT = ("point estimate delta_success >= 0.05 and paired "
                             "cluster bootstrap 95% lower bound > 0")
 
@@ -68,6 +71,12 @@ class AblationAllocation:
             raise ValueError(
                 f"ablation allocation requires exactly {ABLATION_INSTANCE_COUNT} "
                 f"distinct task instances, got {len(ids)}")
+        if not all(isinstance(i, str) for i in ids):
+            # ADR-0005 orders the bootstrap clusters by task_id string order;
+            # fail here, not after the 40 episodes (review of #63)
+            raise ValueError(
+                f"ablation task ids must be strings (ADR-0005 orders them as "
+                f"strings), got {sorted({type(i).__name__ for i in ids})}")
         if len(set(ids)) != len(ids):
             raise ValueError("ablation task ids must be distinct (no replacement)")
         if not self.frozen_strata:
@@ -193,6 +202,10 @@ class AblationEvaluator:
         if isinstance(bootstrap_seed, bool) or not isinstance(bootstrap_seed, int):
             raise EvaluationSetupError(
                 f"bootstrap seed must be an explicit int, got {bootstrap_seed!r}")
+        if bootstrap_seed != BOOTSTRAP_SEED:
+            raise EvaluationSetupError(
+                f"bootstrap seed {bootstrap_seed} differs from the pre-registered "
+                f"seed {BOOTSTRAP_SEED} (ADR-0005; EXP-0001 manifest)")
         self._registry = registry
         self._base_config = base_config
         self._runner = runner
@@ -217,7 +230,7 @@ class AblationEvaluator:
         + the emitted child CIG record."""
         gene = self._candidate_gene_id
         episodes: list[dict] = []
-        deltas: list[float] = []
+        task_deltas: list[tuple[str, float]] = []
         expression_observations: list[dict] = []
         seen_pairs: set[tuple[str, str]] = set()
         # locked evaluation settings derived from the fixed budget, shared
@@ -267,8 +280,13 @@ class AblationEvaluator:
                 "fired_without": fired_without,
             })
             d_i = float(outcomes["with_trait"][0]) - float(outcomes["without_trait"][0])
-            deltas.append(d_i)
+            task_deltas.append((task.task_id, d_i))
 
+        # ADR-0005: clusters ordered by task_id (distinct by the allocation
+        # contract); the record keeps this order, so the bound recomputes
+        # from the record alone
+        ordered = sorted(task_deltas)
+        deltas = [d for _, d in ordered]
         bootstrap = paired_cluster_bootstrap(
             deltas, seed=self._bootstrap_seed, n_resamples=self._n_resamples)
         passed = stage_passes(bootstrap.point_estimate, bootstrap.lower_bound,
@@ -276,13 +294,15 @@ class AblationEvaluator:
         child = self._build_child_record(
             allocation=allocation, episodes=episodes, deltas=deltas,
             bootstrap=bootstrap, expression_observations=expression_observations,
-            passed=passed, settings=locked_settings)
+            passed=passed, settings=locked_settings,
+            delta_task_ids=[task_id for task_id, _ in ordered])
         return AblationEvaluation(
             _passed=passed, _deltas=tuple(deltas),
             _delta_success=bootstrap.point_estimate, _bootstrap={
                 "method": bootstrap.method,
                 "seed": bootstrap.seed,
                 "n_resamples": bootstrap.n_resamples,
+                "cluster_order": BOOTSTRAP_CLUSTER_ORDER,
                 "point_estimate": bootstrap.point_estimate,
                 "lower_bound": bootstrap.lower_bound,
                 "upper_bound": bootstrap.upper_bound,
@@ -295,7 +315,7 @@ class AblationEvaluator:
     def _build_child_record(self, *, allocation: AblationAllocation,
                              episodes: list[dict], deltas: list[float],
                              bootstrap, expression_observations: list[dict],
-                             passed: bool, settings) -> dict:
+                             passed: bool, settings, delta_task_ids: list[str]) -> dict:
         child_id = f"{self._parent_cig_id}/S{self._mining_seed}-ablation"
         child = {
             "cig_id": child_id,
@@ -307,11 +327,15 @@ class AblationEvaluator:
                 "allocation": allocation.allocation_metadata(),
                 "episodes": episodes,
                 "paired_deltas": deltas,
+                # ADR-0005: the task each paired delta belongs to, in the
+                # task_id order the bootstrap resamples (review of #63)
+                "paired_delta_task_ids": delta_task_ids,
                 "point_estimate_delta_success": bootstrap.point_estimate,
                 "bootstrap": {
                     "method": bootstrap.method,
                     "seed": bootstrap.seed,
                     "n_resamples": bootstrap.n_resamples,
+                    "cluster_order": BOOTSTRAP_CLUSTER_ORDER,
                     "lower_bound": bootstrap.lower_bound,
                     "upper_bound": bootstrap.upper_bound,
                 },
