@@ -134,7 +134,7 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
     assert f"stop-with-parent {os.getpid()}" in out and "Durduruluyor" in out
 
 
-def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False):
+def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False, scan_proc=False):
     """The notebook's error-handler cell, run against fake Colab modules."""
     import types
     calls = []
@@ -164,6 +164,8 @@ def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False):
     namespace = {"get_ipython": lambda: shell, "AUTO_RELEASE": auto_release,
                  "DRIVE_ROOT": str(drive_root)}
     exec(compile(source, "<error cell>", "exec"), namespace)
+    if not scan_proc:  # a real pilot elsewhere on this machine must not change the result
+        namespace["running_commands"] = lambda: []
     (handler,) = handlers
     return (lambda error: handler(shell, type(error), error, None)), namespace, calls
 
@@ -207,28 +209,32 @@ def test_release_waits_for_a_command_that_still_stops(tmp_path, monkeypatch, cap
     last snapshot: release() keeps the machine until it has ended."""
     import os
     import subprocess
-    fail, namespace, calls = error_cell(monkeypatch, auto_release=True, drive_root=tmp_path)
+    fail, namespace, calls = error_cell(monkeypatch, auto_release=True, drive_root=tmp_path,
+                                        scan_proc=True)
     sleeper = [sys.executable, "-c", "import time; time.sleep(60)", "-m", "evaluation.exp0001.cli"]
     serving = subprocess.Popen(sleeper + ["serve"])  # not a writer: never holds the release
     stopping = subprocess.Popen(sleeper + ["run", "--local-dir", "/content/exp0001-run"])
     try:
         import time
         deadline = time.monotonic() + 10  # a just-started process shows its argv a moment later
-        while namespace["running_commands"]() != [stopping.pid] and time.monotonic() < deadline:
+        while stopping.pid not in namespace["running_commands"]() and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert namespace["running_commands"]() == [stopping.pid]
+        found = namespace["running_commands"]()
+        assert stopping.pid in found and serving.pid not in found and os.getpid() not in found
         fail(RuntimeError("`cli run` failed (exit code 2)"))  # the refused second run
         namespace["release"]()  # the last cell
         assert calls == ["traceback"]  # neither flushed nor released
-        assert "GPU BIRAKILMADI" in capsys.readouterr().out
-    finally:
+        out = capsys.readouterr().out
+        assert "GPU BIRAKILMADI" in out and "os.killpg" in out  # and the way out
         stopping.kill()
         stopping.wait()
-    namespace["release"]()
-    assert calls == ["traceback", "flush", "unassign"]
-    serving.kill()
-    serving.wait()
-    assert os.getpid() not in namespace["running_commands"]()
+        namespace["running_commands"] = lambda: []  # only this test's processes count here
+        namespace["release"]()
+        assert calls == ["traceback", "flush", "unassign"]
+    finally:
+        for process in (stopping, serving):
+            process.kill()
+            process.wait()
 
 
 @pytest.mark.parametrize("name", NAMES)

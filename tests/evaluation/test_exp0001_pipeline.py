@@ -157,7 +157,7 @@ class CountingGame(Game):
 
 
 def make_run(run_dir, splits, *, agent=None, teacher=None, caps=None, counter=None, record=None,
-             workers=1, on_ledger_append=None):
+             workers=1, on_ledger_append=None, lock=None):
     # worker processes pickle the game factory: a module-level class then
     env_factory = (ClosingGameFactory() if workers > 1 else
                    (lambda split, game_id: ClosingEnvironment(CountingGame(game_id), game_id)))
@@ -167,7 +167,8 @@ def make_run(run_dir, splits, *, agent=None, teacher=None, caps=None, counter=No
         env_factory=env_factory,
         token_counter=counter or Words(), ledger_clock=Clock(), episode_clock=Clock(),
         sleep=lambda _: None, expected_split_sha256=splits["manifest_sha256"],
-        workers=workers, sleep_between_retries=False, on_ledger_append=on_ledger_append)
+        workers=workers, sleep_between_retries=False, on_ledger_append=on_ledger_append,
+        lock=lock)
 
 
 def ledger_keys(run_dir):
@@ -357,6 +358,21 @@ def test_one_writer_per_run_directory(tmp_path, splits):
         make_run(tmp_path / "run", splits)
     first.close()
     make_run(tmp_path / "run", splits).close()
+
+
+def test_a_caller_held_lock_outlives_the_run(tmp_path, splits):
+    """The cli holds the directory through its last snapshot, after run():
+    closing the run never releases the caller's lock."""
+    from evaluation.exp0001.pipeline import lock_run_dir
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    held = lock_run_dir(run_dir)
+    run = make_run(run_dir, splits, lock=held)
+    run.close()
+    with pytest.raises(RunError, match="in use"):
+        lock_run_dir(run_dir)
+    held.close()
+    lock_run_dir(run_dir).close()
 
 
 def test_a_long_skill_name_does_not_break_trajectory_files(tmp_path, splits):

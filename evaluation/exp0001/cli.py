@@ -28,11 +28,13 @@ Exit codes: 0 done; 2 an error the message explains (a run directory
 another command still holds, say); 130 stopped (the stop button, or the
 notebook kernel that started the command restarted or died: environment
 variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
-3 when the last snapshot of ``run``, ``pilot`` or ``snapshot`` failed, stopped
-or not. Code 3 leaves ``UNMIRRORED.json`` in the run directory: the newest
-records exist only on this machine, and the notebooks keep the runtime.
-``run``, ``pilot`` and ``snapshot`` hold the run directory's one-writer lock
-from before they touch the mirror until after their last snapshot.
+3 when a ``run`` or ``pilot`` that finished, paused or was stopped, or a
+``snapshot``, failed its last snapshot. A failed last snapshot always leaves
+``UNMIRRORED.json`` in the run directory, also after an error (exit 2): the
+newest records exist only on this machine, and the notebooks keep the
+runtime. The last snapshot is not cut short by a stop. ``run``, ``pilot`` and
+``snapshot`` hold the run directory's one-writer lock from before they touch
+the mirror until after their last snapshot.
 
 ``run`` and ``pilot`` take ``--workers`` for parallel episodes against the
 one server (ADR-0008). Every run directory lives outside the repository
@@ -165,10 +167,17 @@ class Progress:
             self._episodes += 1
             if self._every and self._episodes % self._every == 0:
                 minutes = (self._clock() - self._started) / 60
-                print(f"[progress] {self._episodes} episodes in this session "
-                      f"({minutes:.1f} min); last {record['key']}", flush=True)
+                _progress(f"[progress] {self._episodes} episodes in this session "
+                          f"({minutes:.1f} min); last {record['key']}")
         elif record.get("type") in ("complete", "incomplete"):
-            print(f"[progress] the run is {record['type']}: {record.get('reason')}", flush=True)
+            _progress(f"[progress] the run is {record['type']}: {record.get('reason')}")
+
+
+def _progress(line: str) -> None:
+    try:
+        print(line, flush=True)
+    except OSError:
+        pass  # nobody reads this process's output any more (its notebook kernel died)
 
 
 def _session_info(gpu: dict, adapter: VLLMServerAdapter, workers: int,
@@ -301,21 +310,59 @@ EXIT_UNMIRRORED = 3
 UNMIRRORED = "UNMIRRORED.json"  # left in a run directory whose last snapshot failed
 
 
+def _say(message: str) -> None:
+    """A line on stderr that never raises: a command whose notebook kernel
+    died writes into a pipe nobody reads (BrokenPipeError)."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _sigint_deferred():
+    """The last snapshot is never cut short: a SIGINT (the stop button, or the
+    watcher of a dead kernel) that arrives during it is dropped, since the
+    command ends right after. A second stop press still ends the command at
+    once: the notebook helper sends SIGTERM to its process group."""
+    import signal
+    import threading
+    previous = signal.getsignal(signal.SIGINT)
+    if previous is None or threading.current_thread() is not threading.main_thread():
+        yield  # no Python handler to restore, or not the main thread: leave it alone
+        return
+    signal.signal(signal.SIGINT, lambda *_: None)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def _final_snapshot(mirror: RunMirror | None, local: Path) -> bool:
     """The last snapshot of a session; False (with a marker file and a loud
     message) when it fails, so nobody releases the machine that holds the
-    only copy of the newest records."""
+    only copy of the newest records. It is not interrupted, and anything
+    that stops it short of a whole snapshot counts as a failure; only another
+    machine taking over the mirror is raised (ADR-0008 D5)."""
     if mirror is None:
         return True
     marker = local / UNMIRRORED
-    if mirror.snapshot() is not None:
+    error = None
+    with _sigint_deferred():
+        try:
+            seq = mirror.snapshot()
+        except MirrorError:
+            raise
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - nothing was mirrored
+            seq, error = None, repr(exc)
+    if seq is not None:
         marker.unlink(missing_ok=True)
         return True
-    _write_json(marker, {"failures": mirror.failures, "last_error": mirror.last_error,
-                         "at": _now()})
-    print(f"UNMIRRORED: the last snapshot failed ({mirror.last_error}); the newest records of "
-          f"{local} exist only on this machine. Mount Google Drive again and run `snapshot` "
-          f"before the runtime is released.", file=sys.stderr, flush=True)
+    _write_json(marker, {"failures": mirror.failures, "last_error": error or mirror.last_error,
+                         "at": _now()})  # before any message: the pipe may be closed
+    _say(f"UNMIRRORED: the last snapshot failed ({error or mirror.last_error}); the newest "
+         f"records of {local} exist only on this machine. Mount Google Drive again and run "
+         f"`snapshot` before the runtime is released.")
     return False
 
 
@@ -350,7 +397,7 @@ def _run_dir_lock(local: Path):
 def _stopped(mirrored: bool) -> int:
     """A command stopped by its stop button or its kernel: 130 once the last
     snapshot is taken, and still 3 when it failed."""
-    print(STOPPED, file=sys.stderr)
+    _say(STOPPED)
     return 130 if mirrored else EXIT_UNMIRRORED
 
 
@@ -499,8 +546,7 @@ def cmd_run(args) -> int:
         finally:
             mirrored = _final_snapshot(mirror, local)
             if mirror and mirror.failures:
-                print(f"[mirror] {mirror.failures} snapshot(s) failed; last: "
-                      f"{mirror.last_error}", file=sys.stderr)
+                _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
     if stopped:
         return _stopped(mirrored)
     if report is not None:
@@ -671,21 +717,21 @@ def main(argv: list[str] | None = None) -> int:
             _stop_with_parent(int(parent))
         return args.func(args)
     except (CliError, BackendError, ProvenanceError, LedgerError, MirrorError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _say(f"error: {exc}")
         return 2
     except KeyboardInterrupt:
-        print(STOPPED, file=sys.stderr)
+        _say(STOPPED)
         return 130
     except RuntimeError as exc:
         from evaluation.exp0001.pipeline import RunError  # a run raised it: already loaded
         if not isinstance(exc, RunError):
             raise
-        print(f"error: {exc}", file=sys.stderr)
+        _say(f"error: {exc}")
         if "in use by another run" in str(exc):
-            print("a previous `run`, `pilot` or `snapshot` on this directory may still be running "
-                  "in this machine (one whose notebook kernel restarted stops by itself, saving "
-                  "its episodes). Wait for it to end; the notebook's release() keeps the GPU "
-                  "until then. Or end its process group.", file=sys.stderr)
+            _say("a previous `run`, `pilot` or `snapshot` on this directory may still be running "
+                 "in this machine (one whose notebook kernel restarted stops by itself, saving "
+                 "its episodes). Wait for it to end; the notebook's release() keeps the GPU "
+                 "until then. Or end its process group.")
         return 2
 
 

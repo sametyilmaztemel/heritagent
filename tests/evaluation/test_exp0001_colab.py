@@ -772,8 +772,9 @@ def test_a_command_stops_cleanly_when_its_parent_dies(tmp_path):
         "    time.sleep(30)\n"
         "except KeyboardInterrupt:\n"
         "    print('stopped with the parent', flush=True)\n")
-    parent = (
-        "import os, subprocess, sys\n"
+    parent = (  # with SIGINT ignored, which the child inherits (a background shell, say)
+        "import os, signal, subprocess, sys\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
         f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=open({str(out)!r}, 'w'), "
         "start_new_session=True, env={**os.environ, 'PARENT': str(os.getpid())})\n")
     # the parent exits at once, perhaps before the child starts watching
@@ -874,4 +875,75 @@ def test_a_stopped_command_exits_130_or_3_and_holds_its_directory_through_the_la
     assert snapshots == [local]
     lock_run_dir(local).close()  # released afterwards
     assert "stopped: every recorded episode is kept" in capsys.readouterr().err
+
+
+def test_the_last_snapshot_is_not_cut_short_by_a_stop(tmp_path, monkeypatch):
+    """A stop press (or a dead kernel's SIGINT) during the last snapshot is
+    dropped: the snapshot completes and no marker is left."""
+    import os
+    import signal
+    local, mirror_dir = _a_run_dir(tmp_path), tmp_path / "mirror"
+    mirror = RunMirror(local, mirror_dir)
+    real = mirror._snapshot
+
+    def interrupted():
+        os.kill(os.getpid(), signal.SIGINT)  # handled before the next line runs
+        return real()
+
+    monkeypatch.setattr(mirror, "_snapshot", interrupted)
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        assert cli._final_snapshot(mirror, local) is True
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler  # restored
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert latest_snapshot(mirror_dir) is not None and not (local / cli.UNMIRRORED).exists()
+
+
+def test_a_dead_kernels_pipe_never_hides_a_failed_last_snapshot(tmp_path, monkeypatch):
+    """The command of a dead kernel writes into a pipe nobody reads: the
+    marker is still written, and the messages raise nothing."""
+    local, mirror_dir = _a_run_dir(tmp_path), tmp_path / "mirror"
+    mirror = RunMirror(local, mirror_dir)
+
+    def drive_full():
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(mirror, "_snapshot", drive_full)
+
+    class ClosedPipe:
+        def write(self, text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr("sys.stderr", ClosedPipe())
+    monkeypatch.setattr("sys.stdout", ClosedPipe())
+    assert cli._final_snapshot(mirror, local) is False
+    assert "No space left" in json.loads((local / cli.UNMIRRORED).read_text())["last_error"]
+    assert cli._stopped(False) == cli.EXIT_UNMIRRORED  # its message raises nothing either
+    cli.Progress(None, 1)({"type": "episode", "key": "k"})
+
+
+def test_anything_but_a_takeover_that_stops_the_last_snapshot_leaves_the_marker(tmp_path):
+    from evaluation.exp0001.mirror import MirrorError
+    local = _a_run_dir(tmp_path)
+
+    class Mirror:
+        failures, last_error = 0, None
+
+        def __init__(self, error):
+            self.error = error
+
+        def snapshot(self):
+            raise self.error
+
+    for error in (RuntimeError("a bug"), KeyboardInterrupt()):
+        assert cli._final_snapshot(Mirror(error), local) is False
+        assert repr(error) in json.loads((local / cli.UNMIRRORED).read_text())["last_error"]
+        (local / cli.UNMIRRORED).unlink()
+    with pytest.raises(MirrorError):  # another machine holds the run now (ADR-0008 D5)
+        cli._final_snapshot(Mirror(MirrorError("another process took over")), local)
+    assert not (local / cli.UNMIRRORED).exists()
 

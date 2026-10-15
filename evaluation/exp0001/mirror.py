@@ -182,6 +182,13 @@ def restore(mirror_dir: Path, local_dir: Path) -> dict:
     return doc
 
 
+def _print_warning(message: str) -> None:
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        pass  # nobody reads this process's output any more (its notebook kernel died)
+
+
 class RunMirror:
     """Snapshots of ``local_dir`` into ``mirror_dir``. Pass ``on_append`` to
     the run ledger: it snapshots at most every ``min_interval_seconds``, and
@@ -195,7 +202,7 @@ class RunMirror:
         self.local, self.mirror = Path(local_dir), Path(mirror_dir)
         self._interval = float(min_interval_seconds)
         self._clock = clock
-        self._warn = warn or (lambda message: print(message, file=sys.stderr, flush=True))
+        self._warn = warn or _print_warning
         self._last: float | None = None
         self._cache: dict[str, tuple[tuple[int, int], str, int]] = {}  # rel -> (stat, sha, size)
         self._known: set[str] = set()  # blobs known to exist in the mirror
