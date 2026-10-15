@@ -188,8 +188,14 @@ def clean(tmp_path_factory, splits):
 def test_a_scripted_run_goes_end_to_end(clean, splits):
     run_dir, report, agent, teacher, closed = clean
     assert report["status"] == "complete" and report["aborted_attempts"] == 0
-    # 540 lifetime + per seed 2 candidates x 130 gate episodes + 7 x 194 final
-    assert report["episodes"] == 540 + 3 * 260 + 7 * (134 + 40 + 20) == agent.calls == closed
+    # 540 lifetime + per seed 2 candidates x 130 gate episodes and the shared G0 run on
+    # T_reg (40, ADR-0009 D1) + 194 final episodes per distinct genome (ADR-0009 D2): the
+    # scripted teacher proposes the same skills for every seed, so B and C are one genome each
+    assert report["episodes"] == 540 + 3 * (260 + 40) + 3 * (134 + 40 + 20) == agent.calls \
+        == closed
+    g0 = report_g0(run_dir)
+    assert [(g["genome_id"] == g0, g["arms"]) for g in report["final_genomes"]] == [
+        (True, ["A/once"]), (False, ["B/11", "B/23", "B/41"]), (False, ["C/11", "C/23", "C/41"])]
     assert report["model_calls"] == agent.calls + teacher.calls
     ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
     assert ledger.state == "complete"
@@ -230,7 +236,7 @@ def test_the_generation_settings_are_the_protocols(clean):
     lifetime = [s for s in agent.settings if s.temperature == 0.7]
     gate = [s for s in agent.settings if s.temperature == 0.0 and s.seed is not None]
     final = [s for s in agent.settings if s.temperature == 0.0 and s.seed is None]
-    assert len(lifetime) == 540 and len(gate) == 3 * 260 and len(final) == 7 * 194
+    assert len(lifetime) == 540 and len(gate) == 3 * 300 and len(final) == 3 * 194
     assert len(lifetime) + len(gate) + len(final) == len(agent.settings)
     assert {s.seed for s in gate} == set(MINING_SEEDS)
     assert all(s.stop == ("\nObservation:",) and s.max_tokens == 512 for s in agent.settings)
@@ -397,7 +403,7 @@ def test_a_hard_cap_stops_the_run_incomplete(tmp_path, splits):
 
 def test_a_cap_in_the_final_evaluation_gives_no_verdict(tmp_path, splits):
     report = make_run(tmp_path / "run", splits,
-                      caps={**CAPS, "episodes_max": 540 + 3 * 260 + 50}).run()
+                      caps={**CAPS, "episodes_max": 540 + 3 * 300 + 50}).run()
     assert report["status"] == "incomplete" and report["stage"] == "final"
     stats = report["statistics"]
     assert stats["status"] == "incomplete" and stats["h2"] is None and stats["h1"] is None
@@ -411,8 +417,9 @@ def test_a_candidate_for_every_family_gets_a_vacuous_out_of_scope_stage(tmp_path
     agent = Agent()
     report = make_run(run_dir, splits, agent=agent, teacher=Teacher(universal)).run()
     assert report["status"] == "complete"
-    # per seed: replay 10 + ablation 40 + in-scope 20 + regression 40
-    assert report["episodes"] == 540 + 3 * 110 + 7 * (134 + 40 + 20) == agent.calls
+    # per seed: replay 10 + ablation 40 + in-scope 20 + regression 40 + the shared G0 run
+    # 40; the final evaluation runs G0 and the one G1 genome every B and C arm shares
+    assert report["episodes"] == 540 + 3 * 150 + 2 * (134 + 40 + 20) == agent.calls
     for seed in MINING_SEEDS:
         gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
         (gene,) = gate["verdicts"]
@@ -806,7 +813,7 @@ def test_the_gate_prefetch_covers_interaction_pairs_and_matches_sequential(tmp_p
     monkeypatch.setattr(EpisodeExecutor, "run", run)
     parallel = make_run(tmp_path / "par", splits, teacher=Teacher(THREE), workers=2).run()
     assert parallel == sequential and sequential["status"] == "complete"
-    assert len(one_at_a_time) == 3 * (3 * 130 + 20) and all(one_at_a_time)
+    assert len(one_at_a_time) == 3 * (3 * 130 + 20 + 40) and all(one_at_a_time)
     keys = ledger_keys(tmp_path / "par")
     assert sorted(keys) == sorted(ledger_keys(tmp_path / "seq"))
     pair_keys = [k for k in keys if "/both/" in k or "/neither/" in k]

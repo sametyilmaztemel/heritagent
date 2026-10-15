@@ -442,22 +442,35 @@ class Exp0001Run:
         t_reg_tasks = [evaluation_task({"game_id": t.task_id, "family": t.family,
                                         "content_sha256": t.payload["content_sha256"]}, "t_mine")
                        for t in t_reg.tasks]
-        self._final_cells = {key: {"t_eval": {}, "t_reg": {}, "transfer": {}} for key in genomes}
+        # ADR-0009 D2: each distinct genome plays each task once; every (arm,
+        # seed) whose genome it is reads the same cells
+        sharing: dict[str, list[str]] = {}
+        cells_by_genome: dict[str, dict] = {}
+        distinct = []
+        for (arm, seed), genome in genomes.items():
+            genome_id = genome["genome_id"]
+            if genome_id not in cells_by_genome:
+                cells_by_genome[genome_id] = {"t_eval": {}, "t_reg": {}, "transfer": {}}
+                distinct.append(genome)
+            sharing.setdefault(genome_id, []).append(
+                f"{arm}/{SHARED if seed is None else seed}")
+        self._final_cells = {key: cells_by_genome[genome["genome_id"]]
+                             for key, genome in genomes.items()}
         settings = evaluation_settings(max_tokens=MAX_TOKENS_PER_REQUEST, seed=None)
         planned = []  # (cells, task_id, spec) in the sequential run's order
-        for (arm, seed), genome in genomes.items():
-            label = SHARED if seed is None else str(seed)
+        for genome in distinct:
+            genome_id = genome["genome_id"]
             config = compile_runtime_config(genome, self.registry)
             for task_set, tasks in (("t_eval", t_eval), ("t_reg", t_reg_tasks),
                                     ("transfer", transfer)):
                 for task in tasks:
-                    planned.append((self._final_cells[(arm, seed)][task_set], task.task_id,
+                    planned.append((cells_by_genome[genome_id][task_set], task.task_id,
                                     EpisodeSpec(
-                        key=f"final/{arm}/{label}/{task_set}/{task.task_id}",
+                        key=f"final/{genome_id}/{task_set}/{task.task_id}",
                         task_id=task.task_id, family=task.family, split=task.payload["split"],
                         config=config, settings=settings,
-                        tags={"stage": "final", "arm": arm, "run": label,
-                              "task_set": task_set})))
+                        tags={"stage": "final", "genome_id": genome_id,
+                              "arms": " ".join(sharing[genome_id]), "task_set": task_set})))
         try:
             results = self.executor.run_many([spec for _, _, spec in planned])
         except BaseException:
@@ -472,6 +485,9 @@ class Exp0001Run:
             cells[task_id] = result
         return {
             "statistics": analyze_final_evaluation(self._final_input(t_reg, complete=True)),
+            # which arms read which genome's cells (ADR-0009 D2)
+            "final_genomes": [{"genome_id": genome["genome_id"],
+                               "arms": sharing[genome["genome_id"]]} for genome in distinct],
             "genome_sizes": summarize_genome_sizes({
                 key: measure_genome_size(genome, self.registry, self.token_counter)
                 for key, genome in genomes.items()}),
