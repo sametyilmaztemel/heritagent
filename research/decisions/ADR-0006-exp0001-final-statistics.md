@@ -21,10 +21,13 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - **D1 Seed pooling.** For each task, the paired arm difference is averaged over the mining seeds. The tasks are the bootstrap clusters. The 2/3 rule checks the seeds separately.
   - On T_eval every task has one cell per seed, so a cluster's value is the mean of three differences in {−1, 0, 1}.
   - On T_reg likewise, since every seed shares one T_reg set (D8).
+  - (Note under ADR-0009 D5.) Only tasks are resampled, so each interval is conditional on the three mining seeds [11, 23, 41]; seed-to-seed variability enters only through the 2/3 rule. Every contrast block in the record says so (`uncertainty`).
 - **D2 Bootstrap.** The ADR-0005 rule for every contrast:
   - two-sided 95 % percentile interval, 10,000 resamples, seed 0, the clusters in `task_id` order (Python string order);
   - each contrast (C−B, C−A and B−A on T_eval; reg(C)−reg(B) on T_reg) computed separately with that rule;
   - computed with exact rational arithmetic on the index stream of `inheritance.bootstrap.paired_cluster_bootstrap` (same `random.Random(seed)` draws, same order statistics). Float rounding then cannot decide the strict "CI excluding 0" comparison. Agreement with the float implementation is tested.
+  - (Note under ADR-0009 D5.) The percentile indices are lower = int(α/2 · N) = 250 and upper = int((1 − α/2) · N) = 9,750 of the N = 10,000 sorted resample means (0-based): the lower bound has 250 resamples below it and the upper bound 249 above it. "Lower bound > 0" is therefore one rank less conservative than a nearest-rank 2.5th percentile, and "upper bound < 0" one rank more conservative. The convention is closed here, before any data.
+  - (Note under ADR-0009 D5.) H1 and H2 are each tested at 95 % with no multiplicity correction across the two hypotheses or across H2's three clauses, as the locked design states them. A reader should weigh them as two pre-registered rules, not as a family-wise error rate.
 - **The rule outcomes, as implemented** (the builder's reading of the locked text, for Codex to confirm). "≥ +5pp" and "> 0" are compared exactly on the pooled point estimate. "CI excluding 0" is strict: a bound equal to 0 does not exclude 0.
   - H2 success clause: C−B ≥ 5/100 and lower bound > 0.
   - H2 regression clause: reg(C)−reg(B) < 0 and upper bound < 0.
@@ -65,6 +68,11 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - The output states rule outcomes only. It never calls a result validated (SPEC §32) and makes no causal or inheritance claim (SPEC §34).
 
 **Research implication.**
+- **Detectability under the locked rule (note under ADR-0009 D5; status M, computed with the pinned implementation before any data).**
+  - The regression clause at n = 40 cannot exclude 0 when C fails k fewer T_reg tasks than B on the same tasks in every seed unless k ≥ 4 (10 pp). k = 3 (7.5 pp) gives an upper bound of exactly 0 and fails. On disjoint tasks per seed, k ≥ 2 (5 pp) passes.
+  - The pre-registered expected reduction, 3–8 pp (1.2–3.2 tasks), lies mostly below that floor in the same-tasks pattern.
+  - The success clause at n = 134 fails a net +7.46 pp made of 20 wins and 10 losses per seed (lower bound −0.0075), while 15 wins and 5 losses pass. The expected central value is +7 pp.
+  - So an outcome matching the expectations can fail H2. This is conservative, not a bias. A null on the regression clause is read as "below detectability at n = 40", not as evidence against the mechanism, and no threshold changes.
 - None for the hypotheses. This removes eight analysis degrees of freedom from the final evaluation.
 - No novelty or causal claim.
 

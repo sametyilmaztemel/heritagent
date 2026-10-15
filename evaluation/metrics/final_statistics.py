@@ -63,6 +63,7 @@ FINAL_RULE = MappingProxyType({
     "regression_rate": "t_reg-failure-rate",
     "incomplete_data": "fail-closed-no-primary-verdict",
     "arm_a": "run-once-reused-across-seeds",
+    "identical_genomes": "one-run-cells-shared",  # ADR-0009 D2
     "secondary": "descriptive-only",
     "t_reg": "one-set-shared-across-seeds",
 })
@@ -70,6 +71,13 @@ FINAL_RULE = MappingProxyType({
 CLAIM_STATUS = ("pre-registered rule outcome only; not a validated result "
                 "(SPEC section 32) and not a causal claim (SPEC section 34)")
 BOOTSTRAP_METHOD = "percentile-paired-cluster-bootstrap-exact"
+# ADR-0006 D1 (note under ADR-0009 D5): only tasks are resampled
+UNCERTAINTY = ("task clusters, conditional on the mining seeds {seeds}; seed variability enters "
+               "only through the seed-consistency rule")
+# ADR-0006 D4 (scope under ADR-0009 D5)
+REGRESSION_CLAUSE_SCOPE = ("in sample: T_reg is the suite the gate's stage 4A used to decide "
+                           "which traits arm C keeps; this checks the regression the gate "
+                           "controls and favours C over B by construction")
 
 
 class FinalStatisticsError(ValueError):
@@ -284,6 +292,7 @@ def _pooled_contrast(cells: list[tuple[str, int]]) -> dict:
         "bootstrap": {"method": "percentile", "confidence": confidence, "seed": seed,
                       "resamples": n_resamples, "cluster_order": FINAL_CLUSTER_ORDER,
                       "implementation": BOOTSTRAP_METHOD},
+        "uncertainty": UNCERTAINTY.format(seeds=list(MINING_SEEDS)),
         "cluster_task_ids": task_ids,
         "cluster_numerators": numerators,
         "cluster_denominator": denominator,
@@ -390,7 +399,7 @@ def analyze_final_evaluation(data: FinalEvaluationInput) -> dict:
         "success_clause": {"rule": "C-B >= +5pp and 95% CI lower bound > 0",
                            "met": success_clause},
         "regression_clause": {"rule": "reg(C)-reg(B) < 0 and 95% CI upper bound < 0",
-                              "met": regression_clause},
+                              "scope": REGRESSION_CLAUSE_SCOPE, "met": regression_clause},
         "seed_clause": {"rule": "C-B > 0 in >= 2 of 3 mining seeds", "met": seed_clause},
         "rule_met": success_clause and regression_clause and seed_clause,
     }
