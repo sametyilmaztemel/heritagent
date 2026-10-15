@@ -104,6 +104,23 @@ from traits.miner.miner import MiningSettings, TraitMiner
 CANDIDATES_SCHEMA = "heritagent/exp0001-candidates/0.1"
 
 
+def gate_summary(gate: Mapping) -> dict:
+    """What a seed's gate decided, for the report (ADR-0009 D5): its
+    candidates, how many it promoted, and how many named every family, whose
+    out-of-scope stage was vacuous (ADR-0007 E6)."""
+    return {"candidates": len(gate["verdicts"]),
+            "promoted": sum(v == "promote" for v in gate["verdicts"].values()),
+            "all_family_candidates": sum(
+                1 for child in gate["children"].values()
+                if child.get("stage") == "generalization_out_of_scope"
+                and child["measurements"].get("vacuous") is True)}
+
+
+ADAPTATION_COST_SCOPE = (
+    "measured on the transfer subset, the stage-2 ablation pool (ADR-0007 E4), which selected "
+    "arm C's traits: it favours C and is descriptive only (ADR-0006 D6; ADR-0009 D5)")
+
+
 def teacher_calls(mining_records) -> int:
     """The teacher calls behind the frozen mining records: one per evidence
     form a pair was sent in (ADR-0009 D8). A record names the last form; the
@@ -226,6 +243,8 @@ class Exp0001Run:
             clock=episode_clock, sleep=sleep, **parallel)
         self.t_mine = t_mine_tasks(split_manifest)
         self._final_cells: dict | None = None
+        self._gate_summaries: dict[str, dict] = {}  # per seed, as each gate is decided
+        self._sensitivity: dict[str, dict] = {}  # per seed, from its frozen gate artifact
 
     def close(self) -> None:
         """Stop the worker processes and release the run directory."""
@@ -381,13 +400,13 @@ class Exp0001Run:
             for envelope in candidates:
                 mirror.add_candidate(envelope)
             records = CigRecordStore()
-            outcome = CigGateOrchestrator(
+            gate = CigGateOrchestrator(
                 registry=self.registry, base_config=self.g0_config,
                 runner=runner(f"gate/{seed}/stage3-4", dry),
                 budgets=self.budgets, parent_cig_id=cig_id(seed, None), mining_seed=seed,
                 token_counter=self.token_counter, interaction_allocation=interaction,
-                somatic_store=mirror, cig_record_store=records).run(inputs)
-            return outcome, records
+                somatic_store=mirror, cig_record_store=records)
+            return gate.run(inputs), records, gate
 
         parallel = self.executor.workers > 1
         if parallel:  # stretch 1: replay and ablation of every candidate
@@ -401,7 +420,7 @@ class Exp0001Run:
             # stretch 3: the interaction pairs of the now-recorded eligible set
             self._prefetch(lambda dry: orchestrate(inputs, dry),
                            lambda condition: condition in ("both", "neither"))
-        outcome, records = orchestrate(inputs)
+        outcome, records, gate = orchestrate(inputs)
         # every recorded gate episode of this seed must be one the gate asked
         # for; checked against the ledger, so a resumed run fails closed too
         unrequested = sorted(set(self.ledger.done_keys(f"gate/{seed}/")) - set(requested))
@@ -417,7 +436,11 @@ class Exp0001Run:
             "verdicts": outcome.verdicts,
             "aggregate_ids": {r.gene_id: r.aggregate_cig_id for r in outcome.results},
             "eliminated_by_interaction": {r.gene_id: r.eliminated_by for r in outcome.results},
-            "aggregates": records.aggregates, "children": records.children})
+            "aggregates": records.aggregates, "children": records.children,
+            # the pre-planned tau_c/tau_r grid (manifest sensitivity_secondary): a pure
+            # recomputation over the stage evidence above, frozen with it
+            "sensitivity": {r.gene_id: gate.sensitivity_recomputation(r.gene_id)
+                            for r in outcome.results}})
 
     def _prefetch(self, dry_pass, collect) -> None:
         """One parallel stretch of the gate: the dry pass runs no episode,
@@ -491,19 +514,21 @@ class Exp0001Run:
             cells[task_id] = result
         return {
             "statistics": analyze_final_evaluation(self._final_input(t_reg, complete=True)),
+            # secondary and analysis-only: no verdict, arm or statistic uses it
+            "sensitivity": dict(self._sensitivity),
             # which arms read which genome's cells (ADR-0009 D2)
             "final_genomes": [{"genome_id": genome["genome_id"],
                                "arms": sharing[genome["genome_id"]]} for genome in distinct],
             "genome_sizes": summarize_genome_sizes({
                 key: measure_genome_size(genome, self.registry, self.token_counter)
                 for key, genome in genomes.items()}),
-            "adaptation_cost": summarize_adaptation_cost(
+            "adaptation_cost": {"scope": ADAPTATION_COST_SCOPE, **summarize_adaptation_cost(
                 [t.task_id for t in transfer],
                 {key: {task_id: TransferOutcome(success=r.success,
                                                 total_tokens=r.prompt_tokens + r.completion_tokens,
                                                 steps=r.steps)
                        for task_id, r in cells["transfer"].items()}
-                 for key, cells in self._final_cells.items()}),
+                 for key, cells in self._final_cells.items()})},
         }
 
     def _final_input(self, t_reg, *, complete: bool, reason: str | None = None):
@@ -519,7 +544,11 @@ class Exp0001Run:
     def _report(self, status: str, stage: str, reason: str | None, **content) -> dict:
         return {"schema": REPORT_SCHEMA, "status": status, "stage": stage, "reason": reason,
                 "episodes": self.ledger.episodes, "model_calls": self.ledger.model_calls,
-                "aborted_attempts": self.ledger.aborted_attempts, **content}
+                "aborted_attempts": self.ledger.aborted_attempts,
+                "gates": dict(self._gate_summaries),
+                # restores and repairs: work after a restored snapshot ran twice, and
+                # its calls and time are not counted (ADR-0008 D5)
+                "ledger_notes": [dict(note) for note in self.ledger.notes], **content}
 
     # -- the run ----------------------------------------------------------------
     def run(self) -> dict:
@@ -559,6 +588,8 @@ class Exp0001Run:
                 candidates = self._mine(seed, lifetimes[seed])
                 stage = f"gate/{seed}"
                 gate = self._gate(seed, candidates, t_reg, lifetimes[seed])
+                self._gate_summaries[str(seed)] = gate_summary(gate)
+                self._sensitivity[str(seed)] = gate["sensitivity"]
                 arms = self._arms(seed, candidates, gate)
                 genomes[("B", seed)], genomes[("C", seed)] = arms["B"], arms["C"]
             stage = "final"

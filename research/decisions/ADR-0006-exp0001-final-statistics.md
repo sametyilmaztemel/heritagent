@@ -1,6 +1,6 @@
 # ADR-0006 — EXP-0001 final-evaluation statistics: the open analysis choices are pre-registered
 
-Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explicit answers in chat to eight questions, each on the recommended option; D8 followed the own review of #68). **Codex cross-review requested (SPEC §32).** Artifacts: `evaluation/metrics/final_statistics.py`, `experiments/manifests/EXP-0001-minimal-cig.yaml` (`evaluation.statistics.final_rule`), `tests/evaluation/test_final_statistics.py` · Origin: issue #13 Phase A ("statistics: paired per-task arm contrasts on T_eval, 10k task-cluster bootstrap, primary H2/H1 rules exactly as preregistered, ≥ 2/3 seed direction requirement, regression contrast, bloat and adaptation-cost secondary outputs"); ADR-0005, which left the H1/H2 bootstrap to #13.
+Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explicit answers in chat to eight questions, each on the recommended option; D8 followed the own review of #68). **Codex cross-review requested (SPEC §32).** **Amended by ADR-0009** (owner, 2026-10-15): D2 extends D7 to every arm (each distinct genome is evaluated once and every arm and seed whose genome it is reads its cells), and D5 scopes the H2 regression clause (see D4). Artifacts: `evaluation/metrics/final_statistics.py`, `experiments/manifests/EXP-0001-minimal-cig.yaml` (`evaluation.statistics.final_rule`), `tests/evaluation/test_final_statistics.py` · Origin: issue #13 Phase A ("statistics: paired per-task arm contrasts on T_eval, 10k task-cluster bootstrap, primary H2/H1 rules exactly as preregistered, ≥ 2/3 seed direction requirement, regression contrast, bloat and adaptation-cost secondary outputs"); ADR-0005, which left the H1/H2 bootstrap to #13.
 
 **Problem.**
 - The locked text fixes the core of the final analysis:
@@ -32,6 +32,8 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - H1: C−A > 0 and lower bound > 0. H1 has no seed clause.
 - **D3 Seed direction.** A seed holds the C−B direction only if its own C−B on T_eval is strictly positive. A tie does not hold.
 - **D4 Regression rate.** reg(arm) is the fraction of the arm's T_reg tasks it fails. Every T_reg task was solved by G0. The H2 contrast reg(C)−reg(B) is the same under any formula that subtracts a per-task baseline, so this choice fixes reported levels, not the H2 outcome.
+  - [corrected after independent verification 2026-10-15] "Solved by G0" means solved in at least one temperature-0.7 lifetime attempt (ADR-0007 E3), not at the evaluation's temperature 0.
+  - Scope (ADR-0009 D5): the H2 regression clause is measured on T_reg, the suite the gate's stage 4A already used to decide which traits arm C keeps (paired against G0 since ADR-0009 D1). It therefore checks, in sample, the regression the gate controls. It is not an out-of-sample estimate, and it favours C over B by construction.
 - **D5 Incomplete data fail closed.**
   - A primary H1/H2 outcome exists only when every (arm, seed, task) cell on T_eval and T_reg holds exactly one recorded outcome.
   - An episode cut off by infrastructure is not a failure; it must be completed (part of the option the owner chose). A step budget that runs out is a failure, ALFWorld's `won` being false (ADR-0003 D6).
@@ -41,7 +43,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - `genome_size_tokens`: the token count of the model-visible skill block rendering all of the genome's skills, whatever their regulation, counted by the recorded `TokenCounter`. A genome without skills has 0 skill-block tokens.
   - `descendant_adaptation_cost`: on the transfer subset, per arm, the tasks solved, and over the solved tasks the tokens and steps to success. Unsolved tasks are counted as censored and never given a cost.
   - All are reported per run and pooled per arm.
-- **D7 Arm A runs once.** Its single T_eval run, and one run over every seed's T_reg tasks, serve every seed's C−A and A rates.
+- **D7 Arm A runs once.** Its single T_eval run, and one run over every seed's T_reg tasks, serve every seed's C−A and A rates. ADR-0009 D2 extends this to every arm: a genome evaluated once serves every arm and seed whose genome it is, so wherever genomes coincide the contrast between them is exactly 0.
 - **D8 T_reg is one set shared by every seed** (decided after the own review of #68). The analysis requires one 40-task T_reg for all three seeds and fails closed on anything else. With T_reg sets that differ by seed, D1's per-task weighting and the reported (cell-weighted) regression rates could differ in sign, and the review built cases where the H2 regression clause held while every reported rate said C regressed more. One shared set removes that. The T_reg derivation (#13) must therefore produce one set; as #13's handoff already requires, fewer than 40 qualifying tasks fails closed.
 
 **Reason.**

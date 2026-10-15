@@ -154,12 +154,15 @@ def test_a_run_restored_from_its_mirror_resumes_to_the_same_report(tmp_path, cle
     restore(drive, tmp_path / "vm2")  # a new VM: the local directory is gone
     report = make_run(tmp_path / "vm2", splits).run()
     # the restored snapshot was taken before the failed attempt's reservation
-    # could be written, or after: either way the outcome is the clean run's
-    assert {**report, "aborted_attempts": 0, "model_calls": 0} == \
-        {**clean[1], "aborted_attempts": 0, "model_calls": 0}
+    # could be written, or after: either way the outcome is the clean run's; the
+    # report lists the restore (ADR-0008 D5)
+    same = {"aborted_attempts": 0, "model_calls": 0, "ledger_notes": []}
+    assert {**report, **same} == {**clean[1], **same}
+    assert clean[1]["ledger_notes"] == []
     ledger = RunLedger(tmp_path / "vm2" / "ledger.jsonl", run_id=report_run_id(tmp_path / "vm2"),
                        clock=Clock(), readonly=True, caps=CAPS)
     assert [n["type"] for n in ledger.notes] == ["restore"]
+    assert report["ledger_notes"] == [dict(n) for n in ledger.notes]
 
 
 def report_run_id(run_dir):

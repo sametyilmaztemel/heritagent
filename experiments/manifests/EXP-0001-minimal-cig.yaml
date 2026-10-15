@@ -133,7 +133,7 @@ run_protocol:                         # ADR-0007 (E1-E8 owner decisions, 2026-10
   generalization_allocation: {split: even-over-families, draw: sha256-keyed-per-family, seed: 0, all_family_applicability: vacuous-out-of-scope}   # E6; for an all-family candidate this supersedes inheritance.stages.generalization.out_of_scope (10 tasks)
   arm_genomes: {origin: assimilation, provenance: [source_trajectory, aggregate_cig_record], skill_order: frozen-rank}   # E7
   run_order: [lifetimes-all-seeds, t_reg, per-seed-miner-gate-arms, final-evaluation]   # E8
-  final_evaluation: {temperature: 0.0, sampling_seed: none, arm_a: once}   # E8
+  final_evaluation: {temperature: 0.0, sampling_seed: none, arm_a: once, identical_genomes: one-run-cells-shared}   # E8; ADR-0009 D2 (owner, 2026-10-15)
   execution: {accelerator: one-A100-80GB-only, episodes: parallel-worker-processes-one-vllm-server, cap_check: counts-attempts-in-flight, gate_parallelism: dependency-free-stretches, persistence: local-run-dir-plus-mirror-snapshots, data: alfworld-release-0.2.2-sha256-pinned}   # ADR-0008: the owner decided the accelerator, parallel episodes and the cap basis (2026-10-14); cap_check, gate_parallelism, persistence and data are builder-2's engineering under D3-D6, accepted by the owner on 2026-10-15
 
 arms:
@@ -150,7 +150,7 @@ inheritance:
                       runs_per_condition: 1, pass: "success_with>=0.6-of-5-instances and delta>=+0.4", expression_check: true}
     ablation:        {pool: stratified-ablation, tasks: 20, runs_per_condition: 1,
                       pass: "cluster-bootstrap95-over-instances_lb>0 and delta>=0.05 (tau_c)",
-                      bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}}   # ADR-0005, pre-registered
+                      bootstrap: {method: percentile, confidence: 0.95, generator: "random.Random(seed).randrange(n)", seed: 0, resamples: 10000, cluster_order: task_id, recomputed_by_gate: true}}   # ADR-0005, pre-registered; ADR-0009 D5
     generalization:
       in_scope:      {tasks: 10, source: families-matching-frozen-applicability, runs_per_condition: 1, pass: "delta>=0"}
       out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05", all_family_applicability: vacuous-pass}   # ADR-0007 E6; ADR-0009 D5
@@ -179,6 +179,7 @@ evaluation:
       regression_rate: t_reg-failure-rate
       incomplete_data: fail-closed-no-primary-verdict
       arm_a: run-once-reused-across-seeds
+      identical_genomes: one-run-cells-shared   # ADR-0009 D2: every arm and seed whose genome coincides reads the same cells
       secondary: descriptive-only
       t_reg: one-set-shared-across-seeds   # ADR-0006 D8
   sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval

@@ -226,6 +226,18 @@ def test_a_scripted_run_goes_end_to_end(clean, splits):
     assert stats["h2"]["rule_met"] is True and stats["h1"]["rule_met"] is True
     assert report["genome_sizes"]["per_arm"]["A"]["runs"]["once"]["skill_genes"] == 0
     assert report["adaptation_cost"]["per_arm"]["C"]["pooled"]["solved"] == 60
+    # ADR-0009 D5: what each gate decided, and the scope of the H3 preview
+    assert report["gates"] == {str(seed): {"candidates": 2, "promoted": 1,
+                                           "all_family_candidates": 0} for seed in MINING_SEEDS}
+    assert "stage-2 ablation pool" in report["adaptation_cost"]["scope"]
+    # the pre-planned sensitivity grid, frozen in each gate artifact (analysis only)
+    for seed in MINING_SEEDS:
+        grids = report["sensitivity"][str(seed)]
+        gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
+        assert grids == gate["sensitivity"] and set(grids) == set(gate["verdicts"])
+        for grid in grids.values():
+            assert grid["analysis_only"] is True and grid["runner_calls"] == 0
+            assert len(grid["cells"]) == 9
 
 
 def test_the_generation_settings_are_the_protocols(clean):
@@ -420,6 +432,7 @@ def test_a_candidate_for_every_family_gets_a_vacuous_out_of_scope_stage(tmp_path
     # per seed: replay 10 + ablation 40 + in-scope 20 + regression 40 + the shared G0 run
     # 40; the final evaluation runs G0 and the one G1 genome every B and C arm shares
     assert report["episodes"] == 540 + 3 * 150 + 2 * (134 + 40 + 20) == agent.calls
+    assert {g["all_family_candidates"] for g in report["gates"].values()} == {1}
     for seed in MINING_SEEDS:
         gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
         (gene,) = gate["verdicts"]
