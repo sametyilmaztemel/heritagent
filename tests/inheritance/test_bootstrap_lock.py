@@ -99,30 +99,43 @@ def test_the_child_record_recomputes_its_bound(tmp_path, registry, base_config, 
     assert result.bootstrap["cluster_order"] == "task_id"
 
 
-def manifest_bootstraps(text: str) -> tuple[list[tuple[str, str, str]], int]:
-    """The ablation stage's pre-registered bootstraps and the count of
-    bootstrap keys anywhere in the manifest. pyyaml is not a test
-    dependency: the manifest's flow mapping is read with a pattern."""
+def manifest_bootstraps(text: str) -> tuple[list[dict], int]:
+    """The ablation stage's pre-registered bootstraps, as key-value maps, and
+    the count of bootstrap blocks outside the final-statistics rule. pyyaml
+    is not a test dependency: the manifest's flow mapping is read with a
+    pattern."""
     # YAML comments are not data: a commented-out line must not count as the
     # pre-registration (review of #63)
     text = re.sub(r"(^|[ \t])#.*", r"\1", text, flags=re.MULTILINE)
     # the ablation stage runs up to the next stage key (review of #63)
     ablation = re.search(r"^    ablation:(.*?)^    generalization:", text, re.MULTILINE | re.DOTALL)
     assert ablation, "EXP-0001 manifest has no ablation stage before generalization"
-    matches = re.findall(r"bootstrap: \{seed: (\d+), resamples: (\d+), cluster_order: (\w+)\}",
-                         ablation.group(1))
-    return matches, len(re.findall(r"bootstrap: \{seed:", text))
+
+    def parse(body: str) -> dict:
+        return {key.strip(): value.strip().strip('"')
+                for key, value in (item.split(":", 1) for item in body.split(", "))}
+
+    blocks = [parse(body) for body in re.findall(r"bootstrap: \{([^}]*)\}", ablation.group(1))]
+    # the final-statistics rule (ADR-0006) carries its own bootstrap block
+    outside_final = re.sub(r"^evaluation:.*?(?=^\S)", "", text + "\nend:\n",
+                           flags=re.MULTILINE | re.DOTALL)
+    return blocks, len(re.findall(r"bootstrap: \{", outside_final))
 
 
 def test_the_manifest_gate_and_code_agree():
+    from inheritance.bootstrap import CONFIDENCE
     root = Path(__file__).resolve().parents[2]
     text = (root / "experiments/manifests/EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
     matches, anywhere = manifest_bootstraps(text)
     assert anywhere == 1, "no other stage pre-registers one"
     assert len(matches) == 1, "the ablation stage must pre-register its bootstrap exactly once"
     match = matches[0]
-    assert (int(match[0]), int(match[1]), match[2]) == (
+    assert (int(match["seed"]), int(match["resamples"]), match["cluster_order"]) == (
         BOOTSTRAP_SEED, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_CLUSTER_ORDER)
+    # ADR-0009 D5: the method, confidence and generator are pre-registered too
+    assert (match["method"], float(match["confidence"]), match["generator"],
+            match["recomputed_by_gate"]) == (
+        "percentile", CONFIDENCE, "random.Random(seed).randrange(n)", "true")
     assert (PRIMARY_THRESHOLDS["bootstrap_seed"], PRIMARY_THRESHOLDS["bootstrap_resamples"],
             PRIMARY_THRESHOLDS["bootstrap_cluster_order"]) == (
         BOOTSTRAP_SEED, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_CLUSTER_ORDER)
