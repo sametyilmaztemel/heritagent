@@ -114,7 +114,7 @@ def test_generate_translates_settings_and_records_revision(fake_vllm):
     assert FakeLLM.last_call[2] == {}  # no tool_choice / no extra kwargs on offline chat
 
 
-def test_usage_fields_are_fallback_only(fake_vllm):
+def test_usage_fields_are_fallback_only(fake_vllm, monkeypatch):
     # when the id lists are absent (older surface), usage.* is the fallback
     class LegacyOutput(FakeOutput):
         def __init__(self):
