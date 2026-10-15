@@ -6,8 +6,12 @@ exit, and the error handler is installed before the first command."""
 
 import ast
 import json
+import os
+import signal
 import subprocess
 import sys
+import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -75,7 +79,7 @@ def notebook_cli_helper():
     source = next(s for s in code_cells(NAMES[0]) if "def cli(" in s)
     node = next(n for n in ast.parse(source).body
                 if isinstance(n, ast.FunctionDef) and n.name == "cli")
-    namespace = {"sys": sys, "subprocess": subprocess}
+    namespace = {"os": os, "signal": signal, "sys": sys, "subprocess": subprocess}
     exec(compile(ast.Module([node], []), "<install cell>", "exec"), namespace)
     return namespace["cli"]
 
@@ -88,6 +92,36 @@ def test_the_helper_raises_on_a_failing_command_and_passes_a_succeeding_one(caps
     assert "usage" in capsys.readouterr().out  # the command's output reaches the cell
     with pytest.raises(RuntimeError, match="no-such-command"):
         helper("no-such-command")  # argparse exits 2
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
+        tmp_path, monkeypatch, capsys):
+    stub = tmp_path / "evaluation" / "exp0001"
+    stub.mkdir(parents=True)
+    (tmp_path / "evaluation" / "__init__.py").write_text("")
+    (stub / "__init__.py").write_text("")
+    (stub / "cli.py").write_text(textwrap.dedent("""
+        import signal, sys, time
+        interrupts = []
+        signal.signal(signal.SIGINT, lambda *_: interrupts.append(1))
+        print("started", flush=True)
+        while not interrupts:
+            time.sleep(0.01)
+        time.sleep(0.3)  # still draining: a second signal would arrive here
+        print(f"stopped cleanly after {len(interrupts)} interrupt(s)", flush=True)
+    """))
+    monkeypatch.chdir(tmp_path)  # -m finds the stub first
+    helper = notebook_cli_helper()
+    timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGINT))
+    timer.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            helper("run")
+    finally:
+        timer.cancel()
+    out = capsys.readouterr().out
+    assert "started" in out and "stopped cleanly after 1 interrupt(s)" in out
 
 
 def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
