@@ -124,6 +124,73 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
     assert "started" in out and "stopped cleanly after 1 interrupt(s)" in out
 
 
+def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False):
+    """The notebook's error-handler cell, run against fake Colab modules."""
+    import types
+    calls = []
+    colab = types.ModuleType("google.colab")
+    drive = types.ModuleType("google.colab.drive")
+    runtime = types.ModuleType("google.colab.runtime")
+
+    def flush_and_unmount():
+        calls.append("flush")
+        if flush_fails:
+            raise OSError("Drive is not mounted")
+
+    drive.flush_and_unmount = flush_and_unmount
+    runtime.unassign = lambda: calls.append("unassign")
+    colab.drive, colab.runtime = drive, runtime
+    google = types.ModuleType("google")
+    google.colab = colab
+    for name, module in (("google", google), ("google.colab", colab),
+                         ("google.colab.drive", drive), ("google.colab.runtime", runtime)):
+        monkeypatch.setitem(sys.modules, name, module)
+    handlers = []
+    shell = types.SimpleNamespace(set_custom_exc=lambda types_, handler: handlers.append(handler),
+                                  showtraceback=lambda *a, **k: calls.append("traceback"))
+    source = next(s for s in code_cells(NAMES[0]) if "set_custom_exc" in s)
+    assert source == next(s for s in code_cells(NAMES[1]) if "set_custom_exc" in s)
+    namespace = {"get_ipython": lambda: shell, "AUTO_RELEASE": auto_release,
+                 "DRIVE_ROOT": str(drive_root)}
+    exec(compile(source, "<error cell>", "exec"), namespace)
+    (handler,) = handlers
+    return (lambda error: handler(shell, type(error), error, None)), namespace, calls
+
+
+def test_the_error_handler_releases_the_gpu_even_when_drive_fails(tmp_path, monkeypatch):
+    import os
+    import shutil
+    real_exists = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: p == "/content/vllm-server.log"
+                        or real_exists(p))
+
+    def broken_copy(*args):
+        raise OSError("Drive quota exceeded")
+
+    monkeypatch.setattr(shutil, "copy", broken_copy)
+    fail, _, calls = error_cell(monkeypatch, auto_release=True, drive_root=tmp_path,
+                                flush_fails=True)
+    fail(RuntimeError("`cli run` failed"))
+    assert calls == ["traceback", "flush", "unassign"]  # the copy and the flush failed
+
+
+def test_the_error_handler_keeps_an_unmirrored_run_and_respects_auto_release(tmp_path,
+                                                                            monkeypatch):
+    import glob
+    fail, namespace, calls = error_cell(monkeypatch, auto_release=False, drive_root=tmp_path)
+    fail(RuntimeError("x"))
+    assert calls == ["traceback"]
+    fail, namespace, calls = error_cell(monkeypatch, auto_release=True, drive_root=tmp_path)
+    real_glob = glob.glob
+    monkeypatch.setattr(glob, "glob", lambda pattern: ["/content/exp0001-run/UNMIRRORED.json"]
+                        if pattern == "/content/*/UNMIRRORED.json" else real_glob(pattern))
+    assert namespace["unmirrored"]() == ["/content/exp0001-run"]
+    fail(RuntimeError("`cli run`: UNMIRRORED"))
+    assert calls == ["traceback"]  # neither flushed nor released: the run lives only here
+    namespace["release"]()  # the final cell's path too
+    assert calls == ["traceback"]
+
+
 def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
     from evaluation.exp0001.serving import SOFTWARE_PACKAGES
     pyproject = (NOTEBOOKS.parent / "pyproject.toml").read_text(encoding="utf-8")

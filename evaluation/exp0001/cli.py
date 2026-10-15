@@ -20,7 +20,14 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   run directory from its mirror if it is missing, run or
                   resume, snapshot to the mirror
   status          a read-only summary of a run (or pilot) directory
+  snapshot        take a snapshot of a run (or pilot) directory now, for example
+                  after Drive is mounted again (exit code 3 if it fails)
   repair-ledger   cut off a torn last ledger line, keeping it on record
+
+When the last snapshot of ``run``, ``pilot`` or ``snapshot`` fails, the
+command exits with code 3 and leaves ``UNMIRRORED.json`` in the run
+directory: the newest records exist only on this machine. The notebooks then
+keep the runtime (ADR-0008 D5).
 
 ``run`` and ``pilot`` take ``--workers`` for parallel episodes against the
 one server (ADR-0008). Every run directory lives outside the repository
@@ -73,7 +80,9 @@ from evaluation.exp0001.serving import (
     DEFAULT_MODEL,
     DEFAULT_PORT,
     load_prepared,
+    port_answers,
     prepare_model,
+    process_alive,
     server_command,
     server_environment,
     software_stack,
@@ -215,6 +224,17 @@ def cmd_serve(args) -> int:
     command = server_command(prepared, port=args.port, max_model_len=args.max_model_len,
                              gpu_memory_utilization=args.gpu_memory_utilization)
     environment = server_environment(batch_invariant=not args.no_batch_invariant)
+    if port_answers(args.port):  # a server from an earlier attempt still runs
+        earlier = _json(args.info) if Path(args.info).exists() else {}
+        if (earlier.get("command"), earlier.get("environment"), earlier.get("port")) == \
+                (command, environment, args.port) and process_alive(earlier.get("pid")):
+            print(f"the model server (pid {earlier['pid']}) from an earlier attempt already "
+                  f"serves {prepared['model_id']} with these settings on port {args.port}; "
+                  f"reusing it")
+            return 0
+        raise CliError(f"a server already answers on port {args.port}, and it is not one this "
+                       f"command started with these settings ({args.info}). Stop it (kill "
+                       f"{earlier.get('pid', 'its pid')}) or restart the runtime.")
     process = start_server(command, args.log, environment=environment)
     wait_until_ready(f"http://127.0.0.1:{args.port}", prepared["model_id"], process=process,
                      log_path=args.log, timeout_seconds=args.timeout)
@@ -245,6 +265,28 @@ def cmd_preflight(args) -> int:
         reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
         "teacher_finish_reason": teacher.finish_reason}, indent=2))
     return 0
+
+
+EXIT_UNMIRRORED = 3
+UNMIRRORED = "UNMIRRORED.json"  # left in a run directory whose last snapshot failed
+
+
+def _final_snapshot(mirror: RunMirror | None, local: Path) -> bool:
+    """The last snapshot of a session; False (with a marker file and a loud
+    message) when it fails, so nobody releases the machine that holds the
+    only copy of the newest records."""
+    if mirror is None:
+        return True
+    marker = local / UNMIRRORED
+    if mirror.snapshot() is not None:
+        marker.unlink(missing_ok=True)
+        return True
+    _write_json(marker, {"failures": mirror.failures, "last_error": mirror.last_error,
+                         "at": _now()})
+    print(f"UNMIRRORED: the last snapshot failed ({mirror.last_error}); the newest records of "
+          f"{local} exist only on this machine. Mount Google Drive again and run `snapshot` "
+          f"before the runtime is released.", file=sys.stderr, flush=True)
+    return False
 
 
 def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
@@ -289,10 +331,24 @@ def cmd_pilot(args) -> int:
         ledger=ledger, trajectories_dir=out / "trajectories", run_id=PILOT_RUN_ID,
         code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
     started = _now()
+    mirrored = False
     try:
-        measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry))
+        try:
+            measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry))
+        finally:
+            executor.close()
+        report = _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verified,
+                               commit, dirty, started)
+        freeze_json(report_path, report)
     finally:
-        executor.close()
+        mirrored = _final_snapshot(mirror, out)
+    print(json.dumps({"measures": report["measures"], "projection": report["projection"]},
+                     indent=2))
+    return 0 if mirrored else EXIT_UNMIRRORED
+
+
+def _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verified, commit,
+                  dirty, started) -> dict:
     projection = project_exp0001(measured, t_mine_size=len(splits["pools"]["t_mine"]["games"]),
                                  t_eval_size=len(splits["pools"]["t_eval"]["games"]),
                                  transfer_size=len(splits["pools"]["ablation"]["games"]))
@@ -306,11 +362,7 @@ def cmd_pilot(args) -> int:
               "accelerator": gpu, "workers": args.workers, "environment": _environment(verified),
               "note": "a calibration measurement; it tunes nothing and is no EXP-0001 result",
               **measured, "projection": projection}
-    freeze_json(report_path, report)
-    if mirror:
-        mirror.snapshot()
-    print(json.dumps({"measures": report["measures"], "projection": projection}, indent=2))
-    return 0
+    return report
 
 
 def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
@@ -372,20 +424,31 @@ def cmd_run(args) -> int:
                      on_ledger_append=Progress(mirror, args.progress_every),
                      pause_when=None if budget is None
                      else (lambda: time.monotonic() - started > budget))
+    report, mirrored = None, False
     try:
         report = run.run()
     except RunPaused as exc:
         print(f"paused after {args.stop_after_hours} h of this session ({exc}); every admitted "
               f"episode is recorded. Run the same command again to resume.")
-        return 0
     finally:
-        if mirror:
-            mirror.snapshot()
-            if mirror.failures:
-                print(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}",
-                      file=sys.stderr)
-    print(json.dumps({k: report.get(k) for k in ("status", "stage", "reason", "episodes",
-                                                   "model_calls", "aborted_attempts")}, indent=2))
+        mirrored = _final_snapshot(mirror, local)
+        if mirror and mirror.failures:
+            print(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}",
+                  file=sys.stderr)
+    if report is not None:
+        print(json.dumps({k: report.get(k) for k in ("status", "stage", "reason", "episodes",
+                                                       "model_calls", "aborted_attempts")},
+                         indent=2))
+    return 0 if mirrored else EXIT_UNMIRRORED
+
+
+def cmd_snapshot(args) -> int:
+    local = Path(args.run_dir)
+    if not (local / "ledger.jsonl").exists():
+        raise CliError(f"{local} holds no run or pilot ledger")
+    if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
+        return EXIT_UNMIRRORED
+    print(f"snapshot of {local} taken in {args.mirror_dir}")
     return 0
 
 
@@ -494,6 +557,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--run-dir", type=Path, required=True)
     p.add_argument("--mirror-dir", type=Path, default=None)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("snapshot")
+    p.add_argument("--run-dir", type=Path, required=True)
+    p.add_argument("--mirror-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_snapshot)
 
     p = sub.add_parser("repair-ledger")
     p.add_argument("--run-dir", type=Path, required=True)

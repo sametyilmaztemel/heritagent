@@ -8,6 +8,7 @@ import pickle
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -620,3 +621,87 @@ def test_run_commit_reads_the_runs_own_commit_from_the_mirror(tmp_path, capsys):
     RunMirror(local, drive).snapshot()
     assert cli.main(["run-commit", "--mirror-dir", str(drive)]) == 0
     assert capsys.readouterr().out.strip() == "d" * 40
+
+
+def _a_run_dir(tmp_path):
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "ledger.jsonl").write_text('{"type": "x"}\n')
+    return local
+
+
+def test_a_failed_last_snapshot_leaves_a_marker_and_exit_code_3(tmp_path, capsys):
+    """ADR-0008 D5: nobody may release the machine holding the only copy."""
+    local, mirror_dir = _a_run_dir(tmp_path), tmp_path / "mirror"
+    mirror = RunMirror(local, mirror_dir)
+    blobs = mirror_dir / "blobs"
+    if blobs.exists():
+        import shutil
+        shutil.rmtree(blobs)
+    blobs.write_text("not a directory")  # Drive stops accepting writes
+    assert cli._final_snapshot(mirror, local) is False
+    marker = json.loads((local / cli.UNMIRRORED).read_text())
+    assert marker["failures"] == 1 and marker["last_error"]
+    assert "UNMIRRORED" in capsys.readouterr().err
+    args = cli.parser().parse_args(["snapshot", "--run-dir", str(local),
+                                    "--mirror-dir", str(mirror_dir)])
+    assert args.func(args) == cli.EXIT_UNMIRRORED  # still failing: the marker stays
+    assert (local / cli.UNMIRRORED).exists()
+    blobs.unlink()  # Drive is back
+    assert cli.main(["snapshot", "--run-dir", str(local), "--mirror-dir", str(mirror_dir)]) == 0
+    assert not (local / cli.UNMIRRORED).exists() and latest_snapshot(mirror_dir) is not None
+    assert cli._final_snapshot(None, local) is True  # no mirror, nothing to keep
+    with pytest.raises(cli.CliError, match="no run or pilot ledger"):
+        cli.cmd_snapshot(type("Args", (), {"run_dir": tmp_path / "empty",
+                                           "mirror_dir": mirror_dir})())
+
+
+def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, monkeypatch, capsys):
+    import os
+
+    from evaluation.exp0001 import serving
+
+    class Models(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"data": []}')
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Models)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        assert serving.port_answers(port) is True
+        prepared = tmp_path / "prepared.json"
+        prepared.write_text(json.dumps({"model_id": "Qwen/Qwen2.5-7B-Instruct", "revision": "a" * 40,
+                                        "path": str(tmp_path), "weights": {"sha256": "b" * 64}}))
+        monkeypatch.setattr(cli, "load_prepared", lambda path: json.loads(Path(path).read_text()))
+        started = []
+        monkeypatch.setattr(cli, "start_server", lambda *a, **k: started.append(a))
+        info = tmp_path / "server.json"
+        argv = ["serve", "--prepared", str(prepared), "--port", str(port), "--log",
+                str(tmp_path / "log"), "--info", str(info)]
+        args = cli.parser().parse_args(argv)
+        command = cli.server_command(json.loads(prepared.read_text()), port=port,
+                                     max_model_len=args.max_model_len,
+                                     gpu_memory_utilization=args.gpu_memory_utilization)
+        with pytest.raises(cli.CliError, match="already answers"):
+            args.func(args)  # no record of who started it
+        info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
+                                    "port": port, "pid": os.getpid()}))
+        assert args.func(args) == 0 and "reusing it" in capsys.readouterr().out
+        other = cli.parser().parse_args(argv + ["--no-batch-invariant"])
+        with pytest.raises(cli.CliError, match="already answers"):
+            other.func(other)  # other settings
+        info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
+                                    "port": port, "pid": 2 ** 22 + 12345}))
+        with pytest.raises(cli.CliError, match="already answers"):
+            args.func(args)  # the recorded server is gone
+        assert started == []
+    finally:
+        server.shutdown()
+    assert serving.port_answers(port) is False
+    assert serving.process_alive(os.getpid()) and not serving.process_alive(None)

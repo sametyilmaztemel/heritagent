@@ -100,6 +100,31 @@ def start_server(command: list[str], log_path: Path, *, environment: Mapping | N
                  env={**os.environ, **dict(environment or server_environment())})
 
 
+def port_answers(port: int, *, host: str = "127.0.0.1", timeout_seconds: float = 2.0) -> bool:
+    """Whether an HTTP server answers ``GET /v1/models`` on the port."""
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=timeout_seconds):
+            return True
+    except urllib.error.HTTPError:
+        return True  # something answers, even if not with 200
+    except OSError:
+        return False
+
+
+def process_alive(pid) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _tail(path: Path | None, lines: int = 40) -> str:
     if path is None or not Path(path).exists():
         return ""
