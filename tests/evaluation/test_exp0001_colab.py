@@ -362,6 +362,10 @@ def test_the_pilot_measures_what_its_manifest_froze(tmp_path, registry, splits, 
     assert measures["prompt_tokens_per_call_max"]["context_overflows"] == 0
     assert measures["loop_steps_per_episode"]["max"] == 1
     assert ledger.episodes == 30 + 6 + 1 + 90
+    assert measures["miner_prompt_tokens_t07_pairs"] == {
+        "pairs": 0, "counted": False, "prompt_limit": 32768 - 2048, "context_window": 32768,
+        "miner_max_tokens": 2048, "full": None, "without_admissible_commands": None,
+        "pairs_that_fit": None}
     specs = pilot_specs(pilot, g0_runtime_config(registry))
     assert [s.config.skills[-1].gene_id for s in specs["smoke"]] == [SMOKE_GENE_ID]
     assert all(s.settings.temperature == 0.0 and s.settings.seed is None
@@ -371,6 +375,59 @@ def test_the_pilot_measures_what_its_manifest_froze(tmp_path, registry, splits, 
     first = specs["t07"][0]
     assert first.settings.seed == attempt_sampling_seed(0, first.task_id, 0)
     assert first.settings.stop == ("\nObservation:",) and first.settings.max_tokens == 512
+
+
+def test_the_pilot_counts_each_pairs_miner_prompt_in_both_forms(tmp_path, registry, splits):  # noqa: F811
+    from tests.evaluation.exp0001_workers import AlsoWinsOnOddSeeds
+    pilot = PILOTS[splits["manifest_sha256"]]
+    games = sorted(g["game_id"] for g in pilot["games"])
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock())
+    executor = EpisodeExecutor(model=AlsoWinsOnOddSeeds(games[::2]), env_factory=GameFactory(),
+                               ledger=ledger, trajectories_dir=tmp_path / "trajectories",
+                               run_id="pilot", code_commit="a" * 40, workers=1,
+                               sleep_between_retries=False)
+    counted = []
+
+    def count(prompt):  # the full form is "too long", the second form fits
+        counted.append(prompt)
+        return 40_000 if '"form":' not in prompt else len(prompt) // 4
+
+    try:
+        measured = run_pilot(executor, pilot, g0_runtime_config(registry),
+                             count_prompt_tokens=count)
+    finally:
+        executor.close()
+    measures = measured["measures"]
+    pairs = measures["temperature_0_7_pair_yield"]["numerator"]
+    assert pairs > 0
+    miner = measures["miner_prompt_tokens_t07_pairs"]
+    assert miner["pairs"] == pairs and miner["counted"] is True
+    assert len(counted) == 2 * pairs  # both forms of every pair, no teacher call
+    assert miner["full"]["min"] == 40_000 and miner["without_admissible_commands"]["n"] == pairs
+    assert miner["pairs_that_fit"] == {"full": 0, "only_without_admissible_commands": pairs,
+                                       "neither": 0}
+
+
+def test_a_system_prompt_is_counted_with_the_chat_template():
+    from evaluation.exp0001.backends import TokenizerCounter
+
+    class Tokenizer:
+        def __init__(self, batch):
+            self.batch = batch
+
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+        def apply_chat_template(self, messages, add_generation_prompt, tokenize):
+            assert messages == [{"role": "system", "content": "a b c"}]
+            assert add_generation_prompt is True and tokenize is True
+            ids = [1, 2, 3, 4, 5, 6, 7]
+            return {"input_ids": ids} if self.batch else ids
+
+    for batch in (False, True):
+        counter = TokenizerCounter(Tokenizer(batch), "t")
+        assert counter.count_tokens("a b c") == 3
+        assert counter.count_system_prompt_tokens("a b c") == 7
 
 
 def test_the_projection_counts_the_protocols_episodes():
@@ -385,7 +442,7 @@ def test_the_projection_counts_the_protocols_episodes():
     worst = projection["scenarios"][-1]
     assert worst["episodes"] == 540 + 1358 + 3 * (10 * 130 + 45 * 20)
     assert worst["within_caps"]["episodes"] is False  # 8498 > 7000
-    assert two[0]["model_calls_at_pilot_mean"] == 2678 * 20 + 180
+    assert two[0]["model_calls_at_pilot_mean"] == 2678 * 20 + 360  # two teacher calls per pair
     assert projection["status"].startswith("M ")
 
 

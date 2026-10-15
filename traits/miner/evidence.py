@@ -5,15 +5,34 @@ teacher prompt. Preserves failures in full (malformed attempts, rejected
 calls, retries) — never only the successful path. Excludes provenance such
 as git/backend identifiers (those belong to the mining record, not the
 teacher prompt). `evidence_sha256` covers the exact rendered evidence.
+
+Two forms (ADR-0009 D8): ``full``, and ``without-admissible-commands``,
+which drops the admissible-command list (ADR-0003 D2) from every tool
+result and is sent only when the full form's prompt does not fit the
+context window. Nothing else is cut.
 """
 
 from __future__ import annotations
 
+from runtime.tool_adapters.alfworld import ADMISSIBLE_HEADER
 from trajectory.storage.canonical import canonical_bytes, canonical_json, sha256_hex
 from traits.miner.inputs import MinerInputError, MiningPair
 
+FULL = "full"
+WITHOUT_ADMISSIBLE_COMMANDS = "without-admissible-commands"
+EVIDENCE_FORMS = (FULL, WITHOUT_ADMISSIBLE_COMMANDS)  # the order the miner tries them in
+_ADMISSIBLE_SECTION = f"\n\n{ADMISSIBLE_HEADER}\n"
 
-def _render_member(nt, label: str) -> dict:
+
+def without_admissible_commands(content):
+    """A tool result without its trailing admissible-command list."""
+    if not isinstance(content, str):
+        return content
+    head, separator, _ = content.rpartition(_ADMISSIBLE_SECTION)
+    return head if separator else content
+
+
+def _render_member(nt, label: str, form: str = FULL) -> dict:
     steps = []
     for step in nt.steps:
         steps.append({
@@ -31,7 +50,8 @@ def _render_member(nt, label: str) -> dict:
                 "rejected": call.rejected,
                 "reject_reason": call.reject_reason,
                 "ok": call.ok,
-                "result_content": call.result_content,
+                "result_content": (call.result_content if form == FULL
+                                   else without_admissible_commands(call.result_content)),
             } for call in step.tool_calls],
             "retries": [{"attempt": r.attempt, "delay_s": r.delay_s, "reason": r.reason}
                          for r in step.retries],
@@ -51,11 +71,14 @@ def _render_member(nt, label: str) -> dict:
     }
 
 
-def render_pair_evidence(pair: MiningPair) -> tuple[str, str]:
+def render_pair_evidence(pair: MiningPair, form: str = FULL) -> tuple[str, str]:
     """Render canonical differential evidence for one pair.
 
     Returns `(evidence_text, evidence_sha256)` where the digest covers the
-    exact canonical bytes of the rendered document."""
+    exact canonical bytes of the rendered document. The full form's bytes
+    are those of evidence 0.1; the other form names itself."""
+    if form not in EVIDENCE_FORMS:
+        raise MinerInputError(f"unknown evidence form {form!r}")
     if pair.success.task != pair.failure.task:  # defensive; MiningPair enforces this
         raise MinerInputError("pair members must share the same task")
     document = {
@@ -63,11 +86,14 @@ def render_pair_evidence(pair: MiningPair) -> tuple[str, str]:
         "version": "0.1",
         "task": pair.success.task,
         "task_family": pair.task_family,
-        "successful_trajectory": _render_member(pair.success, "success"),
-        "failed_trajectory": _render_member(pair.failure, "failure"),
+        "successful_trajectory": _render_member(pair.success, "success", form),
+        "failed_trajectory": _render_member(pair.failure, "failure", form),
     }
+    if form != FULL:
+        document["form"] = form
     text = canonical_json(document)
     return text, sha256_hex(canonical_bytes(document))
 
 
-__all__ = ["render_pair_evidence"]
+__all__ = ["EVIDENCE_FORMS", "FULL", "WITHOUT_ADMISSIBLE_COMMANDS", "render_pair_evidence",
+           "without_admissible_commands"]

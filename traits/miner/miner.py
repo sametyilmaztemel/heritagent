@@ -48,10 +48,11 @@ from runtime.model_adapters import (
     ModelMessage,
     ModelResponseError,
 )
+from runtime.model_adapters.errors import ContextWindowExceeded
 
 from runtime.expression import validate_runtime_skill_payload
 from trajectory.storage.canonical import canonical_json, sha256_hex
-from traits.miner.evidence import render_pair_evidence
+from traits.miner.evidence import EVIDENCE_FORMS, render_pair_evidence
 from traits.miner.inputs import MiningBatch
 from traits.miner.records import build_mining_record
 
@@ -76,6 +77,14 @@ def output_schema() -> dict:
 
 def output_schema_sha256() -> str:
     return sha256_hex(_PROPOSAL_SCHEMA_PATH.read_bytes())
+
+
+def render_teacher_prompt(*, evidence_text: str, family_universe, max_proposals: int) -> str:
+    """The teacher's single system message for one pair."""
+    return (prompt_template_text()
+            .replace("<<MAX_PROPOSALS>>", str(max_proposals))
+            .replace("<<FAMILIES>>", ", ".join(family_universe))
+            .replace("<<EVIDENCE>>", evidence_text))
 
 
 @dataclass(frozen=True)
@@ -165,11 +174,9 @@ class TraitMiner:
         """Render the final teacher message; returns (rendered_prompt,
         rendered_prompt_sha256) — available even before the model call so
         malformed calls are audited with the exact prompt identity."""
-        template = prompt_template_text()
-        rendered_prompt = (template
-                            .replace("<<MAX_PROPOSALS>>", str(self._settings.max_proposals))
-                            .replace("<<FAMILIES>>", ", ".join(family_universe))
-                            .replace("<<EVIDENCE>>", evidence_text))
+        rendered_prompt = render_teacher_prompt(evidence_text=evidence_text,
+                                                family_universe=family_universe,
+                                                max_proposals=self._settings.max_proposals)
         return rendered_prompt, sha256_hex(rendered_prompt.encode("utf-8"))
 
     def _ask_teacher(self, rendered_prompt: str) -> tuple[dict, str]:
@@ -205,36 +212,54 @@ class TraitMiner:
 
         # -- phase 1: per-pair teacher calls -> validated descriptors ---------
         for pair in batch.pairs:
-            evidence_text, evidence_sha256 = render_pair_evidence(pair)
             source_ids = (pair.success.trajectory_id, pair.failure.trajectory_id)
-            raw_response: dict | None = None
-            raw_teacher_text: str | None = None
-            rendered_prompt, rendered_prompt_sha256 = self._render_prompt(
-                evidence_text=evidence_text, family_universe=batch.family_universe)
             pair_rejected: list[dict] = []
             pair_descriptors: list[dict] = []
             pair_discovery_order: list[str] = []
-            # call identity is fully determined before the call: malformed
-            # calls are audited under the same identity
-            record_id = self._record_identity(evidence_sha256,
-                                               rendered_prompt_sha256,
-                                               source_ids, model_metadata)
-
-            try:
-                raw_response, raw_teacher_text = self._ask_teacher(rendered_prompt)
-            except ModelResponseError as exc:
-                # fail closed: the malformed teacher output yields no
-                # proposals but the exact raw output stays auditable
-                raw_teacher_text = exc.raw_text
-                entry = {"reason": "malformed_output",
+            # ADR-0009 D8: the full evidence first; when its prompt does not
+            # fit the context window, the evidence without the
+            # admissible-command lists; when neither fits, the pair is
+            # rejected. Nothing is truncated and no form is retried.
+            for evidence_form in EVIDENCE_FORMS:
+                evidence_text, evidence_sha256 = render_pair_evidence(pair, evidence_form)
+                raw_response: dict | None = None
+                raw_teacher_text: str | None = None
+                rendered_prompt, rendered_prompt_sha256 = self._render_prompt(
+                    evidence_text=evidence_text, family_universe=batch.family_universe)
+                # call identity is fully determined before the call: malformed
+                # calls are audited under the same identity
+                record_id = self._record_identity(evidence_sha256,
+                                                   rendered_prompt_sha256,
+                                                   source_ids, model_metadata)
+                overflow: ContextWindowExceeded | None = None
+                try:
+                    raw_response, raw_teacher_text = self._ask_teacher(rendered_prompt)
+                except ContextWindowExceeded as exc:
+                    overflow = exc
+                    continue
+                except ModelResponseError as exc:
+                    # fail closed: the malformed teacher output yields no
+                    # proposals but the exact raw output stays auditable
+                    raw_teacher_text = exc.raw_text
+                    entry = {"reason": "malformed_output",
+                              "proposal_name": None, "proposal_index": None,
+                              "gene_id": None, "discovery_order": None,
+                              "detail": str(exc)}
+                    rejected.append(entry)  # an all-malformed run is not a clean zero
+                    pair_rejected.append(entry)
+                    proposals = []
+                else:
+                    proposals = list(raw_response.get("proposals") or [])
+                break
+            if overflow is not None:
+                entry = {"reason": "context_overflow",
                           "proposal_name": None, "proposal_index": None,
                           "gene_id": None, "discovery_order": None,
-                          "detail": str(exc)}
-                rejected.append(entry)  # an all-malformed run is not a clean zero
+                          "detail": f"the teacher prompt fits the context window in no "
+                                    f"evidence form {list(EVIDENCE_FORMS)}: {overflow}"}
+                rejected.append(entry)
                 pair_rejected.append(entry)
                 proposals = []
-            else:
-                proposals = list(raw_response.get("proposals") or [])
 
             for order, proposal in enumerate(proposals):
                 name = proposal.get("name")
@@ -309,6 +334,7 @@ class TraitMiner:
 
             record_drafts.append({
                 "record_id": record_id, "pair": pair,
+                "evidence_form": evidence_form,
                 "evidence_sha256": evidence_sha256,
                 "rendered_prompt_sha256": rendered_prompt_sha256,
                 "raw_response": raw_response, "raw_teacher_text": raw_teacher_text,
@@ -398,6 +424,7 @@ class TraitMiner:
                 failure_trajectory_ids=[draft["pair"].failure.trajectory_id],
                 task_families=[draft["pair"].task_family],
                 evidence_sha256=draft["evidence_sha256"],
+                evidence_form=draft["evidence_form"],
                 rendered_prompt_sha256=draft["rendered_prompt_sha256"],
                 prompt_template_sha256=prompt_template_sha256(),
                 output_schema_sha256=output_schema_sha256(),

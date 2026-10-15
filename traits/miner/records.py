@@ -39,7 +39,7 @@ def build_mining_record(*, mining_record_id: str, success_trajectory_ids: list[s
                          raw_structured_response: dict | None,
                          raw_teacher_text: str | None = None,
                          accepted_proposals: list[dict], rejected: list[dict],
-                         discovery_order: list[str]) -> dict:
+                         discovery_order: list[str], evidence_form: str = "full") -> dict:
     record = {
         "record": "mining",
         "schema_version": "0.1",
@@ -48,6 +48,7 @@ def build_mining_record(*, mining_record_id: str, success_trajectory_ids: list[s
         "failure_trajectory_ids": list(failure_trajectory_ids),
         "task_families": list(task_families),
         "evidence_sha256": evidence_sha256,
+        "evidence_form": evidence_form,
         "rendered_prompt_sha256": rendered_prompt_sha256,
         "family_universe": list(family_universe),
         "prompt_template_sha256": prompt_template_sha256,

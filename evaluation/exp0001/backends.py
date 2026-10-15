@@ -119,6 +119,16 @@ class TokenizerCounter:
     def count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text, add_special_tokens=False))
 
+    def count_system_prompt_tokens(self, text: str) -> int:
+        """The prompt tokens of a request whose only message is this system
+        message, rendered with the model's chat template as the server
+        renders it (the generation prompt included)."""
+        ids = self._tokenizer.apply_chat_template([{"role": "system", "content": text}],
+                                                  add_generation_prompt=True, tokenize=True)
+        if isinstance(ids, Mapping):  # a BatchEncoding
+            ids = ids["input_ids"]
+        return len(ids)
+
 
 def hf_token_counter(model_id: str, revision: str, path: Path | None = None) -> TokenizerCounter:
     """The model's tokenizer; ``path`` is the local snapshot of exactly that

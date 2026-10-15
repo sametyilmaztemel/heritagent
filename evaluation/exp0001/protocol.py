@@ -21,11 +21,15 @@ CANDIDATE_CAP = 10  # manifest genome.candidate_set.cap (K)
 MAX_TOKENS_PER_REQUEST = 512
 MAX_TOTAL_RETRIES = 10
 CONTEXT_WINDOW = 32768  # ADR-0009 D4: Qwen2.5-7B-Instruct's native length
+MINER_MAX_TOKENS = 2048  # traits.miner.MiningSettings default
+# ADR-0009 D8: a pair's teacher prompt in its full evidence form, then without the
+# admissible-command lists; the cap check charges both calls
+MINER_CALLS_PER_PAIR_MAX = 2
 CAPS = MappingProxyType({"episodes_max": 7000, "model_calls_max": 225_000,
                          "wall_clock_hours_max": 96, "accelerator_nodes_max": 1})
 # the committed pre-run artifacts (manifest run_protocol); a run binds to them
 LOCKED_SPLIT_MANIFEST_SHA256 = "2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c"
-LOCKED_PILOT_SHA256 = "ecc713d71966f0a32ef6cfddbbd950803f0ca0bbbb3ef00f549b09187522d8d0"
+LOCKED_PILOT_SHA256 = "b9ff5049b11f243e666ae3f13fa41d06b68247ece536667832b2c5a33f502b7d"
 
 PROTOCOL = MappingProxyType({
     "mining_seeds": MINING_SEEDS,

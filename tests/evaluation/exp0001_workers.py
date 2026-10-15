@@ -48,3 +48,14 @@ class WinsOnGames(ScriptedAdapter):
         won = any(f"solve {game_id}." in text for game_id in self.wins)
         return GenerationResult(text=react_action("act", {"command": "win"}) if won
                                 else react_final("I am done."), finish_reason="stop")
+
+
+class AlsoWinsOnOddSeeds(WinsOnGames):
+    """As WinsOnGames, and at a temperature above 0 it also wins every game
+    whose sampling seed is odd: the temperature-0.7 attempts form pairs."""
+
+    def generate(self, messages, settings):
+        if settings.temperature > 0 and settings.seed is not None and settings.seed % 2:
+            return GenerationResult(text=react_action("act", {"command": "win"}),
+                                    finish_reason="stop")
+        return super().generate(messages, settings)

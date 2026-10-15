@@ -33,6 +33,8 @@ from evaluation.exp0001.protocol import (
     CONTEXT_WINDOW,
     LIFETIME_ATTEMPTS_PER_TASK,
     MAX_TOKENS_PER_REQUEST,
+    MINER_CALLS_PER_PAIR_MAX,
+    MINER_MAX_TOKENS,
     MINING_SEEDS,
     MINING_TEMPERATURE,
     T_REG_SIZE,
@@ -44,6 +46,9 @@ from inheritance.overlay import evaluation_settings
 from runtime.expression import RuntimeConfig, RuntimeSkill, validate_runtime_skill_payload
 from runtime.model_adapters.base import GenerationSettings
 from trajectory.normalization import load_normalized
+from traits.miner.evidence import EVIDENCE_FORMS, FULL, render_pair_evidence
+from traits.miner.inputs import MiningPair
+from traits.miner.miner import render_teacher_prompt
 
 PILOT_REPORT_SCHEMA = "heritagent/exp0001-pilot-report/0.1"
 PILOT_RUN_ID = "EXP-0001-calibration-pilot"
@@ -132,9 +137,50 @@ def _prompt_tokens(results: Sequence[EpisodeResult]) -> list[int]:
             for call in step.model_calls if call.prompt_tokens is not None]
 
 
+def miner_prompt_tokens(t07: Sequence[EpisodeResult],
+                        count_prompt_tokens: Callable[[str], int] | None) -> dict:
+    """ADR-0009 D8: each temperature-0.7 pair's teacher prompt, in both
+    evidence forms, against the window less the miner's output tokens."""
+    by_game: dict[str, list[EpisodeResult]] = {}
+    for result in sorted(t07, key=lambda r: r.key):  # attempt order within a game
+        by_game.setdefault(result.task_id, []).append(result)
+    limit = CONTEXT_WINDOW - MINER_MAX_TOKENS
+    counts: dict[str, list[int]] = {form: [] for form in EVIDENCE_FORMS}
+    fits = {"full": 0, "only_without_admissible_commands": 0, "neither": 0}
+    pairs = 0
+    for game in sorted(by_game):
+        attempts = by_game[game]
+        success = next((r for r in attempts if r.success), None)
+        failure = next((r for r in attempts if not r.success), None)
+        if success is None or failure is None:
+            continue
+        pairs += 1
+        if count_prompt_tokens is None:
+            continue
+        pair = MiningPair(success=load_normalized(success.trajectory_path),
+                          failure=load_normalized(failure.trajectory_path),
+                          task_family=success.family)
+        tokens = {}
+        for form in EVIDENCE_FORMS:
+            evidence, _ = render_pair_evidence(pair, form)
+            tokens[form] = count_prompt_tokens(render_teacher_prompt(
+                evidence_text=evidence, family_universe=ALFWORLD_TASK_TYPES,
+                max_proposals=CANDIDATE_CAP))
+            counts[form].append(tokens[form])
+        fit = {form: n <= limit for form, n in tokens.items()}
+        fits["full" if fit[FULL] else "only_without_admissible_commands"
+             if any(fit.values()) else "neither"] += 1
+    counted = count_prompt_tokens is not None
+    return {"pairs": pairs, "counted": counted, "prompt_limit": limit,
+            "context_window": CONTEXT_WINDOW, "miner_max_tokens": MINER_MAX_TOKENS,
+            **{form.replace("-", "_"): _summary(counts[form]) if counted else None
+               for form in EVIDENCE_FORMS},
+            "pairs_that_fit": fits if counted else None}
+
+
 def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
             smoke: EpisodeResult, t07: Sequence[EpisodeResult], *, elapsed_seconds: float,
-            workers: int) -> dict:
+            workers: int, count_prompt_tokens: Callable[[str], int] | None = None) -> dict:
     calls = [r.model_calls for r in runs]
     successes = [r for r in runs if r.success]
     fresh = [r for r in runs if not r.resumed]
@@ -191,6 +237,7 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
                                      for r in [*runs, *repeats, smoke, *t07])},
         "loop_steps_per_episode": {**_summary([r.loop_steps for r in runs]),
                                    "game_steps": _summary([r.steps for r in runs])},
+        "miner_prompt_tokens_t07_pairs": miner_prompt_tokens(t07, count_prompt_tokens),
     }
     assert tuple(measures) == PILOT_MEASURES
     prompt_tokens = _prompt_tokens(runs)
@@ -216,7 +263,8 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
     seeds = len(MINING_SEEDS)
     lifetime = seeds * t_mine_size * LIFETIME_ATTEMPTS_PER_TASK
     final = (1 + 2 * seeds) * (t_eval_size + T_REG_SIZE + transfer_size)
-    teacher_calls_max = seeds * t_mine_size  # one call per mining pair at most
+    # one pair per T_mine task at most, two calls per pair at most (ADR-0009 D8)
+    teacher_calls_max = seeds * t_mine_size * MINER_CALLS_PER_PAIR_MAX
     measures = measured["measures"]
     pair_yield = measures.get("temperature_0_7_pair_yield", {}).get("value")
     solved_any = measures.get("temperature_0_7_solved_in_any_attempt", {}).get("value")
@@ -244,7 +292,7 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
                 "calls per episode and throughput as measured by the pilot at temperature 0; "
                 "the lifetime runs at 0.7, which the pilot does not measure",
                 "the throughput at the pilot's worker count holds for the whole run",
-                "teacher calls at their maximum: one per T_mine task and seed"],
+                "teacher calls at their maximum: two per T_mine task and seed"],
             "fixed_episodes": {"lifetime": lifetime, "final_evaluation": final},
             "gate_episodes_per_candidate": GATE_EPISODES_PER_CANDIDATE,
             "interaction_episodes_per_pair": INTERACTION_EPISODES_PER_PAIR,
@@ -261,8 +309,11 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
 
 
 def run_pilot(executor: EpisodeExecutor, pilot_manifest: Mapping, g0_config: RuntimeConfig, *,
-              clock: Callable[[], float] = time.monotonic) -> dict:
-    """Run (or resume) the pilot and measure it."""
+              clock: Callable[[], float] = time.monotonic,
+              count_prompt_tokens: Callable[[str], int] | None = None) -> dict:
+    """Run (or resume) the pilot and measure it. ``count_prompt_tokens``
+    counts a one-system-message prompt as the server would (the CLI passes
+    the model tokenizer's); without it the miner prompts are not counted."""
     specs = pilot_specs(pilot_manifest, g0_config)
     started = clock()
     runs = executor.run_many(specs["run"])
@@ -270,4 +321,5 @@ def run_pilot(executor: EpisodeExecutor, pilot_manifest: Mapping, g0_config: Run
     repeats = executor.run_many(specs["repeat"])
     smoke = executor.run_many(specs["smoke"])[0]
     t07 = executor.run_many(specs["t07"])
-    return measure(runs, repeats, smoke, t07, elapsed_seconds=elapsed, workers=executor.workers)
+    return measure(runs, repeats, smoke, t07, elapsed_seconds=elapsed, workers=executor.workers,
+                   count_prompt_tokens=count_prompt_tokens)
