@@ -504,3 +504,48 @@ def test_bad_attempt_records_fail_closed(tmp_path, line, message):
     path.write_bytes(path.read_bytes() + line)
     with pytest.raises(LedgerError, match=message):
         RunLedger(path, run_id="r", clock=Clock())
+
+
+def test_notes_may_follow_a_terminal_record(tmp_path):
+    """A finished run restored from its mirror gets a restore note after its
+    terminal record; it must still load (review of #69)."""
+    for finish in ("complete", "abandon"):
+        path = tmp_path / f"{finish}.jsonl"
+        ledger = RunLedger(path, run_id="r", clock=Clock())
+        ledger.admit("e0")
+        ledger.record("e0", model_calls=2, outcome={})
+        ledger.complete() if finish == "complete" else ledger.abandon("t_reg: short")
+        append_note(path, {"type": "restore", "snapshot_seq": 3})
+        path.write_bytes(path.read_bytes() + b'{"type":"repa')
+        assert repair_torn_tail(path)["type"] == "repair"
+        for readonly in (True, False):
+            again = RunLedger(path, run_id="r", clock=Clock(), readonly=readonly)
+            assert again.state == ("complete" if finish == "complete" else "incomplete")
+            assert [n["type"] for n in again.notes] == ["restore", "repair"]
+            assert again.episodes == 1
+
+
+def test_a_heartbeat_keeps_the_session_span_current(tmp_path):
+    path, clock = tmp_path / "ledger.jsonl", Clock()
+    ledger = RunLedger(path, run_id="r", clock=clock)
+    ledger.admit_calls("mining/11", 40)
+    for _ in range(3):
+        clock.now += 600
+        ledger.heartbeat()  # one per teacher call
+    reader = RunLedger(path, run_id="r", clock=clock, readonly=True)
+    assert reader.active_hours() == pytest.approx(0.5) and reader.model_calls == 40
+
+
+def test_a_deferred_admission_writes_nothing(tmp_path):
+    from evaluation.exp0001.ledger import AdmissionDeferred
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock(), caps={**CAPS, "episodes_max": 1})
+    ledger.admit("e0")
+    size = path.stat().st_size
+    with pytest.raises(AdmissionDeferred, match="episodes_max 1"):
+        ledger.admit("e1", defer=True)
+    assert path.stat().st_size == size and ledger.state == "running" and ledger.in_flight == 1
+    ledger.record("e0", model_calls=1, outcome={})
+    with pytest.raises(CapExceeded):
+        ledger.admit("e1")  # nothing in flight: the stop is written
+    assert ledger.done_keys("e") == ("e0",)

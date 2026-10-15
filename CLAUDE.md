@@ -20,7 +20,7 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 
 1. Read issue #20 (newest first), open PRs, open review-needed issues and the ADRs they touch. Read `research/novelty-ledger.md` if a claim may change.
 2. Run `ListAgents` / `list_sessions` to check for other Claude sessions.
-3. **Conflict check.** List the open PRs, the remote `issue-*` branches and the latest Critic "#N START" handoff. Handoffs are posted on the item's own issue (e.g. "#12 START" on #12); #20 carries only status notes. Handoffs before 2026-10-14 are Codex's; since then Claude writes them. Pick work only when none of them covers the issue or files you plan to touch. Zcode owns the SPEC §28 M0 sequence (#13 onward) unless the owner reassigns an item; the owner reassigned #13 to Claude on 2026-10-14.
+3. **Conflict check.** List the open PRs, the remote `issue-*` branches and the latest Critic "#N START" handoff. Handoffs are posted on the item's own issue (e.g. "#12 START" on #12); #20 carries only status notes. Handoffs up to and including the #13 Phase A one are Codex's; after the owner removed Codex (2026-10-14), Claude writes them. Pick work only when none of them covers the issue or files you plan to touch. Zcode owns the SPEC §28 M0 sequence (#13 onward) unless the owner reassigns an item. On 2026-10-14 the owner reassigned the rest of #13 Phase A to Claude and asked it for the Colab execution path and notebooks (Phase B).
 
 ## Builder protocol (issue #20 rules 1–6)
 
@@ -33,7 +33,7 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 
 - No `Co-Authored-By: Claude` line in any commit message, squash message or PR body (owner decision, 2026-10-14): Claude must not appear among the repository's contributors. Claude squash-merges its own PRs with an explicit message, so GitHub adds no co-author line either. The owner approved one history rewrite of `main` to remove the earlier lines (takeover note §5.13); that was the only exception to the next rule.
 - Never push directly to `main`: it changes only by merging a reviewed, green PR. Never push to Zcode's `issue-*` branches or to another session's `claude/*` branch.
-- Never edit `SPEC.md`, `research/decisions/ADR-*`, `experiments/manifests/*`, `research/hypotheses/` or `research/novelty-ledger.md` without an accepted ADR or an explicit owner decision. Claude's own Critic role never authorizes these edits.
+- Never edit `SPEC.md`, `research/decisions/ADR-*`, `experiments/manifests/*`, `research/hypotheses/` or `research/novelty-ledger.md` without an accepted ADR or an explicit owner decision. A Claude-written Critic handoff or cross-review does not authorize these edits on its own. This is builder-2's safeguard against approving its own changes, not the owner's wording; the owner can lift it.
 - Anti-overclaim (SPEC §34): *first / novel / better / causal / general / model-independent / evolutionary improvement / inheritance* only with experimental evidence.
 - Run tests on a `git archive` export in the scratch directory with `pytest -p no:cacheprovider`. Install with `pip install -e ".[dev]"`, plus `scripts/ci/requirements-ci.txt` for the CI tools.
 

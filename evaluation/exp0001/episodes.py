@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from evaluation.exp0001.ledger import LedgerError, RunLedger
+from evaluation.exp0001.ledger import AdmissionDeferred, LedgerError, RunLedger
 from evaluation.exp0001.protocol import PROTOCOL
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets, run_agent
@@ -159,6 +159,7 @@ def play_episode(*, model: ModelAdapter, env_factory: Callable[[str, str], Episo
 # at a time; TextWorld is not documented as thread-safe). Each worker holds
 # its own model client and environment factory, set once by the initializer.
 _WORKER: dict = {}
+WORKER_TASKS = 50  # episodes a worker plays before it is replaced
 
 
 def _init_worker(model, env_factory, budgets, sleep_between_retries: bool) -> None:
@@ -278,12 +279,16 @@ class EpisodeExecutor:
     def _get_pool(self):
         if self._pool is None:
             import multiprocessing
+            import sys
             from concurrent.futures import ProcessPoolExecutor
+            # a worker is replaced after a number of games: TextWorld's caches
+            # grow with every game a process opens (Python 3.11+)
+            recycle = {"max_tasks_per_child": WORKER_TASKS} if sys.version_info >= (3, 11) else {}
             self._pool = ProcessPoolExecutor(
                 max_workers=self._workers, mp_context=multiprocessing.get_context("spawn"),
                 initializer=_init_worker,
                 initargs=(self._model, self._env_factory, self._budgets,
-                          self._sleep_between_retries))
+                          self._sleep_between_retries), **recycle)
         return self._pool
 
     def close(self) -> None:
@@ -329,23 +334,45 @@ class EpisodeExecutor:
                 if self._ledger.is_done(spec.key):
                     results[spec.key] = self._resumed(spec)
                     continue
-                while pending and (self._ledger.admission_blocked(spec.key) or self._paused()):
-                    drain(block=True)
+                while True:
+                    if self._paused():
+                        if pending:
+                            drain(block=True)
+                            if failure is not None:
+                                break
+                            continue
+                        failure = RunPaused(f"paused before {spec.key!r}")
+                        break
+                    try:
+                        # with episodes in flight a cap defers the admission
+                        # instead of stopping the run; without, it stops it
+                        self._ledger.admit(spec.key, defer=bool(pending))
+                    except AdmissionDeferred:
+                        drain(block=True)
+                        if failure is not None:
+                            break
+                        continue
+                    break
                 if failure is not None:
                     break
-                if self._paused():
-                    failure = RunPaused(f"paused before {spec.key!r}")
-                    break
-                self._ledger.admit(spec.key)  # raises CapExceeded when nothing is in flight
                 path, trajectory_id = self._target(spec)
-                future = self._get_pool().submit(_play_in_worker, spec, self._context(spec),
-                                                 str(path), trajectory_id)
+                try:
+                    future = self._get_pool().submit(_play_in_worker, spec, self._context(spec),
+                                                     str(path), trajectory_id)
+                except BaseException:
+                    self._ledger.abort(spec.key)  # no worker took it: charged as a reload would
+                    raise
                 pending[future] = spec
                 while len(pending) >= self._workers:
                     drain(block=True)
-        finally:
+        except BaseException as exc:
             while pending:
                 drain(block=False)
+            if failure is not None and failure is not exc and hasattr(exc, "add_note"):
+                exc.add_note(f"while stopping, an episode in flight also failed: {failure!r}")
+            raise
+        while pending:
+            drain(block=False)
         if failure is not None:
             raise failure
         return tuple(results[spec.key] for spec in specs)

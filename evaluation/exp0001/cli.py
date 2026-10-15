@@ -2,6 +2,13 @@
 The Colab notebooks call these commands; each one can also be run by hand.
 
   gpu-check       the A100 80 GB check (fails closed on any other GPU)
+  fetch-data      download ALFWorld release 0.2.2's data (sha256-checked), the
+                  data the frozen manifests were built from
+  verify-data     hash every game of the split and pilot manifests
+  mirror-check    write, replace, read and time small files in the mirror
+                  directory (on Colab, Google Drive)
+  run-commit      the code commit a run started at, from its mirror (empty for
+                  a new run)
   prepare-model   download and hash one pinned model revision -> prepared.json
   serve           start ``vllm serve`` on it and wait until it answers
   preflight       two calls outside any ledger that check the serving stack:
@@ -37,8 +44,16 @@ from evaluation.exp0001.backends import (
     require_a100_80gb,
 )
 from evaluation.exp0001.episodes import EpisodeExecutor, RunPaused, protocol_budgets
-from evaluation.exp0001.ledger import RunLedger, repair_torn_tail
-from evaluation.exp0001.mirror import RunMirror, latest_snapshot, restore
+from evaluation.exp0001.data import fetch_data, verify_data
+from evaluation.exp0001.ledger import LedgerError, RunLedger, repair_torn_tail
+from evaluation.exp0001.mirror import (
+    MirrorError,
+    RunMirror,
+    check_mirror_dir,
+    latest_snapshot,
+    restore,
+    snapshot_file,
+)
 from evaluation.exp0001.pilot_run import (
     PILOT_REPORT_SCHEMA,
     PILOT_RUN_ID,
@@ -154,6 +169,30 @@ def cmd_gpu_check(args) -> int:
     return 0
 
 
+def cmd_fetch_data(args) -> int:
+    root = fetch_data(args.target)
+    print(f"ALFWorld data at {root}")
+    return 0
+
+
+def cmd_verify_data(args) -> int:
+    splits, pilot = _manifests(Path(args.repo))
+    print(json.dumps(verify_data(args.data_root, splits, pilot)))
+    return 0
+
+
+def cmd_mirror_check(args) -> int:
+    print(json.dumps(check_mirror_dir(args.mirror_dir)))
+    return 0
+
+
+def cmd_run_commit(args) -> int:
+    data = snapshot_file(args.mirror_dir, "run-start.json") if Path(args.mirror_dir).exists() \
+        else None
+    print("" if data is None else json.loads(data.decode("utf-8"))["code"]["commit"])
+    return 0
+
+
 def cmd_prepare_model(args) -> int:
     prepared = prepare_model(args.model, revision=args.revision, cache_dir=args.cache_dir)
     _write_json(args.out, prepared)
@@ -220,6 +259,7 @@ def cmd_pilot(args) -> int:
     if dirty:
         raise CliError(f"the checkout at {repo} has changes; the pilot report names a clean commit")
     splits, pilot = _manifests(repo)
+    verify_data(args.data_root, splits, pilot)  # seconds; before any episode
     out = Path(args.out_dir)
     _restore_if_missing(out, args.mirror_dir)
     report_path = out / "pilot-report.json"
@@ -299,6 +339,7 @@ def cmd_run(args) -> int:
     repo, local = Path(args.repo), Path(args.local_dir)
     commit, dirty = git_state(repo)
     splits, pilot = _manifests(repo)
+    verify_data(args.data_root, splits, pilot)  # seconds; before any episode
     _restore_if_missing(local, args.mirror_dir)
     adapter = _adapter(args, prepared)
     counter = hf_token_counter(prepared["model_id"], prepared["revision"],
@@ -367,6 +408,23 @@ def parser() -> argparse.ArgumentParser:
 
     sub.add_parser("gpu-check").set_defaults(func=cmd_gpu_check)
 
+    p = sub.add_parser("fetch-data")
+    p.add_argument("--target", type=Path, required=True, help="becomes ALFWORLD_DATA")
+    p.set_defaults(func=cmd_fetch_data)
+
+    p = sub.add_parser("verify-data")
+    p.add_argument("--data-root", type=Path, required=True)
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_verify_data)
+
+    p = sub.add_parser("mirror-check")
+    p.add_argument("--mirror-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_mirror_check)
+
+    p = sub.add_parser("run-commit")
+    p.add_argument("--mirror-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_run_commit)
+
     p = sub.add_parser("prepare-model")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--revision", default=None, help="a commit, branch or tag; default the "
@@ -431,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         return args.func(args)
-    except (CliError, BackendError, ProvenanceError) as exc:
+    except (CliError, BackendError, ProvenanceError, LedgerError, MirrorError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

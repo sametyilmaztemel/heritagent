@@ -93,15 +93,64 @@ def _read_snapshot(seq: int, path: Path) -> dict | None:
     return doc
 
 
+def _blob_names(mirror: Path) -> set[str]:
+    """Every blob in the mirror, from one listing per prefix directory (a
+    Drive round trip per directory, not per file)."""
+    root = mirror / "blobs"
+    if not root.is_dir():
+        return set()
+    return {blob.name for prefix in root.iterdir() if prefix.is_dir()
+            for blob in prefix.iterdir() if not blob.name.startswith(".")}
+
+
 def latest_snapshot(mirror_dir: Path) -> dict | None:
     """The newest snapshot whose blobs all exist, or None."""
     mirror = Path(mirror_dir)
-    for seq, path in _snapshot_paths(mirror):
+    snapshots = _snapshot_paths(mirror)
+    if not snapshots:
+        return None
+    blobs = _blob_names(mirror)
+    for seq, path in snapshots:
         doc = _read_snapshot(seq, path)
-        if doc is not None and all(_blob(mirror, entry["sha256"]).exists()
-                                   for entry in doc["files"].values()):
+        if doc is not None and all(entry["sha256"] in blobs for entry in doc["files"].values()):
             return doc
     return None
+
+
+def snapshot_file(mirror_dir: Path, relpath: str) -> bytes | None:
+    """One file of the newest whole snapshot (for example the run's
+    run-start.json), checked against its hash; None if absent."""
+    mirror = Path(mirror_dir)
+    doc = latest_snapshot(mirror)
+    entry = None if doc is None else doc["files"].get(relpath)
+    if entry is None:
+        return None
+    data = _blob(mirror, entry["sha256"]).read_bytes()
+    if _sha256(data) != entry["sha256"]:
+        raise MirrorError(f"{relpath}: the mirrored content does not match its hash")
+    return data
+
+
+def check_mirror_dir(mirror_dir: Path, *, files: int = 20,
+                     clock: Callable[[], float] = time.monotonic) -> dict:
+    """What the mirror needs from its filesystem (on Colab, Drive): a write
+    with fsync, a replace over an existing file, a read back, a delete; and
+    the time per small file. Run before any GPU time is spent."""
+    probe = Path(mirror_dir) / ".mirror-check"
+    probe.mkdir(parents=True, exist_ok=True)
+    target = probe / "replace-me.json"
+    _write_atomic(target, b"1")
+    _write_atomic(target, b"22")  # a replace over an existing file
+    if target.read_bytes() != b"22":
+        raise MirrorError(f"{probe}: a replaced file does not read back")
+    started = clock()
+    for index in range(files):
+        _write_atomic(probe / f"small-{index}", b"x" * 1024)
+    seconds = (clock() - started) / files
+    for path in probe.iterdir():
+        path.unlink()
+    probe.rmdir()
+    return {"mirror_dir": str(mirror_dir), "seconds_per_small_file": round(seconds, 4)}
 
 
 def _relative(rel: str) -> PurePosixPath:
@@ -152,15 +201,17 @@ class RunMirror:
         self._known: set[str] = set()  # blobs known to exist in the mirror
         self.failures = 0
         self.last_error: str | None = None
-        self.mirror.mkdir(parents=True, exist_ok=True)
-        snapshots = _snapshot_paths(self.mirror)
-        self._seq = snapshots[0][0] if snapshots else 0
-        latest = latest_snapshot(self.mirror)
-        if latest is not None:
-            self._known = {entry["sha256"] for entry in latest["files"].values()}
-        self._token = secrets.token_hex(16)
-        _write_atomic(self.mirror / OWNER_FILE,
-                      json.dumps({"token": self._token, "pid": os.getpid()}).encode("utf-8"))
+        try:
+            self.mirror.mkdir(parents=True, exist_ok=True)
+            snapshots = _snapshot_paths(self.mirror)
+            self._seq = snapshots[0][0] if snapshots else 0
+            self._known = _blob_names(self.mirror)
+            self._token = secrets.token_hex(16)
+            _write_atomic(self.mirror / OWNER_FILE,
+                          json.dumps({"token": self._token, "pid": os.getpid()}).encode("utf-8"))
+        except OSError as exc:
+            raise MirrorError(f"the mirror directory {self.mirror} cannot be used ({exc}); on "
+                              f"Colab, mount Google Drive first") from exc
 
     @property
     def seq(self) -> int:

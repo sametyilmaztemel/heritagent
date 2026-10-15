@@ -3,6 +3,8 @@ processes (spawn) play the episodes, the parent stays the ledger's only
 writer, and every cap counts the episodes in flight. Scripted games and
 models only."""
 
+import json
+
 import pytest
 
 from evaluation.exp0001.episodes import EpisodeExecutor, RunPaused
@@ -140,3 +142,56 @@ def test_a_pause_records_the_episodes_in_flight_and_the_run_resumes(tmp_path, re
     finally:
         resumed.close()
     assert (again.episodes, again.aborted_attempts) == (12, 0)
+
+
+class SteppingClock:
+    """Each reading moves the clock on, so the active-time cap is crossed
+    between two readings of the same admission (review of #69)."""
+
+    def __init__(self, step):
+        self.now, self.step = 0.0, step
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+def test_a_cap_crossed_with_episodes_in_flight_records_them_before_the_stop(
+        tmp_path, registry):  # noqa: F811
+    config, seed = g0_runtime_config(registry), MINING_SEEDS[0]
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id=RUN_ID, clock=SteppingClock(400.0),
+                       caps={**CAPS, "wall_clock_hours_max": 1})
+    executor = EpisodeExecutor(model=SeededModel(), env_factory=GameFactory(), ledger=ledger,
+                               trajectories_dir=tmp_path / "trajectories", run_id=RUN_ID,
+                               code_commit=COMMIT, workers=2, sleep_between_retries=False)
+    try:
+        with pytest.raises(CapExceeded, match="wall_clock_hours_max"):
+            executor.run_many(lifetime_specs(tasks(), config, seed))
+    finally:
+        executor.close()
+    lines = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    attempts = [r["key"] for r in lines if r["type"] == "attempt"]
+    episodes = [r["key"] for r in lines if r["type"] == "episode"]
+    assert attempts and sorted(attempts) == sorted(episodes)  # every admitted episode recorded
+    assert lines[-1]["type"] == "incomplete" and ledger.in_flight == 0
+    assert ledger.aborted_attempts == 0
+
+
+def test_a_submit_failure_charges_the_admitted_attempt(tmp_path, registry, monkeypatch):  # noqa: F811
+    config, seed = g0_runtime_config(registry), MINING_SEEDS[0]
+    parallel, ledger = parallel_executor(tmp_path, SeededModel())
+    pool = parallel._get_pool()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("cannot schedule new futures after shutdown")
+
+    monkeypatch.setattr(pool, "submit", broken)
+    try:
+        with pytest.raises(RuntimeError, match="cannot schedule"):
+            parallel.run_many(lifetime_specs(tasks(1), config, seed))
+    finally:
+        monkeypatch.undo()
+        parallel.close()
+    reloaded = RunLedger(tmp_path / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert (ledger.in_flight, ledger.aborted_attempts, ledger.model_calls) == \
+        (0, reloaded.aborted_attempts, reloaded.model_calls) == (0, 1, 60)

@@ -74,7 +74,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs these on every pull request and
 Repo: https://github.com/sametyilmaztemel/heritagent (public). Tracking:
 
 - **PRs** are the cross-review mechanism (SPEC §32): ADR/design artifacts land via PR and merge only after review questions are resolved and answers recorded in the ADR.
-- **Agents:** Zcode (Builder) and Codex (Research/Critic) follow the protocol in issue #20. Claude is a second builder for work outside Zcode's M0 sequence. Its rules are in `CLAUDE.md`: its own different-model review agents review its PRs, and changes to locked or pre-registered elements still go through Codex and the owner.
+- **Agents:** Zcode (Builder) follows the protocol in issue #20. Claude is a second builder for work outside Zcode's M0 sequence. Since 2026-10-14 the owner has removed Codex from the process, and Claude holds the Critic's duties through different-model review workflows. Its rules are in `CLAUDE.md`: its own different-model review agents review its PRs, and changes to locked or pre-registered elements are the owner's decision.
 - **Milestones** map to SPEC §29 + §28: `M0: Minimal HeritAgent` (schema → runtime → recorder → miner → somatic store → evaluators → CIG → single-lineage inheritance → EXP-0001), `M1: Population Evolution`, `M2: Cross-Backbone & Paper`.
 - **Issues** carry the SPEC §28 development sequence in order; dependencies are stated in issue bodies. Labels: `research` / `engineering` / `review-needed` / `documentation` / `infra`.
 - Experiment runs must record model weights hash, split hashes, and code commit (SPEC §24) — enforced by checklist in the EXP-0001 execution issue.

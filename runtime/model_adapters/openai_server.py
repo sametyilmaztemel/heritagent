@@ -9,7 +9,11 @@ the standard library's HTTP client only.
 - ``generate``: POST ``/v1/chat/completions`` with the messages and the
   explicit settings (temperature, max_tokens, seed, stop), ``n`` = 1.
 - ``structured_generate``: the same with a ``json_schema`` response
-  format; the reply is validated against the schema here as well.
+  format. The server is sent the schema without the keywords its grammar
+  backends do not implement (``uniqueItems``: vLLM 0.29.0's xgrammar and
+  guidance backends reject it with HTTP 400), and the reply is validated
+  here against the full schema, so a reply that breaks a dropped keyword
+  is a ModelResponseError, as any malformed reply is.
 - ``tool_call``: provider-neutral, as in the offline adapter: a
   constrained oneOf schema over the offered tools.
 
@@ -53,6 +57,18 @@ from runtime.model_adapters.errors import (
 )
 
 SERVER_BACKEND = "vllm-server"
+UNSUPPORTED_SCHEMA_KEYWORDS = ("uniqueItems",)  # not implemented by vLLM 0.29.0's grammars
+
+
+def server_constraint(schema):
+    """The schema without the keywords the server cannot constrain; the full
+    schema still validates the reply."""
+    if isinstance(schema, dict):
+        return {key: server_constraint(value) for key, value in schema.items()
+                if key not in UNSUPPORTED_SCHEMA_KEYWORDS}
+    if isinstance(schema, list):
+        return [server_constraint(value) for value in schema]
+    return schema
 NEUTRAL_SAMPLING = {"top_p": 1.0, "top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0,
                     "presence_penalty": 0.0, "frequency_penalty": 0.0}
 
@@ -157,9 +173,9 @@ class VLLMServerAdapter(ModelAdapter):
     def structured_generate(self, messages: list[ModelMessage], settings: GenerationSettings,
                             schema: dict) -> GenerationResult:
         payload = self._payload(messages, settings)
-        payload["response_format"] = self._json_schema_format(schema)
+        payload["response_format"] = self._json_schema_format(server_constraint(schema))
         result = self._complete(payload)
-        self._validate_structured(result.text, schema)
+        self._validate_structured(result.text, schema)  # the full schema
         return result
 
     def tool_call(self, messages: list[ModelMessage], settings: GenerationSettings,

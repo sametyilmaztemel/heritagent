@@ -28,7 +28,8 @@ outcomes (replay and ablation of every candidate; generalization and
 regression of every candidate; the interaction pairs of the eligible
 set). A dry pass of the real gate code collects each stretch's episodes,
 they run in parallel, and the real pass then finds them recorded; a
-prefetched episode the real pass does not request fails the run closed.
+recorded gate episode the real pass does not request fails the run closed,
+in this session and in every later one.
 The episodes and decisions are the sequential run's; the order in which
 the episodes run is not."""
 
@@ -91,6 +92,7 @@ from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.replay import ReplayEvaluator
 from runtime.expression import compile_runtime_config
+from runtime.model_adapters.base import ModelAdapter
 from runtime.seed_g0 import build_g0_seed_genome
 from somatic.store import SomaticStore
 from trajectory.storage.canonical import canonical_json, sha256_hex
@@ -160,8 +162,9 @@ class Exp0001Run:
             raise ProvenanceError("the run-start record names another split manifest")
         for name, adapter in (("model", model), ("teacher", teacher)):
             metadata = adapter.metadata()
+            # the backend version too: one serving build for the whole run (ADR-0008 D4)
             actual = {"model_id": metadata.model_id, "revision": metadata.revision,
-                      "backend": metadata.backend}
+                      "backend": metadata.backend, "backend_version": metadata.backend_version}
             recorded = {k: run_start[name][k] for k in actual}
             if actual != recorded:
                 raise ProvenanceError(f"the {name} adapter is {actual}, the run-start record "
@@ -229,7 +232,7 @@ class Exp0001Run:
             if not self.ledger.admit_calls(key, len(batch.pairs)):
                 # charged only after the set was frozen: the set was removed by hand
                 raise RunError(f"{key} was charged but its frozen candidate set is missing")
-            miner = TraitMiner(self.teacher, self.registry,
+            miner = TraitMiner(_Heartbeat(self.teacher, self.ledger.heartbeat), self.registry,
                                settings=MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
                                                        max_tokens=MINER_MAX_TOKENS,
                                                        max_proposals=CANDIDATE_CAP),
@@ -324,7 +327,6 @@ class Exp0001Run:
         self._somatic(seed, candidates).close()  # the persistent journal holds the candidates
 
         requested: list[str] = []  # every key the real pass asks for
-        prefetched: set[str] = set()
 
         def runner(scope: str, dry=None):
             if dry is None:
@@ -367,23 +369,24 @@ class Exp0001Run:
 
         parallel = self.executor.workers > 1
         if parallel:  # stretch 1: replay and ablation of every candidate
-            self._prefetch(stages12, lambda condition: True, prefetched)
+            self._prefetch(stages12, lambda condition: True)
         inputs = stages12()
         if parallel:
             # stretch 2: generalization and regression of every candidate (the
             # pass ends at the first unrecorded interaction episode)
             self._prefetch(lambda dry: orchestrate(inputs, dry),
-                           lambda condition: condition in ("with_trait", "without_trait"),
-                           prefetched)
+                           lambda condition: condition in ("with_trait", "without_trait"))
             # stretch 3: the interaction pairs of the now-recorded eligible set
             self._prefetch(lambda dry: orchestrate(inputs, dry),
-                           lambda condition: condition in ("both", "neither"), prefetched)
+                           lambda condition: condition in ("both", "neither"))
         outcome, records = orchestrate(inputs)
-        unrequested = sorted(prefetched - set(requested))
+        # every recorded gate episode of this seed must be one the gate asked
+        # for; checked against the ledger, so a resumed run fails closed too
+        unrequested = sorted(set(self.ledger.done_keys(f"gate/{seed}/")) - set(requested))
         if unrequested:
-            raise RunError(f"seed {seed}: {len(unrequested)} prefetched gate episodes were not "
-                           f"requested by the gate (first {unrequested[0]!r}); the parallel "
-                           f"run left the protocol")
+            raise RunError(f"seed {seed}: {len(unrequested)} recorded gate episodes were not "
+                           f"requested by the gate (first {unrequested[0]!r}); the run left the "
+                           f"protocol and needs a human")
         if not outcome.committed:
             raise RunError(f"seed {seed}: the gate did not commit its decisions")
         records.require_consistent()
@@ -394,7 +397,7 @@ class Exp0001Run:
             "eliminated_by_interaction": {r.gene_id: r.eliminated_by for r in outcome.results},
             "aggregates": records.aggregates, "children": records.children})
 
-    def _prefetch(self, dry_pass, collect, prefetched: set[str]) -> None:
+    def _prefetch(self, dry_pass, collect) -> None:
         """One parallel stretch of the gate: the dry pass runs no episode,
         and ends at PrefetchStop; the episodes it collected run in parallel."""
         collected: list[EpisodeSpec] = []
@@ -406,7 +409,6 @@ class Exp0001Run:
             # a placeholder led the dry pass into an error after it had
             # collected; the real pass meets any real error on its own
             pass
-        prefetched.update(spec.key for spec in collected)
         if collected:
             self.executor.run_many(collected)
 
@@ -539,6 +541,35 @@ class Exp0001Run:
         report = freeze_json(report_path, self._report("complete", "done", None, **final))
         self.ledger.complete()  # after the report, so a crash in between re-runs to it
         return report
+
+
+class _Heartbeat(ModelAdapter):
+    """The miner's teacher, stamping the ledger's clock after every call, so a
+    long mining stage keeps the session's active time and the mirror current."""
+
+    def __init__(self, adapter: ModelAdapter, beat: Callable[[], None]):
+        self._adapter, self._beat = adapter, beat
+
+    def _then_beat(self, call, *args):
+        try:
+            return call(*args)
+        finally:
+            self._beat()
+
+    def generate(self, messages, settings):
+        return self._then_beat(self._adapter.generate, messages, settings)
+
+    def structured_generate(self, messages, settings, schema):
+        return self._then_beat(self._adapter.structured_generate, messages, settings, schema)
+
+    def tool_call(self, messages, settings, tools):
+        return self._then_beat(self._adapter.tool_call, messages, settings, tools)
+
+    def estimate_tokens(self, text):
+        return self._adapter.estimate_tokens(text)
+
+    def metadata(self):
+        return self._adapter.metadata()
 
 
 def _lock_run_dir(run_dir: Path):

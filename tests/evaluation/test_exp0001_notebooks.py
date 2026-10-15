@@ -36,6 +36,14 @@ def test_every_command_line_of_the_notebook_parses(name):
         argv = shlex.split(filled)[3:]
         args = cli.parser().parse_args(argv)  # an unknown flag exits
         commands.add(args.command)
-    expected = {"gpu-check", "prepare-model", "serve", "preflight"} | (
-        {"pilot"} if "pilot" in name else {"run", "status"})
+    expected = {"gpu-check", "prepare-model", "serve", "preflight", "mirror-check",
+                "fetch-data", "verify-data"} | ({"pilot"} if "pilot" in name else {"run", "status"})
     assert commands == expected
+
+
+def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
+    for name in ("EXP-0001-pilot.ipynb", "EXP-0001-run.ipynb"):
+        text = (NOTEBOOKS / name).read_text(encoding="utf-8")
+        assert "vllm==0.29.0+cu129" in text and "alfworld-download\"]" not in text
+        assert "fetch-data" in text and "verify-data" in text
+

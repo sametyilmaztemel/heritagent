@@ -791,14 +791,43 @@ def test_the_gate_prefetch_covers_interaction_pairs_and_matches_sequential(tmp_p
     assert sorted(gate["verdicts"].values()) == ["promote", "promote", "reject"]
 
 
-def test_a_prefetched_episode_the_gate_never_requests_fails_closed(tmp_path, splits,
-                                                                   monkeypatch):
+def test_a_recorded_gate_episode_the_gate_never_requests_fails_closed_on_resume(
+        tmp_path, splits, monkeypatch):
+    """A speculative gate episode (a defect a dry pass could cause) stops the
+    run, and the check reads the ledger, so the resumed run stops too."""
+    import dataclasses
     original = Exp0001Run._prefetch
+    leaked = []
 
-    def leaky(self, dry_pass, collect, prefetched):
-        original(self, dry_pass, collect, prefetched)
-        prefetched.add("gate/11/never-requested")
+    def leaky(self, dry_pass, collect):
+        if not leaked:
+            collected = []
+            try:
+                dry_pass((collected, collect))
+            except Exception:  # noqa: BLE001
+                pass
+            spec = collected[0]
+            leaked.append(dataclasses.replace(spec, key=spec.key.rsplit("/", 1)[0] + "/spec-0"))
+            self.executor.run_many(leaked)
+        original(self, dry_pass, collect)
 
-    monkeypatch.setattr(Exp0001Run, "_prefetch", leaky)
+    run_dir = tmp_path / "run"
+    with monkeypatch.context() as patch:
+        patch.setattr(Exp0001Run, "_prefetch", leaky)
+        with pytest.raises(RunError, match="not requested by the gate"):
+            make_run(run_dir, splits, workers=2).run()
+    assert leaked[0].key.startswith("gate/11/") and leaked[0].key in ledger_keys(run_dir)
     with pytest.raises(RunError, match="not requested by the gate"):
-        make_run(tmp_path / "run", splits, workers=2).run()
+        make_run(run_dir, splits, workers=2).run()
+
+
+def test_the_miner_stamps_the_ledger_after_every_teacher_call(clean):
+    run_dir, _, _, teacher, _ = clean
+    lines = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()]
+    assert sum(r["type"] == "heartbeat" for r in lines) == teacher.calls > 0
+
+
+def test_a_resume_on_another_serving_build_fails_closed(tmp_path, splits):
+    other_build = {**SCRIPTED, "backend_version": "0.29.0+cu130", "tokenizer": Words.identity}
+    with pytest.raises(ProvenanceError, match="model adapter"):
+        make_run(tmp_path / "run", splits, record=run_start(tmp_path, splits, model=other_build))

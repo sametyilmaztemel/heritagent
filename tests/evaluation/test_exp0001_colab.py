@@ -456,3 +456,143 @@ def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, caps
     teacher = server.requests[3][2]
     assert teacher["response_format"]["json_schema"]["schema"]["required"] == ["proposals"]
     assert teacher["temperature"] == 0.7 and server.requests[2][2]["stop"] == ["\nObservation:"]
+
+
+# -- review of #69: the data release, the server's grammar, a finished run restored -------
+def test_the_server_never_gets_unique_items_and_the_full_schema_still_validates():
+    from traits.miner.miner import output_schema
+    duplicate = {"proposals": [{"name": "n", "principle": "p", "when_to_apply": "w",
+                                "applicability": {"task_families": ["a", "a"]},
+                                "estimated_generality": 0.5}]}
+    server = Server([completion('{"proposals": []}'), completion(json.dumps(duplicate))])
+    try:
+        model = adapter(server)
+        schema = output_schema()
+        assert json.loads(model.structured_generate(MESSAGES, SETTINGS, schema).text) == \
+            {"proposals": []}
+        with pytest.raises(ModelResponseError):  # the miner's malformed-output path
+            model.structured_generate(MESSAGES, SETTINGS, schema)
+    finally:
+        server.close()
+    sent = json.dumps(server.requests[0][2]["response_format"])
+    assert "uniqueItems" not in sent and "uniqueItems" in json.dumps(output_schema())
+
+
+def test_a_finished_run_restored_from_its_mirror_loads(tmp_path):
+    local, drive = tmp_path / "local", tmp_path / "drive"
+    ledger_path = local / "ledger.jsonl"
+    mirror = RunMirror(local, drive)
+    ledger = RunLedger(ledger_path, run_id="r", clock=Clock(), on_append=mirror.on_append)
+    ledger.admit("e0")
+    ledger.record("e0", model_calls=1, outcome={})
+    ledger.complete()  # a terminal record always snapshots
+    restore(drive, tmp_path / "vm2")
+    reopened = RunLedger(tmp_path / "vm2" / "ledger.jsonl", run_id="r", clock=Clock())
+    assert reopened.state == "complete" and reopened.notes[0]["type"] == "restore"
+
+
+def test_one_file_of_the_newest_snapshot_and_the_mirror_check(tmp_path):
+    from evaluation.exp0001.mirror import check_mirror_dir, snapshot_file
+    local, drive = tmp_path / "local", tmp_path / "drive"
+    local.mkdir()
+    (local / "run-start.json").write_text(json.dumps({"code": {"commit": "c" * 40}}))
+    RunMirror(local, drive).snapshot()
+    assert json.loads(snapshot_file(drive, "run-start.json"))["code"]["commit"] == "c" * 40
+    assert snapshot_file(drive, "missing.json") is None
+    assert snapshot_file(tmp_path / "empty", "run-start.json") is None
+    assert check_mirror_dir(drive)["seconds_per_small_file"] >= 0
+    assert not (drive / ".mirror-check").exists()
+    (tmp_path / "a-file").write_text("x")
+    with pytest.raises(MirrorError, match="cannot be used"):
+        RunMirror(local, tmp_path / "a-file")
+
+
+def data_tree(tmp_path):
+    from evaluation.benchmarks.alfworld.splits import (
+        ALFWORLD_TASK_TYPES,
+        build_split_manifest,
+        collect_games,
+    )
+    from evaluation.exp0001.pilot import build_pilot_manifest
+    from tests.evaluation.test_alfworld_splits import (
+        UNSEEN_PER_FAMILY,
+        full_plan,
+        make_split,
+        write_game,
+    )
+    root = tmp_path / "json_2.1.1"
+    train = collect_games(make_split(root, "train", {f: 40 for f in ALFWORLD_TASK_TYPES}), "train")
+    for family, n in UNSEEN_PER_FAMILY.items():
+        for i in range(n):
+            write_game(root / "valid_unseen", family, 500 + i)
+    unseen = collect_games(root / "valid_unseen", "valid_unseen")
+    manifest = build_split_manifest(train, unseen, full_plan())
+    return root, manifest, build_pilot_manifest(train, manifest)
+
+
+def test_verify_data_hashes_every_manifest_and_pilot_game(tmp_path):
+    from evaluation.exp0001.data import verify_data
+    root, manifest, pilot = data_tree(tmp_path)
+    report = verify_data(root, manifest, pilot)
+    assert report["games"] == 174 + 134 + 30 and report["release"] == "0.2.2"
+    game = pilot["games"][0]["game_id"]
+    (root / "train" / game / "game.tw-pddl").write_text('{"changed": true}')
+    with pytest.raises(BackendError, match="1 differ"):
+        verify_data(root, manifest, pilot)
+    (root / "train" / game / "game.tw-pddl").unlink()
+    with pytest.raises(BackendError, match="1 manifest games are missing"):
+        verify_data(root, manifest, pilot)
+
+
+def test_fetch_data_checks_every_archive_and_its_paths(tmp_path, monkeypatch):
+    import hashlib
+    import zipfile
+
+    import evaluation.exp0001.data as data
+    good = tmp_path / "src" / "good.zip"
+    good.parent.mkdir()
+    with zipfile.ZipFile(good, "w") as bundle:
+        bundle.writestr("json_2.1.1/train/g/traj_data.json", "{}")
+    bad = tmp_path / "src" / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as bundle:
+        bundle.writestr("elsewhere/x.json", "{}")
+    sha = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (good, bad)}
+    downloads = []
+
+    def download(source):
+        def fetch(url, path):
+            downloads.append(url)
+            path.write_bytes(source.read_bytes())
+        return fetch
+
+    monkeypatch.setattr(data, "ARCHIVES", {"a.zip": sha["good.zip"]})
+    root = data.fetch_data(tmp_path / "data", download=download(good))
+    assert (root / "train" / "g" / "traj_data.json").exists()
+    assert downloads == ["https://github.com/alfworld/alfworld/releases/download/0.2.2/a.zip"]
+    data.fetch_data(tmp_path / "data", download=download(good))
+    assert len(downloads) == 1  # a verified archive is reused
+    with pytest.raises(BackendError, match="not the pinned"):
+        data.fetch_data(tmp_path / "other", download=download(bad))
+    monkeypatch.setattr(data, "ARCHIVES", {"b.zip": sha["bad.zip"]})
+    with pytest.raises(BackendError, match="unexpected path"):
+        data.fetch_data(tmp_path / "third", download=download(bad))
+
+
+def test_the_pinned_archives_are_release_0_2_2():
+    from evaluation.exp0001.data import ALFWORLD_RELEASE, ARCHIVES
+    assert ALFWORLD_RELEASE == "0.2.2"
+    assert ARCHIVES == {
+        "json_2.1.1_json.zip": "25171f16e20ad7b048c47275c45b0babf3aa1cbab29cec97387922350a9844bc",
+        "json_2.1.1_tw-pddl.zip":
+            "d376c4bbb097c068528a2a9805e358e4cd14bc75c4d68a24e5141aebd234ef67"}
+
+
+def test_run_commit_reads_the_runs_own_commit_from_the_mirror(tmp_path, capsys):
+    local, drive = tmp_path / "local", tmp_path / "drive"
+    assert cli.main(["run-commit", "--mirror-dir", str(drive)]) == 0
+    assert capsys.readouterr().out.strip() == ""  # a new run
+    local.mkdir()
+    (local / "run-start.json").write_text(json.dumps({"code": {"commit": "d" * 40}}))
+    RunMirror(local, drive).snapshot()
+    assert cli.main(["run-commit", "--mirror-dir", str(drive)]) == 0
+    assert capsys.readouterr().out.strip() == "d" * 40

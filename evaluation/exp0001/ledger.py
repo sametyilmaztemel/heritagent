@@ -30,7 +30,10 @@ neither is the time between a crashed session's last record and the
 crash: that gap is at most the time between two records.
 
 Notes (``repair``, ``restore``) record a torn tail cut off on purpose or a
-restore from a mirror snapshot. They change no count."""
+restore from a mirror snapshot. They change no count, carry no clock, and
+may follow a terminal record (a finished run can be restored). A
+``heartbeat`` record carries only a clock: it keeps a session's span up to
+date through a long stretch without episodes (the miner's teacher calls)."""
 
 from __future__ import annotations
 
@@ -48,6 +51,7 @@ WALL_CLOCK_BASIS = "active-run-time"  # ADR-0008
 TERMINAL = ("complete", "incomplete")
 NOTES = ("repair", "restore")
 EPISODE, CALLS = "episode", "calls"
+HEARTBEAT = "heartbeat"
 
 
 class LedgerError(ValueError):
@@ -56,6 +60,15 @@ class LedgerError(ValueError):
 
 class CapExceeded(Exception):
     """A hard cap would be exceeded: the run is now incomplete."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class AdmissionDeferred(Exception):
+    """A cap would block this admission while other attempts are in flight:
+    nothing was written; the caller finishes them and asks again."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -140,11 +153,11 @@ class RunLedger:
         open_attempts: dict[str, list[dict]] = {}
         for record in records[1:]:
             kind = record.get("type")
-            if self._state in TERMINAL:
-                raise LedgerError(f"{self._path}: a record follows the terminal state")
-            if kind in NOTES:
+            if kind in NOTES:  # a restore or a repair may follow the terminal record
                 self._notes.append(record)
                 continue
+            if self._state in TERMINAL:
+                raise LedgerError(f"{self._path}: a record follows the terminal state")
             if kind == "session":
                 if record.get("index") != len(self._sessions) + 1:
                     raise LedgerError(f"{self._path}: session {record.get('index')!r} is out of "
@@ -174,7 +187,7 @@ class RunLedger:
                     open_attempts[key].pop()  # the attempt this record finished
             elif kind in TERMINAL:
                 self._state, self._reason = kind, record.get("reason")
-            else:
+            elif kind != HEARTBEAT:
                 raise LedgerError(f"{self._path}: unknown record type {kind!r}")
             if not self._sessions:
                 raise LedgerError(f"{self._path}: a {kind} record outside a session")
@@ -257,6 +270,15 @@ class RunLedger:
     def is_done(self, key: str) -> bool:
         return key in self._done
 
+    def done_keys(self, prefix: str = "") -> tuple[str, ...]:
+        """The recorded episode keys that start with ``prefix``."""
+        return tuple(key for key in self._done if key.startswith(prefix))
+
+    def heartbeat(self) -> None:
+        """Stamp this session's clock (no count changes)."""
+        if self._state == "running":
+            self._append({"type": HEARTBEAT})
+
     def done_record(self, key: str) -> dict:
         return dict(self._done[key])
 
@@ -306,18 +328,22 @@ class RunLedger:
             return False
         return self._cap_reason(key, max_model_calls_per_episode(), episode=True) is not None
 
-    def admit(self, key: str) -> bool:
+    def admit(self, key: str, *, defer: bool = False) -> bool:
         """True if the episode should run now, False if the ledger already
         holds it (resume). Raises CapExceeded and marks the run incomplete if
-        it would exceed a hard cap."""
+        it would exceed a hard cap; with ``defer`` (the caller has episodes in
+        flight) it raises AdmissionDeferred instead and writes nothing, so a
+        stop never cuts an admitted episode short."""
         if self._state != "running":
             raise LedgerError(f"the run is {self._state}; no episode can start")
         if key in self._done:
             return False
         self._abort_open(key)  # charged before every cap check, as a reload would
         worst = max_model_calls_per_episode()
-        reason = self._cap_reason(key, worst, episode=True)
+        reason = self._cap_reason(key, worst, episode=True)  # one clock reading decides
         if reason is not None:
+            if defer:
+                raise AdmissionDeferred(reason)
             self._stop(reason)
         self._append({"type": "attempt", "key": key, "reserved": worst})
         self._open[key] = (EPISODE, worst)
