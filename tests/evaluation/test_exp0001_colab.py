@@ -701,12 +701,13 @@ def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, mon
                                     "port": port, "pid": os.getpid()}))
         assert args.func(args) == 0 and "reusing it" in capsys.readouterr().out
         other = cli.parser().parse_args(argv + ["--no-batch-invariant"])
-        with pytest.raises(cli.CliError, match=f"already answers.*pid {os.getpid()}"):
+        with pytest.raises(cli.CliError, match=f"other settings still runs.*kill {os.getpid()}"):
             other.func(other)  # other settings
         info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
                                     "port": port, "pid": 2 ** 22 + 12345}))
-        with pytest.raises(cli.CliError, match="already answers"):
-            args.func(args)  # the recorded server is gone
+        with pytest.raises(cli.CliError, match="already answers.*pgrep") as refused:
+            args.func(args)  # the recorded server is gone: its pid is not named
+        assert str(2 ** 22 + 12345) not in str(refused.value)
         assert started == []
     finally:
         server.shutdown()
@@ -719,6 +720,10 @@ def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, mon
     info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
                                 "port": port, "pid": os.getpid()}))
     assert args.func(args) == 0 and waited == [None] and started == []
+    # the same, still loading, but this serve asks for other settings: no second server
+    with pytest.raises(cli.CliError, match="other settings still runs"):
+        other.func(other)
+    assert started == []
     # a new server: its info is written before the wait
     seen = []
     monkeypatch.setattr(cli, "start_server",
@@ -740,7 +745,7 @@ def test_a_stop_or_a_run_error_ends_without_a_traceback(monkeypatch, capsys):
         raise RunError("/content/exp0001-run is in use by another run")
 
     for func, code, text in ((stopped, 130, "run the same command again"),
-                             (locked, 2, "a previous `run` may still be running")):
+                             (locked, 2, "release() keeps the GPU until then")):
         monkeypatch.setattr(cli, "cmd_gpu_check", func)
         assert cli.main(["gpu-check"]) == code
         assert text in capsys.readouterr().err
@@ -777,3 +782,96 @@ def test_a_command_stops_cleanly_when_its_parent_dies(tmp_path):
     while _time.monotonic() < deadline and "stopped" not in (out.read_text() if out.exists() else ""):
         _time.sleep(0.1)
     assert out.read_text().strip() == "stopped with the parent"
+
+
+def stub_command(monkeypatch, tmp_path):
+    """``run``'s and ``pilot``'s preparation stubbed out; returns the mirrors
+    they construct."""
+    import types
+    monkeypatch.setattr(cli, "gpu_inventory", lambda: [])
+    monkeypatch.setattr(cli, "require_a100_80gb", lambda inventory: {"name": "A100"})
+    monkeypatch.setattr(cli, "load_prepared", lambda path: {
+        "model_id": "m", "revision": "a" * 40, "path": str(tmp_path), "weights": {"sha256": "b" * 64}})
+    monkeypatch.setattr(cli, "git_state", lambda repo: ("c" * 40, False))
+    monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {"games": []}))
+    monkeypatch.setattr(cli, "verify_data", lambda *a: {})
+    monkeypatch.setattr(cli, "_adapter", lambda args, prepared: object())
+    monkeypatch.setattr(cli, "hf_token_counter",
+                        lambda *a, **k: types.SimpleNamespace(identity="t"))
+    monkeypatch.setattr(cli, "_run_start", lambda *a: {})
+    monkeypatch.setattr(cli, "_environment", lambda verified: {})
+    monkeypatch.setattr(cli, "_session_info", lambda *a: {})
+    monkeypatch.setattr(cli, "AlfworldEnvFactory", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "RunLedger", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "EpisodeExecutor", lambda **k: types.SimpleNamespace(close=lambda: None))
+    mirrors = []
+    monkeypatch.setattr(cli, "RunMirror", lambda *a, **k: mirrors.append(a) or None)
+    return mirrors
+
+
+def command_argv(command, local, mirror_dir):
+    return {"run": ["run", "--prepared", "p", "--data-root", "d", "--local-dir", str(local),
+                    "--mirror-dir", str(mirror_dir)],
+            "pilot": ["pilot", "--prepared", "p", "--data-root", "d", "--out-dir", str(local),
+                      "--mirror-dir", str(mirror_dir)],
+            "snapshot": ["snapshot", "--run-dir", str(local), "--mirror-dir", str(mirror_dir)],
+            }[command]
+
+
+@pytest.mark.parametrize("command", ["run", "pilot", "snapshot"])
+def test_a_second_command_on_a_held_directory_fails_before_it_takes_the_mirror(
+        command, tmp_path, monkeypatch, capsys):
+    """A command started while the previous one on the same directory still
+    stops (its notebook kernel restarted) fails at the run-directory lock,
+    before it can take over the mirror the previous one still snapshots to."""
+    from evaluation.exp0001.pipeline import lock_run_dir
+    mirrors = stub_command(monkeypatch, tmp_path)
+    local = tmp_path / "work"
+    local.mkdir()
+    (local / "ledger.jsonl").write_text("")
+    held = lock_run_dir(local)  # the previous command
+    try:
+        assert cli.main(command_argv(command, local, tmp_path / "mirror")) == 2
+    finally:
+        held.close()
+    assert mirrors == []
+    err = capsys.readouterr().err
+    assert "in use by another run" in err and "release() keeps the GPU" in err
+
+
+@pytest.mark.parametrize("command", ["run", "pilot"])
+@pytest.mark.parametrize("mirrored, code", [(True, 130), (False, cli.EXIT_UNMIRRORED)])
+def test_a_stopped_command_exits_130_or_3_and_holds_its_directory_through_the_last_snapshot(
+        command, mirrored, code, tmp_path, monkeypatch, capsys):
+    from evaluation.exp0001 import pipeline
+    from evaluation.exp0001.pipeline import RunError, lock_run_dir
+    stub_command(monkeypatch, tmp_path)
+    local = tmp_path / "work"
+
+    class Stopped:
+        def __init__(self, **kwargs):
+            assert kwargs["lock"] is not None  # the command's own lock, held past the run
+
+        def run(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(pipeline, "Exp0001Run", Stopped)
+
+    def stop(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_pilot", stop)
+    snapshots = []
+
+    def final(mirror, run_dir):
+        with pytest.raises(RunError, match="in use"):
+            lock_run_dir(run_dir)  # still held: nobody else takes the mirror now
+        snapshots.append(run_dir)
+        return mirrored
+
+    monkeypatch.setattr(cli, "_final_snapshot", final)
+    assert cli.main(command_argv(command, local, tmp_path / "mirror")) == code
+    assert snapshots == [local]
+    lock_run_dir(local).close()  # released afterwards
+    assert "stopped: every recorded episode is kept" in capsys.readouterr().err
+

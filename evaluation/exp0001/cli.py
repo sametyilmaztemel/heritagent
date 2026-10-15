@@ -24,10 +24,15 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   after Drive is mounted again (exit code 3 if it fails)
   repair-ledger   cut off a torn last ledger line, keeping it on record
 
-When the last snapshot of ``run``, ``pilot`` or ``snapshot`` fails, the
-command exits with code 3 and leaves ``UNMIRRORED.json`` in the run
-directory: the newest records exist only on this machine. The notebooks then
-keep the runtime (ADR-0008 D5).
+Exit codes: 0 done; 2 an error the message explains (a run directory
+another command still holds, say); 130 stopped (the stop button, or the
+notebook kernel that started the command restarted or died: environment
+variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
+3 when the last snapshot of ``run``, ``pilot`` or ``snapshot`` failed, stopped
+or not. Code 3 leaves ``UNMIRRORED.json`` in the run directory: the newest
+records exist only on this machine, and the notebooks keep the runtime.
+``run``, ``pilot`` and ``snapshot`` hold the run directory's one-writer lock
+from before they touch the mirror until after their last snapshot.
 
 ``run`` and ``pilot`` take ``--workers`` for parallel episodes against the
 one server (ADR-0008). Every run directory lives outside the repository
@@ -36,6 +41,7 @@ checkout, which must be clean: the run-start record names its commit."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import subprocess
 import sys
@@ -226,20 +232,25 @@ def cmd_serve(args) -> int:
     environment = server_environment(batch_invariant=not args.no_batch_invariant)
     url = f"http://127.0.0.1:{args.port}"
     earlier = _json(args.info) if Path(args.info).exists() else {}
-    if (earlier.get("command"), earlier.get("environment"), earlier.get("port")) == \
-            (command, environment, args.port) and process_alive(earlier.get("pid")):
-        # this command's own server from an earlier attempt (an interrupted serve, say):
-        # wait for it if it is still loading, then reuse it
-        wait_until_ready(url, prepared["model_id"], process=_Pid(earlier["pid"]),
-                         log_path=args.log, timeout_seconds=args.timeout)
-        print(f"the model server (pid {earlier['pid']}) from an earlier attempt serves "
-              f"{prepared['model_id']} with these settings on port {args.port}; reusing it")
-        return 0
+    if process_alive(earlier.get("pid")):
+        if (earlier.get("command"), earlier.get("environment"), earlier.get("port")) == \
+                (command, environment, args.port):
+            # this command's own server from an earlier attempt (an interrupted serve, say):
+            # wait for it if it is still loading, then reuse it
+            wait_until_ready(url, prepared["model_id"], process=_Pid(earlier["pid"]),
+                             log_path=args.log, timeout_seconds=args.timeout)
+            print(f"the model server (pid {earlier['pid']}) from an earlier attempt serves "
+                  f"{prepared['model_id']} with these settings on port {args.port}; reusing it")
+            return 0
+        raise CliError(f"an earlier model server (pid {earlier['pid']}) with other settings still "
+                       f"runs, perhaps still loading, and holds the GPU. Kill it (kill "
+                       f"{earlier['pid']}), or use Runtime > Disconnect and delete runtime; "
+                       f"restarting the kernel does not stop it.")
     if port_answers(args.port):
-        who = f"pid {earlier['pid']}" if earlier.get("pid") else "find it with: pgrep -f 'vllm serve'"
         raise CliError(f"a server already answers on port {args.port}, and it is not one this "
-                       f"command started with these settings ({who}). Kill it, or use Runtime > "
-                       f"Disconnect and delete runtime; restarting the kernel does not stop it.")
+                       f"command started (find it with: pgrep -f 'vllm serve'). Kill it, or use "
+                       f"Runtime > Disconnect and delete runtime; restarting the kernel does not "
+                       f"stop it.")
     process = start_server(command, args.log, environment=environment)
     # written before the wait, so a serve interrupted while the model loads finds it
     _write_json(args.info, {"command": command, "environment": environment, "pid": process.pid,
@@ -318,6 +329,31 @@ def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
     print(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
 
 
+STOPPED = "stopped: every recorded episode is kept; run the same command again to resume"
+
+
+@contextlib.contextmanager
+def _run_dir_lock(local: Path):
+    """The run directory's one-writer lock, held from before the mirror is
+    taken over until after the last snapshot. A second command on the same
+    directory (one started while a command whose kernel restarted still
+    stops) fails here, before it touches the mirror or the ledger."""
+    from evaluation.exp0001.pipeline import lock_run_dir
+    local.mkdir(parents=True, exist_ok=True)
+    lock = lock_run_dir(local)
+    try:
+        yield lock
+    finally:
+        lock.close()
+
+
+def _stopped(mirrored: bool) -> int:
+    """A command stopped by its stop button or its kernel: 130 once the last
+    snapshot is taken, and still 3 when it failed."""
+    print(STOPPED, file=sys.stderr)
+    return 130 if mirrored else EXIT_UNMIRRORED
+
+
 def cmd_pilot(args) -> int:
     from runtime.expression import compile_runtime_config
     from runtime.seed_g0 import build_g0_seed_genome
@@ -338,30 +374,36 @@ def cmd_pilot(args) -> int:
         print(report_path.read_text(encoding="utf-8"))
         return 0
     adapter = _adapter(args, prepared)
-    mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
-    ledger = RunLedger(out / "ledger.jsonl", run_id=PILOT_RUN_ID, clock=time.time, caps=CAPS,
-                       session_info=_session_info(gpu, adapter, args.workers, args.server_info),
-                       on_append=Progress(mirror, args.progress_every))
-    registry = TraitRegistry(out / "registry")
-    g0 = build_g0_seed_genome(registry)
-    pilot_games = {("train", g["game_id"]): g["content_sha256"] for g in pilot["games"]}
-    executor = EpisodeExecutor(
-        model=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits,
-                                                      extra_games=pilot_games),
-        ledger=ledger, trajectories_dir=out / "trajectories", run_id=PILOT_RUN_ID,
-        code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
-    started = _now()
-    mirrored = False
-    try:
+    with _run_dir_lock(out):  # one writer, before the mirror is taken over
+        mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
+        ledger = RunLedger(out / "ledger.jsonl", run_id=PILOT_RUN_ID, clock=time.time, caps=CAPS,
+                           session_info=_session_info(gpu, adapter, args.workers,
+                                                      args.server_info),
+                           on_append=Progress(mirror, args.progress_every))
+        registry = TraitRegistry(out / "registry")
+        g0 = build_g0_seed_genome(registry)
+        pilot_games = {("train", g["game_id"]): g["content_sha256"] for g in pilot["games"]}
+        executor = EpisodeExecutor(
+            model=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits,
+                                                          extra_games=pilot_games),
+            ledger=ledger, trajectories_dir=out / "trajectories", run_id=PILOT_RUN_ID,
+            code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
+        started = _now()
+        report, stopped, mirrored = None, False, False
         try:
-            measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry))
+            try:
+                measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry))
+            finally:
+                executor.close()
+            report = _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu,
+                                   verified, commit, dirty, started)
+            freeze_json(report_path, report)
+        except KeyboardInterrupt:
+            stopped = True
         finally:
-            executor.close()
-        report = _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verified,
-                               commit, dirty, started)
-        freeze_json(report_path, report)
-    finally:
-        mirrored = _final_snapshot(mirror, out)
+            mirrored = _final_snapshot(mirror, out)
+    if stopped:
+        return _stopped(mirrored)
     print(json.dumps({"measures": report["measures"], "projection": report["projection"]},
                      indent=2))
     return 0 if mirrored else EXIT_UNMIRRORED
@@ -434,27 +476,33 @@ def cmd_run(args) -> int:
                                path=Path(prepared["path"]))
     record = _run_start(args, local, prepared, adapter, splits, pilot, commit, dirty,
                         counter.identity, _environment(verified))
-    mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
-    started = time.monotonic()
-    budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
-    run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits, model=adapter,
-                     teacher=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits),
-                     token_counter=counter, workers=args.workers,
-                     session_info=_session_info(gpu, adapter, args.workers, args.server_info),
-                     on_ledger_append=Progress(mirror, args.progress_every),
-                     pause_when=None if budget is None
-                     else (lambda: time.monotonic() - started > budget))
-    report, mirrored = None, False
-    try:
-        report = run.run()
-    except RunPaused as exc:
-        print(f"paused after {args.stop_after_hours} h of this session ({exc}); every admitted "
-              f"episode is recorded. Run the same command again to resume.")
-    finally:
-        mirrored = _final_snapshot(mirror, local)
-        if mirror and mirror.failures:
-            print(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}",
-                  file=sys.stderr)
+    with _run_dir_lock(local) as lock:  # one writer, before the mirror is taken over
+        mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
+        started = time.monotonic()
+        budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
+        run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits, model=adapter,
+                         teacher=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits),
+                         token_counter=counter, workers=args.workers,
+                         session_info=_session_info(gpu, adapter, args.workers,
+                                                    args.server_info),
+                         on_ledger_append=Progress(mirror, args.progress_every),
+                         pause_when=None if budget is None
+                         else (lambda: time.monotonic() - started > budget), lock=lock)
+        report, stopped, mirrored = None, False, False
+        try:
+            report = run.run()
+        except RunPaused as exc:
+            print(f"paused after {args.stop_after_hours} h of this session ({exc}); every "
+                  f"admitted episode is recorded. Run the same command again to resume.")
+        except KeyboardInterrupt:
+            stopped = True
+        finally:
+            mirrored = _final_snapshot(mirror, local)
+            if mirror and mirror.failures:
+                print(f"[mirror] {mirror.failures} snapshot(s) failed; last: "
+                      f"{mirror.last_error}", file=sys.stderr)
+    if stopped:
+        return _stopped(mirrored)
     if report is not None:
         print(json.dumps({k: report.get(k) for k in ("status", "stage", "reason", "episodes",
                                                        "model_calls", "aborted_attempts")},
@@ -466,8 +514,9 @@ def cmd_snapshot(args) -> int:
     local = Path(args.run_dir)
     if not (local / "ledger.jsonl").exists():
         raise CliError(f"{local} holds no run or pilot ledger")
-    if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
-        return EXIT_UNMIRRORED
+    with _run_dir_lock(local):  # a command still running takes its own snapshots
+        if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
+            return EXIT_UNMIRRORED
     print(f"snapshot of {local} taken in {args.mirror_dir}")
     return 0
 
@@ -601,6 +650,10 @@ def _stop_with_parent(parent: int, poll_seconds: float = 2.0) -> None:
     import signal
     import threading
 
+    # the stop is a SIGINT: it must raise KeyboardInterrupt even in a process
+    # started with SIGINT ignored (a background shell, say)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
     def watch():
         while os.getppid() == parent:
             time.sleep(poll_seconds)
@@ -621,8 +674,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("stopped: every recorded episode is kept; run the same command again to resume",
-              file=sys.stderr)
+        print(STOPPED, file=sys.stderr)
         return 130
     except RuntimeError as exc:
         from evaluation.exp0001.pipeline import RunError  # a run raised it: already loaded
@@ -630,8 +682,10 @@ def main(argv: list[str] | None = None) -> int:
             raise
         print(f"error: {exc}", file=sys.stderr)
         if "in use by another run" in str(exc):
-            print("a previous `run` may still be running in this machine; wait for it to stop, "
-                  "or end its process group", file=sys.stderr)
+            print("a previous `run`, `pilot` or `snapshot` on this directory may still be running "
+                  "in this machine (one whose notebook kernel restarted stops by itself, saving "
+                  "its episodes). Wait for it to end; the notebook's release() keeps the GPU "
+                  "until then. Or end its process group.", file=sys.stderr)
         return 2
 
 

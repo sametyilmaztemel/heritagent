@@ -115,6 +115,9 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
     """))
     monkeypatch.chdir(tmp_path)  # -m finds the stub first
     helper = notebook_cli_helper()
+    # the kernel's stop is a SIGINT that raises KeyboardInterrupt, even when pytest
+    # itself was started with SIGINT ignored
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)
     timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGINT))
     timer.start()
     try:
@@ -122,6 +125,7 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
             helper("run")
     finally:
         timer.cancel()
+        signal.signal(signal.SIGINT, previous)
     out = capsys.readouterr().out
     assert "started" in out and "stopped cleanly after 1 interrupt(s)" in out
     group, pid = (int(x) for x in out.split("group ", 1)[1].split()[0:3:2])
@@ -196,6 +200,35 @@ def test_the_error_handler_keeps_an_unmirrored_run_and_respects_auto_release(tmp
     assert calls == ["traceback"]  # neither flushed nor released: the run lives only here
     namespace["release"]()  # the final cell's path too
     assert calls == ["traceback"]
+
+
+def test_release_waits_for_a_command_that_still_stops(tmp_path, monkeypatch, capsys):
+    """A `run` whose kernel restarted still records its episodes and takes its
+    last snapshot: release() keeps the machine until it has ended."""
+    import os
+    import subprocess
+    fail, namespace, calls = error_cell(monkeypatch, auto_release=True, drive_root=tmp_path)
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)", "-m", "evaluation.exp0001.cli"]
+    serving = subprocess.Popen(sleeper + ["serve"])  # not a writer: never holds the release
+    stopping = subprocess.Popen(sleeper + ["run", "--local-dir", "/content/exp0001-run"])
+    try:
+        import time
+        deadline = time.monotonic() + 10  # a just-started process shows its argv a moment later
+        while namespace["running_commands"]() != [stopping.pid] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert namespace["running_commands"]() == [stopping.pid]
+        fail(RuntimeError("`cli run` failed (exit code 2)"))  # the refused second run
+        namespace["release"]()  # the last cell
+        assert calls == ["traceback"]  # neither flushed nor released
+        assert "GPU BIRAKILMADI" in capsys.readouterr().out
+    finally:
+        stopping.kill()
+        stopping.wait()
+    namespace["release"]()
+    assert calls == ["traceback", "flush", "unassign"]
+    serving.kill()
+    serving.wait()
+    assert os.getpid() not in namespace["running_commands"]()
 
 
 @pytest.mark.parametrize("name", NAMES)

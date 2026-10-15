@@ -144,15 +144,19 @@ class Exp0001Run:
                  workers: int = 1, sleep_between_retries: bool = True,
                  session_info: Mapping | None = None,
                  on_ledger_append: Callable[[dict], None] | None = None,
-                 pause_when: Callable[[], bool] | None = None):
+                 pause_when: Callable[[], bool] | None = None,
+                 lock=None):
         """``workers`` > 1 runs episodes in that many worker processes
         (the model and the environment factory must pickle; ADR-0008).
         ``session_info`` goes into the ledger's session record;
         ``on_ledger_append`` is the run mirror's hook; when ``pause_when``
         holds before a new admission the run stops with RunPaused, still
-        running, after recording every episode in flight."""
+        running, after recording every episode in flight. ``lock`` is the
+        caller's ``lock_run_dir`` handle on ``run_dir``, which the caller
+        holds longer than the run (the cli: through the last snapshot);
+        without it the run takes and releases its own."""
         self.dir = Path(run_dir)
-        self._lock = None
+        self._lock, self._owns_lock = lock, lock is None
         self.executor = None
         verify_run_start_record(run_start)
         # the split manifest must verify, be the pre-registered one, and be
@@ -173,7 +177,8 @@ class Exp0001Run:
             raise ProvenanceError(f"the token counter is {token_counter.identity!r}, the run-start "
                                   f"record names {run_start['model']['tokenizer']!r}")
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._lock = _lock_run_dir(self.dir)
+        if self._lock is None:
+            self._lock = lock_run_dir(self.dir)
         try:
             self._open(run_start, split_manifest, model, teacher, env_factory, token_counter,
                        ledger_clock, episode_clock, sleep,
@@ -217,7 +222,8 @@ class Exp0001Run:
         if self.executor is not None:
             self.executor.close()
         if self._lock is not None:
-            self._lock.close()
+            if self._owns_lock:
+                self._lock.close()
             self._lock = None
 
     # -- stages -------------------------------------------------------------
@@ -572,9 +578,10 @@ class _Heartbeat(ModelAdapter):
         return self._adapter.metadata()
 
 
-def _lock_run_dir(run_dir: Path):
+def lock_run_dir(run_dir: Path):
     """An exclusive advisory lock on the run directory for one writer; a
-    second process (or object) on the same directory fails closed."""
+    second process (or object) on the same directory fails closed. Close the
+    returned handle to release it."""
     import fcntl
     handle = open(run_dir / ".lock", "a+")
     try:
