@@ -128,7 +128,7 @@ def test_usage_fields_are_fallback_only(fake_vllm):
     def chat(self, messages, params, **kwargs):
         return [LegacyResult()]
 
-    FakeLLM.chat = chat
+    monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
     adapter = VLLMAdapter()
     result = adapter.generate([ModelMessage("user", "hi")], GenerationSettings())
     assert result.prompt_tokens == 99 and result.completion_tokens == 98
@@ -148,7 +148,7 @@ def test_structured_generate_uses_structured_outputs_params(fake_vllm, monkeypat
         FakeLLM.last_call = (messages, params, kwargs)
         return [FakeResult(FakeOutput(text='{"x": 1}'))]
 
-    FakeLLM.chat = chat
+    monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
     adapter = VLLMAdapter()
     schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
     result = adapter.structured_generate([ModelMessage("user", "hi")], GenerationSettings(), schema)
@@ -183,7 +183,7 @@ def test_tool_call_uses_constrained_schema_without_tool_choice(fake_vllm, monkey
         return [FakeResult(FakeOutput(text=json.dumps(
             {"name": "heat_object", "arguments": {"object": "plate"}})))]
 
-    FakeLLM.chat = chat
+    monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
     adapter = VLLMAdapter()
     request = adapter.tool_call([ModelMessage("user", "hi")], GenerationSettings(),
                                 [ToolSpec(name="heat_object", description="heat things",
@@ -216,7 +216,7 @@ def test_tool_call_rejects_invalid_output_via_full_constrained_schema(fake_vllm,
     def chat(self, messages, params, **kwargs):
         return [FakeResult(FakeOutput(text=queue.pop(0)))]
 
-    FakeLLM.chat = chat
+    monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
     adapter = VLLMAdapter()
     tools = [ToolSpec(name="heat_object", description="",
                       parameters_schema={"type": "object", "required": ["object"],
@@ -236,3 +236,14 @@ def test_metadata_never_fails_without_vllm(monkeypatch):
     assert metadata.backend_version is None
     assert metadata.capabilities["structured"] is False
     assert metadata.capabilities["engine_created"] is False
+
+
+def test_the_react_stop_reaches_sampling_params(fake_vllm):
+    """ADR-0003 A2: the offline backend forwards the planner's stop."""
+    from runtime.policies.planner_react import STOP_SEQUENCES
+    adapter = VLLMAdapter(revision="rev-123")
+    adapter.generate([ModelMessage("user", "u")],
+                     GenerationSettings(temperature=0.0, max_tokens=64, stop=STOP_SEQUENCES))
+    assert FakeLLM.last_call[1].stop == ["\nObservation:"]
+    adapter.generate([ModelMessage("user", "u")], GenerationSettings(temperature=0.0, max_tokens=64))
+    assert not hasattr(FakeLLM.last_call[1], "stop")

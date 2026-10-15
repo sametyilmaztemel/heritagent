@@ -353,11 +353,24 @@ def test_the_pilot_measures_what_its_manifest_froze(tmp_path, registry, splits, 
     assert measures["arm_b_rendering_smoke_test"]["passed"] is True
     assert measures["throughput_episodes_per_hour"]["workers"] == workers
     assert measures["model_calls_per_episode"]["max"] == 1
-    assert ledger.episodes == 30 + 6 + 1
+    # the scripted model wins the same games at any temperature: no pair
+    assert measures["temperature_0_7_attempt_success_rate"]["value"] == 0.5
+    assert measures["temperature_0_7_pair_yield"]["value"] == 0.0
+    assert measures["temperature_0_7_solved_in_any_attempt"]["value"] == 0.5
+    assert measures["temperature_0_success_among_0_7_solved"]["value"] == 1.0
+    assert measures["prompt_tokens_per_call_max"]["context_window"] == 32768
+    assert measures["prompt_tokens_per_call_max"]["context_overflows"] == 0
+    assert measures["loop_steps_per_episode"]["max"] == 1
+    assert ledger.episodes == 30 + 6 + 1 + 90
     specs = pilot_specs(pilot, g0_runtime_config(registry))
     assert [s.config.skills[-1].gene_id for s in specs["smoke"]] == [SMOKE_GENE_ID]
     assert all(s.settings.temperature == 0.0 and s.settings.seed is None
-               for kind in specs.values() for s in kind)
+               for kind in ("run", "repeat", "smoke") for s in specs[kind])
+    from evaluation.exp0001.protocol import attempt_sampling_seed
+    assert len(specs["t07"]) == 90 and {s.settings.temperature for s in specs["t07"]} == {0.7}
+    first = specs["t07"][0]
+    assert first.settings.seed == attempt_sampling_seed(0, first.task_id, 0)
+    assert first.settings.stop == ("\nObservation:",) and first.settings.max_tokens == 512
 
 
 def test_the_projection_counts_the_protocols_episodes():
@@ -464,10 +477,10 @@ def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, caps
     prepared.write_text(json.dumps({"schema": PREPARED_SCHEMA, "model_id": "Qwen/Qwen2.5-7B-Instruct",
                                     "revision": "a" * 40, "path": "/nowhere",
                                     "weights": {"sha256": "b" * 64}}))
-    served = (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]})
-    server = Server([(200, {"version": "0.29.0"}), served, completion("Thought: ready"),
+    served = (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct", "max_model_len": 32768}]})
+    server = Server([(200, {"version": "0.29.0"}), served, served, completion("Thought: ready"),
                      completion('{"proposals": []}'),
-                     (200, {"version": "0.29.0"}), served,
+                     (200, {"version": "0.29.0"}), served, served,
                      (200, {"choices": [{"message": {"content": "Thought: ready"}}]})])
     try:
         argv = ["preflight", "--prepared", str(prepared), "--server-url", server.url]
@@ -477,9 +490,9 @@ def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, caps
         assert "token usage" in capsys.readouterr().err
     finally:
         server.close()
-    teacher = server.requests[3][2]
+    teacher = server.requests[4][2]
     assert teacher["response_format"]["json_schema"]["schema"]["required"] == ["proposals"]
-    assert teacher["temperature"] == 0.7 and server.requests[2][2]["stop"] == ["\nObservation:"]
+    assert teacher["temperature"] == 0.7 and server.requests[3][2]["stop"] == ["\nObservation:"]
 
 
 # -- review of #69: the data release, the server's grammar, a finished run restored -------
@@ -989,3 +1002,63 @@ def test_the_sigterm_handler_is_the_previous_one_after_the_command(tmp_path):
     assert signal.getsignal(signal.SIGTERM) == before
     assert not (tmp_path / "run" / cli.UNMIRRORED).exists()
 
+
+
+
+def test_a_prompt_too_long_for_the_window_is_a_context_overflow_not_a_crash():
+    from runtime.model_adapters.errors import ContextWindowExceeded
+    server = Server([(400, {"error": "This model's maximum context length is 32768 tokens. "
+                                     "However, you requested 512 output tokens"}),
+                     (400, {"error": "The decoder prompt (length 40000) is longer than the "
+                                     "maximum model length of 32768."}),
+                     (400, {"error": "unknown field"})])
+    try:
+        model = adapter(server)
+        for _ in range(2):
+            with pytest.raises(ContextWindowExceeded):
+                model.generate(MESSAGES, SETTINGS)
+        with pytest.raises(ServerRequestError, match="unknown field"):
+            model.generate(MESSAGES, SETTINGS)
+    finally:
+        server.close()
+    assert len(server.requests) == 3  # nothing retried
+
+
+def test_the_server_must_serve_the_pre_registered_context_window(tmp_path):
+    from types import SimpleNamespace
+    server = Server([(200, {"version": "0.29.0"}),
+                     (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]}),
+                     (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct", "max_model_len": 8192}]})])
+    try:
+        with pytest.raises(cli.CliError, match="context window is 8192"):
+            cli._adapter(SimpleNamespace(server_url=server.url),
+                         {"model_id": "Qwen/Qwen2.5-7B-Instruct", "revision": "a" * 40})
+    finally:
+        server.close()
+
+
+def test_an_episode_ended_by_the_context_window_is_a_recorded_failure(tmp_path, registry):  # noqa: F811
+    from evaluation.exp0001.lifetime import lifetime_specs
+    from evaluation.exp0001.protocol import MINING_SEEDS
+    from runtime.model_adapters.errors import ContextWindowExceeded
+    from tests.evaluation.test_exp0001_lifetime import tasks
+
+    class TooLong:
+        def metadata(self):
+            from runtime.model_adapters.base import ModelMetadata
+            return ModelMetadata("m", "r", "scripted", None, {})
+
+        def generate(self, messages, settings):
+            raise ContextWindowExceeded("maximum context length")
+
+        def estimate_tokens(self, text):
+            return 1
+
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock())
+    executor = EpisodeExecutor(model=TooLong(), env_factory=GameFactory(), ledger=ledger,
+                               trajectories_dir=tmp_path / "t", run_id="r", code_commit="a" * 40)
+    spec = lifetime_specs(tasks(1), g0_runtime_config(registry), MINING_SEEDS[0])[0]
+    result = executor.run(spec)
+    assert (result.status, result.success, result.exhausted_budget, result.model_calls) == \
+        ("budget_exhausted", False, "context_window", 0)
+    assert ledger.episodes == 1 and ledger.aborted_attempts == 0

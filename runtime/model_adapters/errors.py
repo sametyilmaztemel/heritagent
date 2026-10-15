@@ -13,6 +13,12 @@ class UnsupportedFeatureError(AdapterError):
     """The backend cannot serve the requested feature (e.g. guided decoding)."""
 
 
+class ContextWindowExceeded(AdapterError):
+    """The prompt does not fit the model's context window. The runtime loop
+    ends the episode as budget_exhausted (budget context_window), counted as
+    a failure; the prompt is never truncated and the call never retried."""
+
+
 class ModelResponseError(AdapterError):
     """The model's response violated the requested contract (invalid JSON,
     schema mismatch, malformed tool call). `raw_text` preserves the exact

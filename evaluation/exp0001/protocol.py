@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 from types import MappingProxyType
 
+from runtime.seed_g0 import EPISODE_MAX_STEPS
+
 MINING_SEEDS = (11, 23, 41)  # manifest evaluation.mining_seeds
 LIFETIME_ATTEMPTS_PER_TASK = 3  # E1
 MINING_TEMPERATURE = 0.7  # manifest model.mining_temperature
@@ -18,11 +20,12 @@ T_REG_SEED = 0  # E3
 CANDIDATE_CAP = 10  # manifest genome.candidate_set.cap (K)
 MAX_TOKENS_PER_REQUEST = 512
 MAX_TOTAL_RETRIES = 10
+CONTEXT_WINDOW = 32768  # ADR-0009 D4: Qwen2.5-7B-Instruct's native length
 CAPS = MappingProxyType({"episodes_max": 7000, "model_calls_max": 225_000,
                          "wall_clock_hours_max": 96, "accelerator_nodes_max": 1})
 # the committed pre-run artifacts (manifest run_protocol); a run binds to them
 LOCKED_SPLIT_MANIFEST_SHA256 = "2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c"
-LOCKED_PILOT_SHA256 = "6286d0fa3072f3a179fbe70d543ec3a6a3e4020f05977111fc05ddb02d57e90c"
+LOCKED_PILOT_SHA256 = "ecc713d71966f0a32ef6cfddbbd950803f0ca0bbbb3ef00f549b09187522d8d0"
 
 PROTOCOL = MappingProxyType({
     "mining_seeds": MINING_SEEDS,
@@ -41,8 +44,14 @@ PROTOCOL = MappingProxyType({
     "transfer_subset": "the 20-task ablation pool",
     "candidate_cap": CANDIDATE_CAP,
     "candidate_ranking": ("miner-estimated-generality", "discovery-order"),
-    "budgets": {"max_steps": 50, "max_total_retries": MAX_TOTAL_RETRIES,
+    # one source for the step budget: the loop, the game's own limit and the record
+    "budgets": {"max_steps": EPISODE_MAX_STEPS, "max_total_retries": MAX_TOTAL_RETRIES,
                 "max_tokens_per_request": MAX_TOKENS_PER_REQUEST},
+    "context_window": CONTEXT_WINDOW,
+    "context_overflow": "a model call whose prompt does not fit the context window ends the "
+                        "episode with status budget_exhausted (budget context_window), a "
+                        "failure in every arm; the prompt is never truncated and the call "
+                        "never retried (ADR-0009 D4)",
     "caps": CAPS,
     "cap_rule": "before each episode: stop if episodes + episodes in flight + 1 > "
                 "episodes_max, if model_calls + the reservations in flight + (max_steps + "

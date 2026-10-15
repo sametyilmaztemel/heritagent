@@ -233,3 +233,43 @@ def test_a_game_that_ends_without_winning_is_a_failure(g0_config):
     record = env.record()
     assert result.status == "environment_terminal"
     assert record.done is True and record.won is False
+
+
+class _NoWon(FakeSession):
+    """Infos without a boolean ``won`` at reset or at a step."""
+
+    def __init__(self, script, *, at, value=None):
+        super().__init__(script)
+        self.at, self.value = at, value
+
+    def _strip(self, infos):
+        infos = dict(infos)
+        if self.value is None:
+            infos.pop("won")
+        else:
+            infos["won"] = self.value
+        return infos
+
+    def reset(self):
+        obs, infos = super().reset()
+        return obs, (self._strip(infos) if self.at == "reset" else infos)
+
+    def step(self, command):
+        obs, score, done, infos = super().step(command)
+        return obs, score, done, (self._strip(infos) if self.at == "step" else infos)
+
+
+@pytest.mark.parametrize("value", [None, 1, "true"])
+def test_a_game_without_a_boolean_won_fails_closed(value):
+    """Critic review of ADR-0003 (2026-10-15): won is the only success
+    signal (D6); a game opened without it fails, rather than scoring every
+    episode a failure, and the check changes no state."""
+    env = AlfworldEnvironment(_NoWon(SCRIPT, at="reset", value=value), game_id=GAME_ID)
+    with pytest.raises(AlfworldAdapterError, match="won"):
+        env.start()
+    env = AlfworldEnvironment(_NoWon(SCRIPT, at="step", value=value), game_id=GAME_ID)
+    env.start()
+    before = env.record()
+    with pytest.raises(AlfworldAdapterError, match="won"):
+        env.call("act", {"command": "put egg 1 in/on fridge 1"})
+    assert env.record() == before

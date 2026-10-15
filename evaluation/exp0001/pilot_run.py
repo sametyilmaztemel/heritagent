@@ -3,8 +3,10 @@
 
 G0 plays every pilot game once at the evaluation settings (temperature 0,
 no seed). Then the first game of each family (game_id order) runs a second
-time, and the arm-B rendering smoke test plays the first pilot game once
-with one fixed synthetic skill rendered into G0's prompt. The pilot
+time, the arm-B rendering smoke test plays the first pilot game once with
+one fixed synthetic skill rendered into G0's prompt, and every pilot game
+runs 3 more times at the mining temperature 0.7 (ADR-0009 D3), which is
+what the lifetime's pairs and T_reg's eligibility turn on. The pilot
 measures; it tunes nothing. Its ledger and trajectories live in their own
 directory, apart from any EXP-0001 run, and it plays no EXP-0001 pool game.
 
@@ -28,19 +30,24 @@ from evaluation.exp0001.pilot import PILOT_MEASURES
 from evaluation.exp0001.protocol import (
     CANDIDATE_CAP,
     CAPS,
+    CONTEXT_WINDOW,
     LIFETIME_ATTEMPTS_PER_TASK,
     MAX_TOKENS_PER_REQUEST,
     MINING_SEEDS,
+    MINING_TEMPERATURE,
     T_REG_SIZE,
+    attempt_sampling_seed,
     max_model_calls_per_episode,
 )
 from evaluation.exp0001.provenance import canonical_sha256
 from inheritance.overlay import evaluation_settings
 from runtime.expression import RuntimeConfig, RuntimeSkill, validate_runtime_skill_payload
+from runtime.model_adapters.base import GenerationSettings
 from trajectory.normalization import load_normalized
 
 PILOT_REPORT_SCHEMA = "heritagent/exp0001-pilot-report/0.1"
 PILOT_RUN_ID = "EXP-0001-calibration-pilot"
+PILOT_ATTEMPT_SEED = 0  # the E1 attempt-seed rule with pilot seed 0 (ADR-0009 D3)
 SMOKE_GENE_ID = "pilot_smoke_skill"  # never mined, never in a genome
 SMOKE_SKILL = {"name": "search likely places first",
                "principle": "Before taking or using an object, look in the receptacles where it "
@@ -75,9 +82,22 @@ def pilot_specs(pilot_manifest: Mapping, g0_config: RuntimeConfig) -> dict[str, 
                            settings=settings, tags={"stage": "pilot", "pass": kind})
 
     firsts = [next(g for g in games if g["family"] == family) for family in ALFWORLD_TASK_TYPES]
+
+    def attempt(game: Mapping, index: int) -> EpisodeSpec:
+        from runtime.policies.planner_react import STOP_SEQUENCES
+        return EpisodeSpec(
+            key=f"pilot/t07/{game['game_id']}/{index}", task_id=game["game_id"],
+            family=game["family"], split="train", config=g0_config,
+            settings=GenerationSettings(
+                temperature=MINING_TEMPERATURE, max_tokens=MAX_TOKENS_PER_REQUEST,
+                seed=attempt_sampling_seed(PILOT_ATTEMPT_SEED, game["game_id"], index),
+                stop=STOP_SEQUENCES),
+            tags={"stage": "pilot", "pass": "t07", "attempt": index})
+
     return {"run": [spec("run", g, g0_config) for g in games],
             "repeat": [spec("repeat", g, g0_config) for g in firsts],
-            "smoke": [spec("arm-b-smoke", games[0], smoke_config(g0_config))]}
+            "smoke": [spec("arm-b-smoke", games[0], smoke_config(g0_config))],
+            "t07": [attempt(g, a) for g in games for a in range(LIFETIME_ATTEMPTS_PER_TASK)]}
 
 
 def trajectory_fingerprint(path: str) -> str:
@@ -106,8 +126,15 @@ def _summary(values: Sequence[float]) -> dict:
             "median": statistics.median(values), "min": min(values), "max": max(values)}
 
 
+def _prompt_tokens(results: Sequence[EpisodeResult]) -> list[int]:
+    return [call.prompt_tokens for r in results
+            for step in load_normalized(r.trajectory_path).steps
+            for call in step.model_calls if call.prompt_tokens is not None]
+
+
 def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
-            smoke: EpisodeResult, *, elapsed_seconds: float, workers: int) -> dict:
+            smoke: EpisodeResult, t07: Sequence[EpisodeResult], *, elapsed_seconds: float,
+            workers: int) -> dict:
     calls = [r.model_calls for r in runs]
     successes = [r for r in runs if r.success]
     fresh = [r for r in runs if not r.resumed]
@@ -124,6 +151,12 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
         smoke_trajectory.steps[0].model_calls else None
     in_prompt = first_call is not None and any(
         SMOKE_SKILL["principle"] in message.get("content", "") for message in first_call.messages)
+    attempts: dict[str, list[bool]] = {}
+    for result in t07:
+        attempts.setdefault(result.task_id, []).append(result.success)
+    solved_any = sorted(g for g, outcomes in attempts.items() if any(outcomes))
+    paired = [g for g, outcomes in attempts.items() if any(outcomes) and not all(outcomes)]
+    all_prompts = _prompt_tokens([*runs, *repeats, smoke, *t07])
     smoke_checks = {"expressed": SMOKE_GENE_ID in smoke.expressed_gene_ids,
                     "skill_in_prompt": in_prompt,
                     "first_reply_parsed": bool(first_call is not None and first_call.parse_ok),
@@ -146,11 +179,21 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
             and smoke_checks["first_reply_parsed"]},
         "temperature_0_repeat_determinism": {
             "games": determinism, "all_identical": all(d["identical"] for d in determinism)},
+        "temperature_0_7_attempt_success_rate": _fraction(sum(r.success for r in t07), len(t07)),
+        "temperature_0_7_pair_yield": _fraction(len(paired), len(attempts)),
+        "temperature_0_7_solved_in_any_attempt": _fraction(len(solved_any), len(attempts)),
+        "temperature_0_success_among_0_7_solved": _fraction(
+            sum(by_game[g].success for g in solved_any), len(solved_any)),
+        "prompt_tokens_per_call_max": {
+            "value": max(all_prompts) if all_prompts else None,
+            "context_window": CONTEXT_WINDOW,
+            "context_overflows": sum(r.exhausted_budget == "context_window"
+                                     for r in [*runs, *repeats, smoke, *t07])},
+        "loop_steps_per_episode": {**_summary([r.loop_steps for r in runs]),
+                                   "game_steps": _summary([r.steps for r in runs])},
     }
     assert tuple(measures) == PILOT_MEASURES
-    prompt_tokens = [call.prompt_tokens for r in runs
-                     for step in load_normalized(r.trajectory_path).steps
-                     for call in step.model_calls if call.prompt_tokens is not None]
+    prompt_tokens = _prompt_tokens(runs)
     extra = {
         "per_family_success": {f: _fraction(sum(r.success for r in runs if r.family == f),
                                             sum(1 for r in runs if r.family == f))
@@ -174,7 +217,10 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
     lifetime = seeds * t_mine_size * LIFETIME_ATTEMPTS_PER_TASK
     final = (1 + 2 * seeds) * (t_eval_size + T_REG_SIZE + transfer_size)
     teacher_calls_max = seeds * t_mine_size  # one call per mining pair at most
-    calls_mean = measured["measures"]["model_calls_per_episode"]["mean"]
+    measures = measured["measures"]
+    pair_yield = measures.get("temperature_0_7_pair_yield", {}).get("value")
+    solved_any = measures.get("temperature_0_7_solved_in_any_attempt", {}).get("value")
+    calls_mean = measures["model_calls_per_episode"]["mean"]
     throughput = measured["measures"]["throughput_episodes_per_hour"]["value"]
     scenarios = []
     for k in candidates_per_seed:
@@ -202,7 +248,16 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
             "fixed_episodes": {"lifetime": lifetime, "final_evaluation": final},
             "gate_episodes_per_candidate": GATE_EPISODES_PER_CANDIDATE,
             "interaction_episodes_per_pair": INTERACTION_EPISODES_PER_PAIR,
-            "caps": dict(caps), "scenarios": scenarios}
+            "caps": dict(caps), "scenarios": scenarios,
+            "lifetime": {
+                "pairs_per_seed_at_pilot_yield": None if pair_yield is None
+                else round(t_mine_size * pair_yield, 1),
+                "t_reg_eligible_lower_bound": None if solved_any is None
+                else round(t_mine_size * solved_any, 1),
+                "t_reg_size": T_REG_SIZE,
+                "note": "pairs: T_mine size times the pilot's 3-attempt pair yield; eligible: "
+                        "T_mine size times the pilot's solved-in-any-of-3 rate, a lower bound "
+                        "for the lifetime's 9 attempts per task (ADR-0007 E3)"}}
 
 
 def run_pilot(executor: EpisodeExecutor, pilot_manifest: Mapping, g0_config: RuntimeConfig, *,
@@ -214,4 +269,5 @@ def run_pilot(executor: EpisodeExecutor, pilot_manifest: Mapping, g0_config: Run
     elapsed = clock() - started
     repeats = executor.run_many(specs["repeat"])
     smoke = executor.run_many(specs["smoke"])[0]
-    return measure(runs, repeats, smoke, elapsed_seconds=elapsed, workers=executor.workers)
+    t07 = executor.run_many(specs["t07"])
+    return measure(runs, repeats, smoke, t07, elapsed_seconds=elapsed, workers=executor.workers)

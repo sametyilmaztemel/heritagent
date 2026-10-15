@@ -1,11 +1,13 @@
 {
   "execution": {
     "arm_b_rendering_smoke_test": "one fixed synthetic skill block rendered into G0's prompt; checks the ReAct format survives, measures nothing else",
+    "context_window": "32768 tokens; a prompt that does not fit ends the episode as budget_exhausted (context_window), a failure (ADR-0009 D4)",
     "determinism_repeat": "the first game of each family (game_id order) a second time; trajectories must be identical",
     "genome": "G0 (planner_react_v2, 50 steps; ADR-0003 D4)",
     "no_tuning": "the pilot measures only; no protocol, prompt or threshold changes inside it",
     "runs": "every pilot game once",
-    "settings": "evaluation settings: temperature 0.0, the ReAct stop (ADR-0003 A2)"
+    "settings": "evaluation settings: temperature 0.0, the ReAct stop (ADR-0003 A2)",
+    "temperature_0_7_attempts": "every pilot game 3 times more at the mining temperature 0.7, attempts 0, 1, 2, sampling seed int(sha256('heritagent-attempt|0|<game_id>|<attempt>')[:8], 16) mod 2**31 (ADR-0007 E1's rule with pilot seed 0); stop, request budget and episode budget as in the run"
   },
   "experiment": "EXP-0001",
   "games": [
@@ -170,9 +172,15 @@
     "model_calls_per_episode",
     "throughput_episodes_per_hour",
     "arm_b_rendering_smoke_test",
-    "temperature_0_repeat_determinism"
+    "temperature_0_repeat_determinism",
+    "temperature_0_7_attempt_success_rate",
+    "temperature_0_7_pair_yield",
+    "temperature_0_7_solved_in_any_attempt",
+    "temperature_0_success_among_0_7_solved",
+    "prompt_tokens_per_call_max",
+    "loop_steps_per_episode"
   ],
-  "pilot_sha256": "6286d0fa3072f3a179fbe70d543ec3a6a3e4020f05977111fc05ddb02d57e90c",
+  "pilot_sha256": "ecc713d71966f0a32ef6cfddbbd950803f0ca0bbbb3ef00f549b09187522d8d0",
   "schema": "heritagent/alfworld-pilot-manifest/0.1",
   "selection": {
     "drawn_from": "train games in no EXP-0001 pool",

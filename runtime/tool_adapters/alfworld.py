@@ -94,6 +94,16 @@ def _admissible(infos: dict) -> list:
     return infos["admissible_commands"]
 
 
+def _won(infos: dict) -> bool:
+    """ALFWorld's ``won``, the only success signal (D6); fail closed when the
+    game was opened without it, rather than scoring every episode a failure."""
+    if "won" not in infos or not isinstance(infos["won"], bool):
+        raise AlfworldAdapterError(
+            "game infos carry no boolean 'won'; open the game with won requested "
+            "(ADR-0003 D6)")
+    return infos["won"]
+
+
 def is_inadmissible(observation: str) -> bool:
     return observation.strip() == NOTHING_HAPPENS
 
@@ -118,8 +128,9 @@ class AlfworldEnvironment:
             raise AlfworldAdapterError("episode already started; use a new environment")
         observation, infos = self._session.reset()
         task = render_observation(task_text(observation), _admissible(infos))
+        won = _won(infos)
         self._started = True
-        self._won = bool(infos.get("won", False))
+        self._won = won
         return task
 
     def list_tools(self) -> list[ToolSpec]:
@@ -135,9 +146,10 @@ class AlfworldEnvironment:
                                    terminal=True, retryable=False)
         observation, _score, done, infos = self._session.step(arguments["command"])
         commands = _admissible(infos)
+        won = _won(infos)  # both checked before any counter changes
         self._steps += 1
         self._done = bool(done)
-        self._won = bool(infos.get("won", False))
+        self._won = won
         invalid = is_inadmissible(observation)
         if invalid:
             self._invalid += 1

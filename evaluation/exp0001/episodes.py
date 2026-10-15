@@ -97,6 +97,8 @@ class EpisodeResult:
     completion_tokens: int = 0
     parse_failures: int = 0
     retries: int = 0
+    loop_steps: int = 0  # planner decisions; ``steps`` counts game steps
+    exhausted_budget: str | None = None  # which budget ended a budget_exhausted episode
 
 
 def play_episode(*, model: ModelAdapter, env_factory: Callable[[str, str], EpisodeEnvironment],
@@ -151,6 +153,9 @@ def play_episode(*, model: ModelAdapter, env_factory: Callable[[str, str], Episo
             "completion_tokens": calls[-1].data["cumulative_completion_tokens"] if calls else 0,
             "parse_failures": len(result.events.of_kind("plan_parse_failed")),
             "retries": len(result.events.of_kind("retry_scheduled")),
+            "loop_steps": result.steps,
+            "exhausted_budget": next((e.data.get("budget") for e in
+                                      result.events.of_kind("budget_exhausted")), None),
             "settings": _settings_record(spec.settings)}
 
 

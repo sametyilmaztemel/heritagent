@@ -150,9 +150,14 @@ def _server_version(url: str) -> str | None:
 
 
 def _adapter(args, prepared: dict) -> VLLMServerAdapter:
+    from evaluation.exp0001.protocol import CONTEXT_WINDOW
     adapter = VLLMServerAdapter(args.server_url, prepared["model_id"], prepared["revision"],
                                 backend_version=_server_version(args.server_url))
     adapter.require_served()
+    window = adapter.served_context_window()
+    if window != CONTEXT_WINDOW:  # pre-registered (ADR-0009 D4)
+        raise CliError(f"the server's context window is {window}, the protocol's is "
+                       f"{CONTEXT_WINDOW}; restart `serve` without --max-model-len")
     return adapter
 
 

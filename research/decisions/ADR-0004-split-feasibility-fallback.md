@@ -20,7 +20,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13, in cha
 
   Ablation and interaction have no per-family floor, so they add nothing. Below this sum no plan could meet the minimum, while at or above it some plan meets it.
   - The rule is per family and **fails closed**. It ignores the fixed pool totals, so on a train set too small for every locked count at once (fewer than 174 games) it can reject a real shortfall. That case is the owner's to decide, not the builder's to search.
-  - ALFWorld's train split is far larger. The prior analysis of the ALFWorld split table (`research/methodology/ALFWorld-baselines.md` on branch `claude/keen-bohr-ku33ye`) gives 3,553 train games, with a smallest family (`look_at_obj_in_light`) of 308. Both counts are before loader filtering.
+  - ALFWorld's train split is far larger. The prior analysis of the ALFWorld split table (`research/methodology/ALFWorld-baselines.md` on branch `claude/keen-bohr-ku33ye`) gives 3,553 train games, with a smallest family (`look_at_obj_in_light`) of 308. Both counts are before loader filtering. [corrected after independent verification 2026-10-15: the committed split manifest, built from the real data on 2026-10-14 (`manifest_sha256 2f74d188…ed9c`), gives 3,553 loader-accepted train games and accepted family counts 308–813; the smallest family has 308 against the floors 12 and 22, so no fallback was needed (ADR-0009 D5).]
   - SEEA-R1 reports a training set of 3,321 games; this loader has not verified that number. The split manifest records the loader's actual per-family counts.
 - **Q2 / Q2b — How large the fallback bank is.**
   - A family with a fallback takes **only its locked floors from every earlier pool**: `T_mine` 8, ablation 0, interaction 0, and, before the generalization bank, replay 4 or its own replay fallback.
@@ -53,5 +53,5 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13, in cha
 **Compatibility impact.**
 - Plans without a fallback build byte-identical manifests: no fallback code path runs for them. A known-answer test pins the fixture's `manifest_sha256`.
 - A plan with a fallback must now satisfy Q2b, or it fails closed.
-- No manifest has been built yet, because the build sandbox has no ALFWorld data.
+- No manifest has been built yet, because the build sandbox has no ALFWorld data. [corrected after independent verification 2026-10-15: the manifest now exists and needs no fallback. The fallback is a split-level rule only: the EXP-0001 stage allocators fail closed on any bank other than 4 replay and 10 generalization games per family, so a future fallback bank needs its own ADR on stage semantics before any data (ADR-0009 D5).]
 - The locked manifest text is unchanged: this ADR interprets it.
