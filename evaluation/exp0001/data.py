@@ -7,7 +7,7 @@ differ from the ones the split and pilot manifests hash, so no game of
 either manifest would open. The manifests were built from release 0.2.2.
 ``fetch_data`` downloads exactly that release's two archives, checks each
 against its sha256, and extracts them. ``verify_data`` then hashes every
-game of both manifests, before any GPU time is spent."""
+game of both manifests, before the model download and any episode."""
 
 from __future__ import annotations
 

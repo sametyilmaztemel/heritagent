@@ -135,7 +135,7 @@ def check_mirror_dir(mirror_dir: Path, *, files: int = 20,
                      clock: Callable[[], float] = time.monotonic) -> dict:
     """What the mirror needs from its filesystem (on Colab, Drive): a write
     with fsync, a replace over an existing file, a read back, a delete; and
-    the time per small file. Run before any GPU time is spent."""
+    the time per small file. Run before the model download and any episode."""
     probe = Path(mirror_dir) / ".mirror-check"
     probe.mkdir(parents=True, exist_ok=True)
     target = probe / "replace-me.json"
