@@ -583,6 +583,9 @@ def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path
      "not gated on its frozen"),
     (lambda g, gene: g["aggregate_ids"].update({"extra_gene": "CIG-1199"}), "exactly the frozen"),
     (lambda g, gene: g["aggregates"].pop(g["aggregate_ids"][gene]), "not its aggregate record's"),
+    (lambda g, gene: next(c for c in g["children"].values() if c["stage"] == "ablation")[
+        "measurements"]["bootstrap"].update({"lower_bound": 0.99}),
+     "does not recompute"),  # ADR-0005; ADR-0009 D5
     (lambda g, gene: (g["verdicts"].update({gene: "reject"}),
                       g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"})),
      "in the somatic journal"),

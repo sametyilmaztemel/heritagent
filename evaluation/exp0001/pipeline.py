@@ -89,7 +89,7 @@ from evaluation.metrics.final_statistics import (
 from genome.validation.records import CigRecordStore
 from genome.validation.registry import TraitRegistry
 from inheritance.ablation import AblationEvaluator
-from inheritance.gate import CigGateOrchestrator, GateCandidateInput
+from inheritance.gate import CigGateOrchestrator, GateCandidateInput, ablation_evidence_issues
 from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.replay import ReplayEvaluator
@@ -297,6 +297,12 @@ class Exp0001Run:
             if (bound.get("gene_id"), bound.get("version"), bound.get("artifact")) != \
                     (gene, genes[gene]["version"], genes[gene]["artifact"]):
                 raise RunError(f"seed {seed}: {gene!r} was not gated on its frozen artifact")
+        # the ablation bounds recompute from the stored deltas (ADR-0005; ADR-0009 D5)
+        for child_id, child in sorted(gate["children"].items()):
+            if child.get("stage") == "ablation":
+                issues = ablation_evidence_issues(child["measurements"])
+                if issues:
+                    raise RunError(f"seed {seed}: {child_id} does not recompute: {issues}")
 
     def _apply_decisions(self, seed: int, candidates, gate: Mapping) -> None:
         """The gate artifact is written first; the somatic journal then takes

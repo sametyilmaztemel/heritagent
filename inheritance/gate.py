@@ -63,8 +63,10 @@ from inheritance.ablation import (
     BOOTSTRAP_CLUSTER_ORDER,
     BOOTSTRAP_N_RESAMPLES,
     BOOTSTRAP_SEED,
+    TAU_C,
     AblationEvaluation,
 )
+from inheritance.bootstrap import CONFIDENCE, paired_cluster_bootstrap, stage_passes
 from inheritance.generalization import (
     GeneralizationEvaluation,
     GeneralizationEvaluator,
@@ -120,19 +122,26 @@ class EvidenceCoherenceError(ValueError):
     closed; replay/ablation are never rerun)."""
 
 
-def _ablation_bootstrap_issues(measurements: dict, evaluated: dict) -> list[str]:
-    """ADR-0005: an ablation verdict is evidence only under the
-    pre-registered bootstrap (seed 0, 10,000 resamples, the deltas in
-    task_id order), in the child record and in the evaluation whose lower
-    bound the sensitivity recomputation reads. The aggregate's
-    thresholds_used claims these values, so the declared values are
-    checked, not assumed; the bound itself is not recomputed (review of
-    #63)."""
+BOOTSTRAP_METHOD = "percentile-paired-cluster-bootstrap"
+
+
+def ablation_evidence_issues(measurements: dict, evaluated: dict | None = None) -> list[str]:
+    """ADR-0005, hardened by ADR-0009 D5: an ablation verdict is evidence
+    only under the pre-registered bootstrap (the percentile paired cluster
+    bootstrap at confidence 0.95; seed 0 for ``random.Random``, one
+    ``randrange(n)`` per resampled cluster; 10,000 resamples; the deltas in
+    task_id order). The declared values are checked in the child record and
+    in the evaluation, and the bound is recomputed from the record's deltas:
+    its lower and upper bound, its point estimate and the stage verdict must
+    be exactly the record's. ``evaluated`` is the evaluation's own block (the
+    one the sensitivity recomputation reads); a resumed run passes None."""
     issues: list[str] = []
     locked = {"seed": BOOTSTRAP_SEED, "n_resamples": BOOTSTRAP_N_RESAMPLES,
-              "cluster_order": BOOTSTRAP_CLUSTER_ORDER}
-    for where, block in (("child bootstrap", measurements.get("bootstrap")),
-                         ("evaluation bootstrap", evaluated)):
+              "cluster_order": BOOTSTRAP_CLUSTER_ORDER, "method": BOOTSTRAP_METHOD}
+    blocks = [("child bootstrap", measurements.get("bootstrap"))]
+    if evaluated is not None:
+        blocks.append(("evaluation bootstrap", evaluated))
+    for where, block in blocks:
         if not isinstance(block, dict):
             issues.append(f"ablation {where} is missing")
             continue
@@ -142,11 +151,48 @@ def _ablation_bootstrap_issues(measurements: dict, evaluated: dict) -> list[str]
             if type(got) is not type(value) or got != value:
                 issues.append(f"ablation {where}.{key} {got!r} != pre-registered "
                               f"{value!r} (ADR-0005)")
+        confidence = block.get("confidence")
+        if type(confidence) is not float or confidence != CONFIDENCE:
+            issues.append(f"ablation {where}.confidence {confidence!r} != pre-registered "
+                          f"{CONFIDENCE!r} (ADR-0009 D5)")
     ids = measurements.get("paired_delta_task_ids")
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) \
             or any(a >= b for a, b in zip(ids, ids[1:])):
         issues.append(f"ablation child paired_delta_task_ids {ids!r} are not "
                       f"distinct strings in task_id order (ADR-0005)")
+        return issues
+    allocated = (measurements.get("allocation") or {}).get("task_ids")
+    if not isinstance(allocated, list) or sorted(allocated) != ids:
+        issues.append("ablation child paired_delta_task_ids are not the allocation's tasks "
+                      "(ADR-0009 D5)")
+    deltas = measurements.get("paired_deltas")
+    if not isinstance(deltas, list) or len(deltas) != len(ids):
+        issues.append(f"ablation child has {len(deltas) if isinstance(deltas, list) else deltas!r}"
+                      f" paired deltas for {len(ids)} tasks (ADR-0009 D5)")
+        return issues
+    try:
+        bootstrap = paired_cluster_bootstrap(deltas, seed=BOOTSTRAP_SEED,
+                                             n_resamples=BOOTSTRAP_N_RESAMPLES,
+                                             confidence=CONFIDENCE)
+    except ValueError as exc:
+        return issues + [f"ablation child paired deltas do not recompute: {exc}"]
+    block = measurements.get("bootstrap") if isinstance(measurements.get("bootstrap"), dict) \
+        else {}
+    recomputed = {"lower_bound": bootstrap.lower_bound, "upper_bound": bootstrap.upper_bound}
+    for where, source in [("child bootstrap", block)] + (
+            [("evaluation bootstrap", evaluated)] if isinstance(evaluated, dict) else []):
+        for key, value in recomputed.items():
+            if source.get(key) != value:
+                issues.append(f"ablation {where}.{key} {source.get(key)!r} != recomputed "
+                              f"{value!r} (ADR-0009 D5)")
+    if measurements.get("point_estimate_delta_success") != bootstrap.point_estimate:
+        issues.append(f"ablation point estimate "
+                      f"{measurements.get('point_estimate_delta_success')!r} != recomputed "
+                      f"{bootstrap.point_estimate!r} (ADR-0009 D5)")
+    expected = stage_passes(bootstrap.point_estimate, bootstrap.lower_bound, tau_c=TAU_C)
+    if measurements.get("stage_pass") is not expected:
+        issues.append(f"ablation stage_pass {measurements.get('stage_pass')!r} != the locked "
+                      f"rule on the recomputed bound ({expected}) (ADR-0009 D5)")
     return issues
 
 
@@ -691,7 +737,7 @@ class CigGateOrchestrator:
                                f"child measurements.stage_pass "
                                f"{stage_pass!r} (strict bool on both sides)")
             if stage == "ablation":
-                issues.extend(_ablation_bootstrap_issues(m, evaluation.bootstrap))
+                issues.extend(ablation_evidence_issues(m, evaluation.bootstrap))
             settings = m.get("eval_generation_settings")
             if not isinstance(settings, dict):
                 issues.append(f"{stage} child lacks eval_generation_settings "

@@ -112,3 +112,44 @@ def test_target_regulation_reaches_every_with_trait_episode(tmp_path):
     assert with_trait, "no with-trait episodes ran"
     assert all(reg == condition for _, reg in with_trait), with_trait
     assert all(reg is None for _, cond, reg in seen if cond == "without_trait")
+
+
+@pytest.mark.parametrize("change,message", [
+    (lambda m: m["bootstrap"].update(lower_bound=m["bootstrap"]["lower_bound"] + 0.01),
+     "lower_bound .* != recomputed"),
+    (lambda m: m["bootstrap"].update(upper_bound=1.0), "upper_bound .* != recomputed"),
+    (lambda m: m.update(point_estimate_delta_success=0.6), "point estimate .* != recomputed"),
+    (lambda m: m["paired_deltas"].__setitem__(0, -1.0), "lower_bound .* != recomputed"),
+    (lambda m: m.update(paired_deltas=m["paired_deltas"][:19]), "19 paired deltas for 20"),
+    (lambda m: m["allocation"].update(task_ids=["other"] * 20), "not the allocation's tasks"),
+    (lambda m: m["bootstrap"].pop("confidence"), "confidence None"),
+    (lambda m: m["bootstrap"].update(confidence=0.9), "confidence 0.9"),
+    (lambda m: m["bootstrap"].update(method="bca"), "method 'bca'"),
+])
+def test_the_gate_recomputes_the_ablation_bound(tmp_path, change, message):
+    """ADR-0009 D5: the gate recomputes the locked bootstrap from the child's
+    deltas; a record whose bound, estimate, tasks or method differ is no
+    evidence, and no stage-3/4 episode runs."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    ablation = inputs[0].ablation_evaluation
+    child = copy.deepcopy(ablation.child_record)
+    change(child["measurements"])
+    bad = dataclasses.replace(inputs[0],
+                              ablation_evaluation=_ablation_with_child(ablation, child))
+    with pytest.raises(EvidenceCoherenceError, match=message):
+        orch.run([bad])
+    assert runner.calls == []
+
+
+def test_a_stage_pass_the_recomputed_bound_does_not_give_is_rejected(tmp_path):
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    ablation = inputs[0].ablation_evaluation
+    child = copy.deepcopy(ablation.child_record)
+    child["measurements"]["stage_pass"] = False
+    bad = dataclasses.replace(inputs[0], ablation_evaluation=dataclasses.replace(
+        _ablation_with_child(ablation, child), _passed=False))
+    with pytest.raises(EvidenceCoherenceError, match="stage_pass False != the locked rule"):
+        orch.run([bad])
+    assert runner.calls == []

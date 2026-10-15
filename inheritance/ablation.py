@@ -27,7 +27,7 @@ from genome.validation.loader import load_cig
 from runtime.expression import RuntimeConfig
 from runtime.loop import Budgets
 
-from inheritance.bootstrap import paired_cluster_bootstrap, stage_passes
+from inheritance.bootstrap import CONFIDENCE, paired_cluster_bootstrap, stage_passes
 from inheritance.overlay import EvaluationSetupError, build_evaluation_configs
 from inheritance.runner import (
     EvaluationIntegrityError,
@@ -306,7 +306,7 @@ class AblationEvaluator:
                 "point_estimate": bootstrap.point_estimate,
                 "lower_bound": bootstrap.lower_bound,
                 "upper_bound": bootstrap.upper_bound,
-                "confidence": 0.95,
+                "confidence": CONFIDENCE,
             },
             _episodes=tuple(copy.deepcopy(episodes)),
             _child_record=copy.deepcopy(child),
@@ -336,6 +336,7 @@ class AblationEvaluator:
                     "seed": bootstrap.seed,
                     "n_resamples": bootstrap.n_resamples,
                     "cluster_order": BOOTSTRAP_CLUSTER_ORDER,
+                    "confidence": CONFIDENCE,
                     "lower_bound": bootstrap.lower_bound,
                     "upper_bound": bootstrap.upper_bound,
                 },
