@@ -582,6 +582,21 @@ def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path
             make_run(broken, splits).run()
 
 
+def one_copy_of_a_pair(gate, gene):
+    """A well-formed pair evidence in ``gene``'s stage-4 child only: its
+    partner's child does not carry the second copy (ADR-0010 B4)."""
+    from trajectory.storage.canonical import canonical_json, sha256_hex
+    refs = sorted((a["artifacts"]["candidate"] for a in gate["aggregates"].values()),
+                  key=lambda ref: ref["gene_id"])
+    canonical = {"kind": "heritagent-interaction-pair",
+                 "gene_ids": [ref["gene_id"] for ref in refs], "artifacts": refs}
+    entry = {"evidence_sha256": sha256_hex(canonical_json(canonical).encode("utf-8")),
+             "canonical_evidence": canonical,
+             "other_gene_id": next(r["gene_id"] for r in refs if r["gene_id"] != gene)}
+    child = gate["children"][gate["aggregate_ids"][gene] + "/S11-interaction_regression"]
+    child["measurements"]["interaction"]["pair_evidence"] = [entry]
+
+
 @pytest.mark.parametrize("tamper,message", [
     (lambda g, gene: g["verdicts"].update({"extra_gene": "reject"}), "exactly the frozen"),
     (lambda g, gene: g["aggregates"][g["aggregate_ids"][gene]].update(
@@ -617,8 +632,19 @@ def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path
     (lambda g, gene: g["sensitivity"][gene]["cells"].pop("tau_c=0.05|tau_r=0.03"),
      "not the pre-planned analysis-only grid"),
     (lambda g, gene: (g["verdicts"].update({gene: "reject"}),
-                      g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"})),
-     "in the somatic journal"),
+                      g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"}),
+                      g["aggregates"][g["aggregate_ids"][gene]]["stages"]["replay"].update(
+                          {"pass": False}),
+                      g["children"][g["aggregate_ids"][gene] + "/S11-replay"][
+                          "measurements"].update({"stage_pass": False})),
+     "in the somatic journal"),  # a coherent record the journal contradicts
+    # the stored records re-verify as a record store (ADR-0010 B4)
+    (lambda g, gene: g["children"][g["aggregate_ids"][gene] + "/S11-replay"][
+        "measurements"].update({"candidate_version": 2}), "candidate_version 2 != aggregate"),
+    (lambda g, gene: g["aggregates"][g["aggregate_ids"][gene]]["artifacts"].update(
+        {"base_genome": {"genome_id": "G-99999999"}}), "base_genome.genome_id 'G-99999999'"),
+    (lambda g, gene: one_copy_of_a_pair(g, gene), "names partner"),
+    (lambda g, gene: g["children"].update({"CIG-9999/S11-replay": {}}), "undeclared child"),
 ])
 def test_an_inconsistent_gate_artifact_fails_closed(tmp_path, clean, splits, tamper, message):
     run_dir = reopened_copy(clean, tmp_path)

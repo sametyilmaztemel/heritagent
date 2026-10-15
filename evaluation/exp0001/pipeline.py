@@ -88,6 +88,7 @@ from evaluation.metrics.final_statistics import (
     summarize_adaptation_cost,
     summarize_genome_sizes,
 )
+from genome.validation.errors import GenomeValidationError
 from genome.validation.records import CigRecordStore
 from genome.validation.registry import TraitRegistry
 from inheritance.ablation import AblationEvaluator
@@ -127,6 +128,28 @@ def gate_summary(gate: Mapping) -> dict:
 ADAPTATION_COST_SCOPE = (
     "measured on the transfer subset, the stage-2 ablation pool (ADR-0007 E4), which selected "
     "arm C's traits: it can favour C and is descriptive only (ADR-0006 D6; ADR-0009 D5)")
+
+
+def _record_store_issues(aggregates: Mapping, children: Mapping) -> list[str]:
+    """Rebuild a ``CigRecordStore`` from frozen records, one bundle per
+    aggregate, and return what does not verify (empty when consistent)."""
+    store = CigRecordStore()
+    declared: set = set()
+    try:
+        for cig_id, aggregate in sorted(aggregates.items()):
+            if aggregate.get("cig_id") != cig_id:
+                return [f"aggregate {cig_id!r} is stored as {aggregate.get('cig_id')!r}"]
+            refs = aggregate["child_records"]
+            declared.update(refs)
+            store.add_bundle(aggregate, [children[ref] for ref in refs])
+    except GenomeValidationError as exc:
+        return list(exc.errors)
+    except (KeyError, TypeError) as exc:
+        return [f"a declared record is missing or malformed ({exc!r})"]
+    undeclared = sorted(set(children) - declared)
+    if undeclared:
+        return [f"undeclared child records {undeclared}"]
+    return store.verify()
 
 
 def teacher_calls(mining_records) -> int:
@@ -348,6 +371,11 @@ class Exp0001Run:
                     or not isinstance(grid.get("cells"), Mapping) or set(grid["cells"]) != cells:
                 raise RunError(f"seed {seed}: gate.json's sensitivity grid for {gene!r} is not "
                                f"the pre-planned analysis-only grid")
+        # the stored records verify as a record store: every bundle, its
+        # artifact and base genome, and both copies of each pair (ADR-0010 B4)
+        issues = _record_store_issues(gate["aggregates"], gate["children"])
+        if issues:
+            raise RunError(f"seed {seed}: gate.json's CIG records do not verify: {issues}")
 
     def _apply_decisions(self, seed: int, candidates, gate: Mapping) -> None:
         """The gate artifact is written first; the somatic journal then takes
