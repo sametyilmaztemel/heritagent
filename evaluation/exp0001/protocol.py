@@ -29,7 +29,7 @@ CAPS = MappingProxyType({"episodes_max": 7000, "model_calls_max": 225_000,
                          "wall_clock_hours_max": 96, "accelerator_nodes_max": 1})
 # the committed pre-run artifacts (manifest run_protocol); a run binds to them
 LOCKED_SPLIT_MANIFEST_SHA256 = "2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c"
-LOCKED_PILOT_SHA256 = "b9ff5049b11f243e666ae3f13fa41d06b68247ece536667832b2c5a33f502b7d"
+LOCKED_PILOT_SHA256 = "4fc2b6fe1766dec7bad7795a2f0169fa354b67baab4a569c3d1fcb92700daa52"
 
 PROTOCOL = MappingProxyType({
     "mining_seeds": MINING_SEEDS,
@@ -52,10 +52,12 @@ PROTOCOL = MappingProxyType({
     "budgets": {"max_steps": EPISODE_MAX_STEPS, "max_total_retries": MAX_TOTAL_RETRIES,
                 "max_tokens_per_request": MAX_TOKENS_PER_REQUEST},
     "context_window": CONTEXT_WINDOW,
-    "context_overflow": "a model call whose prompt does not fit the context window ends the "
-                        "episode with status budget_exhausted (budget context_window), a "
-                        "failure in every arm; the prompt is never truncated and the call "
-                        "never retried (ADR-0009 D4)",
+    "context_overflow": "a model call whose prompt tokens plus its max_tokens exceed the "
+                        "context window ends the episode with status budget_exhausted "
+                        "(budget context_window), a failure in every arm; the prompt is never "
+                        "truncated and the call never retried; the rejected call generated "
+                        "nothing and is not counted among the episode's model calls "
+                        "(ADR-0009 D4)",
     "caps": CAPS,
     "cap_rule": "before each episode: stop if episodes + episodes in flight + 1 > "
                 "episodes_max, if model_calls + the reservations in flight + (max_steps + "

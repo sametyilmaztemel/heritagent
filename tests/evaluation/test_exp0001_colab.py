@@ -377,6 +377,34 @@ def test_the_pilot_measures_what_its_manifest_froze(tmp_path, registry, splits, 
     assert first.settings.stop == ("\nObservation:",) and first.settings.max_tokens == 512
 
 
+def test_a_resumed_pilot_keeps_the_throughput_of_its_run_pass(tmp_path, registry, splits):  # noqa: F811
+    """A pilot resumed after its run pass (most of its episodes come after it)
+    still reports the throughput that pass was played at, so the projection
+    keeps its hours."""
+    import itertools
+    pilot = PILOTS[splits["manifest_sha256"]]
+    games = sorted(g["game_id"] for g in pilot["games"])
+    ticks = itertools.count(0, 10)
+    timing = tmp_path / "pilot-throughput.json"
+    seen = []
+    for _ in range(2):  # the whole pilot, then a resume of it
+        executor = EpisodeExecutor(
+            model=WinsOnGames(games[::2]), env_factory=GameFactory(),
+            ledger=RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock()),
+            trajectories_dir=tmp_path / "trajectories", run_id="pilot", code_commit="a" * 40,
+            workers=1, sleep_between_retries=False)
+        try:
+            measured = run_pilot(executor, pilot, g0_runtime_config(registry),
+                                 clock=lambda: next(ticks), timing_path=timing)
+        finally:
+            executor.close()
+        seen.append(measured["measures"]["throughput_episodes_per_hour"])
+    assert seen[0] == {"episodes": 30, "seconds": 10, "workers": 1, "value": 10800.0}
+    assert seen[1] == seen[0]  # every run-pass episode was resumed the second time
+    assert json.loads(timing.read_text())["sessions"] == [
+        {"episodes": 30, "seconds": 10, "workers": 1}]
+
+
 def test_the_pilot_counts_each_pairs_miner_prompt_in_both_forms(tmp_path, registry, splits):  # noqa: F811
     from tests.evaluation.exp0001_workers import AlsoWinsOnOddSeeds
     pilot = PILOTS[splits["manifest_sha256"]]
@@ -867,8 +895,8 @@ def stub_command(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {"games": []}))
     monkeypatch.setattr(cli, "verify_data", lambda *a: {})
     monkeypatch.setattr(cli, "_adapter", lambda args, prepared: object())
-    monkeypatch.setattr(cli, "hf_token_counter",
-                        lambda *a, **k: types.SimpleNamespace(identity="t"))
+    monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(
+        identity="t", count_system_prompt_tokens=len))
     monkeypatch.setattr(cli, "_run_start", lambda *a: {})
     monkeypatch.setattr(cli, "_environment", lambda verified: {})
     monkeypatch.setattr(cli, "_session_info", lambda *a: {})
@@ -928,7 +956,7 @@ def test_a_stopped_command_exits_130_or_3_and_holds_its_directory_through_the_la
 
     monkeypatch.setattr(pipeline, "Exp0001Run", Stopped)
 
-    def stop(*args):
+    def stop(*args, **kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "run_pilot", stop)

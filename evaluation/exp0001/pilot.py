@@ -5,9 +5,10 @@ The pilot runs on train games disjoint from every EXP-0001 pool: the games
 the split manifest left, 5 per family, drawn with seed 0 by the split
 builder's keyed-hash rule under the pool name ``calibration_pilot``. Its
 selection and its measurement plan are frozen here, before any pilot
-episode; ADR-0009 (owner, 2026-10-15) added the temperature-0.7 attempts,
-the context window and two measures before any pilot episode ran. The pilot measures; it tunes nothing (a protocol change after the
-pilot is a pre-execution amendment or a new experiment id)."""
+episode. ADR-0009 (owner, 2026-10-15) added the temperature-0.7 attempts,
+the context window, seven measures and three execution entries before any
+pilot episode ran. The pilot measures; it tunes nothing (a protocol change
+after the pilot is a pre-execution amendment or a new experiment id)."""
 
 from __future__ import annotations
 
@@ -67,8 +68,10 @@ PILOT_EXECUTION = {
                                 "|0|<game_id>|<attempt>')[:8], 16) mod 2**31 (ADR-0007 E1's rule "
                                 "with pilot seed 0); stop, request budget and episode budget as "
                                 "in the run",
-    "context_window": "32768 tokens; a prompt that does not fit ends the episode as "
-                      "budget_exhausted (context_window), a failure (ADR-0009 D4)",
+    "context_window": "32768 tokens; a call fits if its prompt tokens plus its max_tokens "
+                      "(512 for every ReAct call) are at most 32768; a call that does not fit "
+                      "ends the episode as budget_exhausted (context_window), a failure "
+                      "(ADR-0009 D4)",
     "miner_prompt": "for every game with a temperature-0.7 success and failure, the first of "
                     "each (E1's pair), the miner's teacher prompt in the full evidence form and "
                     "without the admissible-command lists, counted with the model's tokenizer "

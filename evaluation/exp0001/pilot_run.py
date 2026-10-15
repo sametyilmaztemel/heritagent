@@ -12,12 +12,15 @@ directory, apart from any EXP-0001 run, and it plays no EXP-0001 pool game.
 
 The report holds the frozen measures (``PILOT_MEASURES``) and a projection
 of the EXP-0001 cost from them. The projection is a model estimate (status
-M), not a measurement: the lifetime runs at temperature 0.7, which the
-pilot does not measure, and the gate's size depends on how many candidates
-the miner proposes and how many become eligible."""
+M), not a measurement: its calls per episode and throughput are those of
+the temperature-0 run pass (the temperature-0.7 attempts inform the pair
+yield, T_reg's eligibility and the prompt sizes, not these two means), and
+the gate's size depends on how many candidates the miner proposes and how
+many become eligible."""
 
 from __future__ import annotations
 
+import json
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -163,9 +166,9 @@ def miner_prompt_tokens(t07: Sequence[EpisodeResult],
         tokens = {}
         for form in EVIDENCE_FORMS:
             evidence, _ = render_pair_evidence(pair, form)
-            tokens[form] = count_prompt_tokens(render_teacher_prompt(
-                evidence_text=evidence, family_universe=ALFWORLD_TASK_TYPES,
-                max_proposals=CANDIDATE_CAP))
+            tokens[form] = count_prompt_tokens(render_teacher_prompt(  # as the run's miner:
+                evidence_text=evidence, family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)),
+                max_proposals=CANDIDATE_CAP))  # MiningBatch sorts the universe
             counts[form].append(tokens[form])
         fit = {form: n <= limit for form, n in tokens.items()}
         fits["full" if fit[FULL] else "only_without_admissible_commands"
@@ -180,10 +183,14 @@ def miner_prompt_tokens(t07: Sequence[EpisodeResult],
 
 def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
             smoke: EpisodeResult, t07: Sequence[EpisodeResult], *, elapsed_seconds: float,
-            workers: int, count_prompt_tokens: Callable[[str], int] | None = None) -> dict:
+            workers: int, count_prompt_tokens: Callable[[str], int] | None = None,
+            timing: Mapping | None = None) -> dict:
+    """``timing`` is the run pass's {episodes, seconds} over every session
+    that played part of it; without it, this session's fresh episodes."""
     calls = [r.model_calls for r in runs]
     successes = [r for r in runs if r.success]
     fresh = [r for r in runs if not r.resumed]
+    timing = timing or {"episodes": len(fresh), "seconds": elapsed_seconds}
     by_game = {r.task_id: r for r in runs}
     determinism = []
     for repeat in repeats:
@@ -217,9 +224,9 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
         "model_calls_per_episode": {**_summary(calls), "at_worst_case": sum(
             c >= max_model_calls_per_episode() for c in calls)},
         "throughput_episodes_per_hour": {
-            "episodes": len(fresh), "seconds": elapsed_seconds, "workers": workers,
-            "value": len(fresh) / (elapsed_seconds / 3600) if fresh and elapsed_seconds > 0
-            else None},
+            "episodes": timing["episodes"], "seconds": timing["seconds"], "workers": workers,
+            "value": timing["episodes"] / (timing["seconds"] / 3600)
+            if timing["episodes"] and timing["seconds"] > 0 else None},
         "arm_b_rendering_smoke_test": {
             **smoke_checks, "passed": smoke_checks["expressed"] and in_prompt
             and smoke_checks["first_reply_parsed"]},
@@ -233,6 +240,8 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
         "prompt_tokens_per_call_max": {
             "value": max(all_prompts) if all_prompts else None,
             "context_window": CONTEXT_WINDOW,
+            # a ReAct call fits if its prompt plus its 512-token request budget do (D4)
+            "prompt_limit": CONTEXT_WINDOW - MAX_TOKENS_PER_REQUEST,
             "context_overflows": sum(r.exhausted_budget == "context_window"
                                      for r in [*runs, *repeats, smoke, *t07])},
         "loop_steps_per_episode": {**_summary([r.loop_steps for r in runs]),
@@ -289,8 +298,9 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
                 break  # no pair is possible
     return {"status": "M (model estimate under the stated assumptions; not a measurement)",
             "assumptions": [
-                "calls per episode and throughput as measured by the pilot at temperature 0; "
-                "the lifetime runs at 0.7, which the pilot does not measure",
+                "calls per episode and throughput are those of the pilot's temperature-0 run "
+                "pass; the temperature-0.7 attempts inform the pair yield, T_reg's eligibility "
+                "and the prompt sizes, not these two means, though the lifetime runs at 0.7",
                 "the throughput at the pilot's worker count holds for the whole run",
                 "teacher calls at their maximum: two per T_mine task and seed"],
             "fixed_episodes": {"lifetime": lifetime, "final_evaluation": final},
@@ -310,16 +320,34 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
 
 def run_pilot(executor: EpisodeExecutor, pilot_manifest: Mapping, g0_config: RuntimeConfig, *,
               clock: Callable[[], float] = time.monotonic,
-              count_prompt_tokens: Callable[[str], int] | None = None) -> dict:
+              count_prompt_tokens: Callable[[str], int] | None = None,
+              timing_path: Path | None = None) -> dict:
     """Run (or resume) the pilot and measure it. ``count_prompt_tokens``
     counts a one-system-message prompt as the server would (the CLI passes
-    the model tokenizer's); without it the miner prompts are not counted."""
+    the model tokenizer's); without it the miner prompts are not counted.
+    ``timing_path`` keeps the run pass's timing across sessions (it lives in
+    the pilot directory, so the mirror keeps it): a pilot resumed after its
+    run pass still reports the throughput that pass was played at."""
     specs = pilot_specs(pilot_manifest, g0_config)
     started = clock()
     runs = executor.run_many(specs["run"])
     elapsed = clock() - started
+    timing = None
+    if timing_path is not None:
+        timing_path = Path(timing_path)
+        sessions = json.loads(timing_path.read_text(encoding="utf-8"))["sessions"] \
+            if timing_path.exists() else []
+        fresh = sum(not r.resumed for r in runs)
+        if fresh:  # this session played part of the run pass
+            sessions.append({"episodes": fresh, "seconds": elapsed,
+                             "workers": executor.workers})
+            tmp = timing_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"sessions": sessions}, indent=2), encoding="utf-8")
+            tmp.replace(timing_path)
+        timing = {"episodes": sum(s["episodes"] for s in sessions),
+                  "seconds": sum(s["seconds"] for s in sessions), "sessions": sessions}
     repeats = executor.run_many(specs["repeat"])
     smoke = executor.run_many(specs["smoke"])[0]
     t07 = executor.run_many(specs["t07"])
     return measure(runs, repeats, smoke, t07, elapsed_seconds=elapsed, workers=executor.workers,
-                   count_prompt_tokens=count_prompt_tokens)
+                   count_prompt_tokens=count_prompt_tokens, timing=timing)

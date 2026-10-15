@@ -486,7 +486,8 @@ def cmd_pilot(args) -> int:
         try:
             try:
                 measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry),
-                                     count_prompt_tokens=counter.count_system_prompt_tokens)
+                                     count_prompt_tokens=counter.count_system_prompt_tokens,
+                                     timing_path=out / "pilot-throughput.json")
             finally:
                 executor.close()
             report = _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu,

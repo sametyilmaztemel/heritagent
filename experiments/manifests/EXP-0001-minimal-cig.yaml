@@ -69,8 +69,8 @@ model:
   eval_temperature: 0.0
   eval_stop: ["\nObservation:"]    # ADR-0003 A2: ReAct generation stops before an observation line; every ReAct call, the lifetime's temperature-0.7 calls included (ADR-0009 D5)
   context_window: 32768              # ADR-0009 D4 (owner, 2026-10-15): Qwen2.5-7B-Instruct's native length; the server must report it
-  context_overflow: episode-ends-budget-exhausted-context-window-failure-never-truncated   # ADR-0009 D4
-  miner_context_overflow: full-evidence-then-without-admissible-commands-then-reject-never-truncated   # ADR-0009 D8 (owner, 2026-10-15); the cap check charges 2 teacher calls per pair
+  context_overflow: episode-ends-budget-exhausted-context-window-failure-never-truncated   # ADR-0009 D4: a call fits if its prompt tokens plus its max_tokens are at most the window
+  miner_context_overflow: full-evidence-then-without-admissible-commands-then-reject-never-truncated   # ADR-0009 D8 (owner, 2026-10-15); the cap check reserves 2 teacher calls per pair, the run records the forms sent
   mining_temperature: 0.7
   determinism_policy:                # critic round 2, R1
     executions_per_task_condition: 1 # exactly one run per (task instance, condition) in all gate stages
@@ -124,7 +124,7 @@ environment:
 run_protocol:                         # ADR-0007 (E1-E8 owner decisions, 2026-10-14; before any EXP-0001 execution)
   split_plan: EXP-0001-split-plan.json  # SplitPlan seed 0, counts from the real ALFWorld inventory
   split_manifest: {file: EXP-0001-splits.json, sha256: 2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c}
-  calibration_pilot: {file: EXP-0001-pilot.json, sha256: b9ff5049b11f243e666ae3f13fa41d06b68247ece536667832b2c5a33f502b7d, games: 30, per_family: 5, seed: 0}
+  calibration_pilot: {file: EXP-0001-pilot.json, sha256: 4fc2b6fe1766dec7bad7795a2f0169fa354b67baab4a569c3d1fcb92700daa52, games: 30, per_family: 5, seed: 0}
   lifetime: {attempts_per_task: 3, temperature: 0.7, pairing: first-success-first-failure, attempt_seed: sha256-derived}
   t_reg: {eligible: solved-in-any-lifetime-episode, size: 40, seed: 0, baseline: earliest-success, shortfall: fail-closed}
   transfer_subset: ablation-pool

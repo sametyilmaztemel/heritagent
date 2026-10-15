@@ -1,7 +1,7 @@
 {
   "execution": {
     "arm_b_rendering_smoke_test": "one fixed synthetic skill block rendered into G0's prompt; checks the ReAct format survives, measures nothing else",
-    "context_window": "32768 tokens; a prompt that does not fit ends the episode as budget_exhausted (context_window), a failure (ADR-0009 D4)",
+    "context_window": "32768 tokens; a call fits if its prompt tokens plus its max_tokens (512 for every ReAct call) are at most 32768; a call that does not fit ends the episode as budget_exhausted (context_window), a failure (ADR-0009 D4)",
     "determinism_repeat": "the first game of each family (game_id order) a second time; trajectories must be identical",
     "genome": "G0 (planner_react_v2, 50 steps; ADR-0003 D4)",
     "miner_prompt": "for every game with a temperature-0.7 success and failure, the first of each (E1's pair), the miner's teacher prompt in the full evidence form and without the admissible-command lists, counted with the model's tokenizer and chat template; it fits if its tokens plus the miner's 2048 output tokens are at most 32768 (ADR-0009 D8); no teacher call is made",
@@ -182,7 +182,7 @@
     "loop_steps_per_episode",
     "miner_prompt_tokens_t07_pairs"
   ],
-  "pilot_sha256": "b9ff5049b11f243e666ae3f13fa41d06b68247ece536667832b2c5a33f502b7d",
+  "pilot_sha256": "4fc2b6fe1766dec7bad7795a2f0169fa354b67baab4a569c3d1fcb92700daa52",
   "schema": "heritagent/alfworld-pilot-manifest/0.1",
   "selection": {
     "drawn_from": "train games in no EXP-0001 pool",

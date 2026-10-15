@@ -1,6 +1,6 @@
 # ADR-0009 — EXP-0001 pre-run amendments after the Critic cross-review
 
-Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explicit answers in chat, each on the recommended option: D1 "Eşleştirilmiş karşılaştırma", D2 "Bir kez oynat, paylaştır", D3 "Evet, ekle", D4–D7 "Önerildiği gibi uygula"; D8 "Sıkıştır, sığmazsa reddet", the same day, after the second review round of PR #69). Made before any pilot or EXP-0001 episode; the manifest's immutability clause has not started. Origin: builder-2's Critic cross-review of ADR-0003 to ADR-0007, the artifact-binding draft and the #13 Phase A clearance (workflow `wf_ba6185ce-d72` on `main` @ `67b3af7`; result posted on #13). Artifacts: D3, D4, D6 and D8 in this PR (`evaluation/exp0001/pilot.py`, `pilot_run.py`, `protocol.py`, `serving.py`, `cli.py`, `backends.py`, `pipeline.py`, `runtime/loop.py`, `runtime/model_adapters/`, `runtime/tool_adapters/alfworld.py`, `traits/miner/` and `traits/schemas/mining-record-0.1.schema.json`, `experiments/manifests/EXP-0001-pilot.json`, the manifest's `model` and `run_protocol` lines); D1, D2, D5's remaining notes and D7 land before the run.
+Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explicit answers in chat, each on the recommended option: D1 "Eşleştirilmiş karşılaştırma", D2 "Bir kez oynat, paylaştır", D3 "Evet, ekle", D4–D7 "Önerildiği gibi uygula"; D8 "Sıkıştır, sığmazsa reddet", the same day, after the second review round of PR #69). Made before any pilot or EXP-0001 episode; the manifest's immutability clause has not started. Origin: builder-2's Critic cross-review of ADR-0003 to ADR-0007, the artifact-binding draft and the #13 Phase A clearance (workflow `wf_ba6185ce-d72` on `main` @ `67b3af7`; result posted on #13). Artifacts: D3, D4, D6 and D8 in this PR (`evaluation/exp0001/pilot.py`, `pilot_run.py`, `protocol.py`, `serving.py`, `cli.py`, `backends.py`, `pipeline.py`, `episodes.py`, `ledger.py`, `notebooks/EXP-0001-pilot.ipynb`, `runtime/loop.py`, `runtime/model_adapters/`, `runtime/tool_adapters/alfworld.py`, `traits/miner/` and `traits/schemas/mining-record-0.1.schema.json`, `experiments/manifests/EXP-0001-pilot.json`, the manifest's `model` and `run_protocol` lines); D1, D2, D5's remaining notes and D7 land before the run.
 
 **Problem.**
 - **Stage 4A cannot be passed (blocker; two finders and two verifiers, reproduced on the real code).**
@@ -56,12 +56,12 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
   - From these it projects the lifetime's pairs per seed and a lower bound for T_reg's eligibility (status M).
   - It also reports the largest prompt per call against the window, and loop steps next to game steps.
   - For D8 it counts each temperature-0.7 pair's teacher prompt in both evidence forms with the model's tokenizer and chat template, and reports how many pairs fit in the full form, only without the lists, or in neither. No teacher call is made.
-  - The pilot manifest's selection is unchanged; its measures and execution plan change. The new `pilot_sha256` is `b9ff5049…2b7d`, pinned in `protocol.py` and the manifest's `run_protocol`.
+  - The pilot manifest's selection is unchanged; its measures and execution plan change. The new `pilot_sha256` is `4fc2b6fe…aa52`, pinned in `protocol.py` and the manifest's `run_protocol`.
   - The pilot still tunes nothing.
 - **D4 The context window is 32,768 tokens, and an overflow is a failure (owner, as recommended).**
   - The window is Qwen2.5-7B-Instruct's native length. It is recorded in the protocol, the run-start record and the manifest's model block.
   - The server is started with it, and the pilot and the run refuse a server that reports another.
-  - A model call whose prompt does not fit ends the episode with status `budget_exhausted` (budget `context_window`): a failure, identical in every arm. The prompt is never truncated and the call never retried.
+  - A model call fits when its prompt tokens plus its `max_tokens` are at most 32,768: that is the server's rule, so a ReAct call (512 tokens) fits with a prompt of up to 32,256 tokens. A call that does not fit ends the episode with status `budget_exhausted` (budget `context_window`): a failure, identical in every arm. The prompt is never truncated and the call never retried. The rejected call generated nothing and is not counted among the episode's model calls. [corrected after independent verification 2026-10-15: the request budget's share of the window, and the count, were not stated.]
 - **D5 Wording and scope notes (owner, as recommended).**
   - ADR-0003 D8's data tree is the two pinned ALFWorld 0.2.2 archives plus every game's content hash (ADR-0008 D6).
   - The task text appears both as the task and as observation 0 in every prompt. This is part of the frozen G0 prompt, the same in every arm, and is not changed after the pilot.
@@ -110,7 +110,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
 - **Pilot manifest.** It gets a new hash. Its 30 games are unchanged, and its measures list gains seven measures.
 - **`EpisodeResult`** gains `loop_steps` and `exhausted_budget`.
 - **The runtime loop** catches `ContextWindowExceeded`. Every other path is unchanged.
-- **The miner (D8)** catches `ContextWindowExceeded`. The mining record gains `evidence_form` and the rejection reason `context_overflow` (schema 0.1, both additive). The run charges two teacher calls per pair, and the pilot's projection counts two.
+- **The miner (D8)** catches `ContextWindowExceeded`. The mining record gains `evidence_form` and the rejection reason `context_overflow` (schema 0.1, both additive). The cap check reserves two teacher calls per pair; the run records the calls actually sent, one per evidence form tried, so a form the server rejected counts (D8). The pilot's projection counts two per pair.
 - **Protocol.** It gains `context_window` and `context_overflow`, and the run-start record changes with it.
 - **Stage 4A (D1)** changes the stage-4 child record (a baseline block and the paired drop) and `inheritance/regression.py`. It lands with D2 before the run.
-- **ADR-0003, ADR-0004, ADR-0005, ADR-0006 and ADR-0007** carry pointers to this ADR.
+- **ADR-0003, ADR-0004 and ADR-0008** carry pointers to this ADR now. ADR-0005, ADR-0006 and ADR-0007 get theirs with D1, D2 and D5's remaining notes, in the next PR. [corrected after independent verification 2026-10-15]
