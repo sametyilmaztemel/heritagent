@@ -71,6 +71,17 @@ def test_the_record_names_everything_a_result_must_carry(registry):  # noqa: F81
     assert record["final_statistics"]["t_reg"] == "one-set-shared-across-seeds"
     assert record["protocol"]["lifetime_attempts_per_task"] == 3
     assert record["protocol"]["caps"]["model_calls_max"] == 225_000
+    assert record["environment"] is None  # the CLI names it; see the next test
+
+
+def test_the_record_names_the_software_and_the_data_it_ran_on(registry):  # noqa: F811
+    environment = {"software": {"vllm": "0.29.0+cu129", "transformers": "5.19.0"},
+                   "data": {"alfworld_release": "0.2.2", "archives": {"a.zip": "e" * 64},
+                            "games_verified": 338}}
+    record = make_record(registry, environment=environment)
+    verify_run_start_record(record)
+    assert record["environment"] == environment
+    assert record["record_sha256"] != make_record(registry)["record_sha256"]
 
 
 @pytest.mark.parametrize("override,message", [
@@ -252,7 +263,7 @@ def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
     assert set(record) == {"schema", "experiment", "run_id", "started_at", "code", "model",
                            "teacher", "weights", "splits", "pilot", "miner", "g0", "candidate_set",
                            "gate", "final_statistics", "generation", "protocol",
-                           "required_at_run_time", "record_sha256"}
+                           "required_at_run_time", "environment", "record_sha256"}
     assert record["pilot"]["pilot_sha256"] == load("EXP-0001-pilot.json")["pilot_sha256"]
     assert len(record["miner"]["prompt_sha256"]) == 64 == len(record["miner"]["output_schema_sha256"])
     assert record["candidate_set"] == {"cap": 10, "ranking": ["miner-estimated-generality",

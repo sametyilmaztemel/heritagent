@@ -89,4 +89,5 @@ def verify_data(data_root: Path, split_manifest: Mapping, pilot_manifest: Mappin
                            f"from their frozen content hash under {root} (first: "
                            f"{(missing + mismatched)[0]}); fetch ALFWorld release "
                            f"{ALFWORLD_RELEASE} with `cli fetch-data`, not `alfworld-download`")
-    return {"games": len(index), "release": ALFWORLD_RELEASE, "data_root": str(root)}
+    return {"games": len(index), "release": ALFWORLD_RELEASE, "archives": dict(ARCHIVES),
+            "data_root": str(root)}

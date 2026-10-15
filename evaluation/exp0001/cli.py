@@ -33,6 +33,7 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -75,6 +76,7 @@ from evaluation.exp0001.serving import (
     prepare_model,
     server_command,
     server_environment,
+    software_stack,
     start_server,
     wait_until_ready,
 )
@@ -159,8 +161,15 @@ def _session_info(gpu: dict, adapter: VLLMServerAdapter, workers: int,
     metadata = adapter.metadata()
     settings = _json(server_info) if server_info and Path(server_info).exists() else None
     return {"accelerator": gpu, "server": metadata.capabilities.get("server"),
-            "vllm": metadata.backend_version, "server_settings": settings, "workers": workers,
-            "opened_at": _now()}
+            "vllm": metadata.backend_version, "software": software_stack(),
+            "server_settings": settings, "workers": workers, "opened_at": _now()}
+
+
+def _environment(verified: Mapping) -> dict:
+    """The software stack and the data the run or pilot uses (ADR-0008 D4, D6)."""
+    return {"software": software_stack(),
+            "data": {"alfworld_release": verified["release"], "archives": verified["archives"],
+                     "games_verified": verified["games"]}}
 
 
 # -- commands -----------------------------------------------------------------------
@@ -259,7 +268,7 @@ def cmd_pilot(args) -> int:
     if dirty:
         raise CliError(f"the checkout at {repo} has changes; the pilot report names a clean commit")
     splits, pilot = _manifests(repo)
-    verify_data(args.data_root, splits, pilot)  # seconds; before any episode
+    verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
     out = Path(args.out_dir)
     _restore_if_missing(out, args.mirror_dir)
     report_path = out / "pilot-report.json"
@@ -294,7 +303,7 @@ def cmd_pilot(args) -> int:
               "model": {"model_id": metadata.model_id, "revision": metadata.revision,
                         "backend": metadata.backend, "backend_version": metadata.backend_version,
                         "weights_sha256": prepared["weights"]["sha256"]},
-              "accelerator": gpu, "workers": args.workers,
+              "accelerator": gpu, "workers": args.workers, "environment": _environment(verified),
               "note": "a calibration measurement; it tunes nothing and is no EXP-0001 result",
               **measured, "projection": projection}
     freeze_json(report_path, report)
@@ -305,7 +314,7 @@ def cmd_pilot(args) -> int:
 
 
 def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
-               pilot: dict, commit: str, dirty: bool, tokenizer: str) -> dict:
+               pilot: dict, commit: str, dirty: bool, tokenizer: str, environment: dict) -> dict:
     path = local / "run-start.json"
     if path.exists():  # a resumed run: the same code, model and weights, or nothing
         record = _json(path)
@@ -316,6 +325,13 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
                            f"is {commit}{' (dirty)' if dirty else ''}. Check out that commit.")
         if record["weights"]["sha256"] != prepared["weights"]["sha256"]:
             raise CliError("the prepared weights differ from the ones the run started with")
+        started_with = (record.get("environment") or {}).get("software")
+        if started_with is not None and started_with != environment["software"]:
+            changed = {name: (started_with.get(name), version)
+                       for name, version in environment["software"].items()
+                       if started_with.get(name) != version}
+            raise CliError(f"the installed software differs from the run's (recorded, installed): "
+                           f"{changed}. Install the notebook's pinned versions (ADR-0008 D4).")
         return record
     if not args.run_id:
         raise CliError("a new run needs --run-id")
@@ -328,7 +344,7 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
         code_commit=commit, code_dirty=dirty, model={**model, "tokenizer": tokenizer},
         teacher=model, weights=prepared["weights"], split_manifest=splits,
         pilot_manifest=pilot, g0_genome=build_g0_seed_genome(TraitRegistry(local / "registry")),
-        run_id=args.run_id, started_at=_now())
+        run_id=args.run_id, started_at=_now(), environment=environment)
 
 
 def cmd_run(args) -> int:
@@ -339,13 +355,13 @@ def cmd_run(args) -> int:
     repo, local = Path(args.repo), Path(args.local_dir)
     commit, dirty = git_state(repo)
     splits, pilot = _manifests(repo)
-    verify_data(args.data_root, splits, pilot)  # seconds; before any episode
+    verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
     _restore_if_missing(local, args.mirror_dir)
     adapter = _adapter(args, prepared)
     counter = hf_token_counter(prepared["model_id"], prepared["revision"],
                                path=Path(prepared["path"]))
     record = _run_start(args, local, prepared, adapter, splits, pilot, commit, dirty,
-                        counter.identity)
+                        counter.identity, _environment(verified))
     mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
     started = time.monotonic()
     budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600

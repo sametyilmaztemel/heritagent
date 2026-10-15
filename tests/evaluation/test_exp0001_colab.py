@@ -413,25 +413,48 @@ def test_git_state_names_the_commit_and_any_change(tmp_path):
     assert cli.git_state(tmp_path) == (commit, True)
 
 
-def test_a_resumed_run_must_use_the_code_and_weights_it_started_with(tmp_path):
+def test_a_resumed_run_must_use_the_code_weights_and_software_it_started_with(tmp_path):
     local = tmp_path / "run"
     local.mkdir()
+    software = {"vllm": "0.29.0+cu129", "transformers": "5.19.0", "xgrammar": "0.2.8"}
     (local / "run-start.json").write_text(json.dumps(
-        {"code": {"commit": "a" * 40}, "weights": {"sha256": "b" * 64}}))
+        {"code": {"commit": "a" * 40}, "weights": {"sha256": "b" * 64},
+         "environment": {"software": software, "data": {}}}))
     args = type("Args", (), {"run_id": None})()
     prepared = {"weights": {"sha256": "b" * 64}}
+    env = {"software": dict(software), "data": {}}
     with pytest.raises(cli.CliError, match="Check out that commit"):
-        cli._run_start(args, local, prepared, None, None, None, "c" * 40, False, "tok")
+        cli._run_start(args, local, prepared, None, None, None, "c" * 40, False, "tok", env)
     with pytest.raises(cli.CliError, match="dirty"):
-        cli._run_start(args, local, prepared, None, None, None, "a" * 40, True, "tok")
+        cli._run_start(args, local, prepared, None, None, None, "a" * 40, True, "tok", env)
     with pytest.raises(cli.CliError, match="weights differ"):
         cli._run_start(args, local, {"weights": {"sha256": "d" * 64}}, None, None, None,
-                       "a" * 40, False, "tok")
+                       "a" * 40, False, "tok", env)
+    other = {"software": {**software, "transformers": "5.20.0"}, "data": {}}
+    with pytest.raises(cli.CliError, match=r"installed software differs.*'transformers': "
+                                           r"\('5.19.0', '5.20.0'\)"):
+        cli._run_start(args, local, prepared, None, None, None, "a" * 40, False, "tok", other)
     assert cli._run_start(args, local, prepared, None, None, None, "a" * 40, False,
-                          "tok")["code"]["commit"] == "a" * 40
+                          "tok", env)["code"]["commit"] == "a" * 40
     with pytest.raises(cli.CliError, match="needs --run-id"):
         cli._run_start(args, tmp_path / "fresh", prepared, None, None, None, "a" * 40, False,
-                       "tok")
+                       "tok", env)
+
+
+def test_the_software_stack_names_every_pinned_package():
+    from importlib.metadata import PackageNotFoundError
+
+    from evaluation.exp0001.serving import SOFTWARE_PACKAGES, software_stack
+
+    def version(name):
+        if name == "llguidance":
+            raise PackageNotFoundError(name)
+        return f"{name}-v"
+
+    stack = software_stack(version=version)
+    assert list(stack) == list(SOFTWARE_PACKAGES)
+    assert stack["llguidance"] is None and stack["vllm"] == "vllm-v"
+    assert software_stack()["vllm"] is None or isinstance(software_stack()["vllm"], str)
 
 
 def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, capsys):
@@ -535,6 +558,7 @@ def test_verify_data_hashes_every_manifest_and_pilot_game(tmp_path):
     root, manifest, pilot = data_tree(tmp_path)
     report = verify_data(root, manifest, pilot)
     assert report["games"] == 174 + 134 + 30 and report["release"] == "0.2.2"
+    assert set(report["archives"]) == {"json_2.1.1_json.zip", "json_2.1.1_tw-pddl.zip"}
     game = pilot["games"][0]["game_id"]
     (root / "train" / game / "game.tw-pddl").write_text('{"changed": true}')
     with pytest.raises(BackendError, match="1 differ"):

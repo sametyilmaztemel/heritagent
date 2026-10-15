@@ -4,7 +4,7 @@
 
 Model-independent research framework for **causally-gated assimilation of acquired skills into functional genomes** for evolvable LLM agents. Full specification: [SPEC.md](SPEC.md) (source document, v0.1).
 
-## Status (2026-10-13) — Milestone 0: gate pipeline implemented, EXP-0001 not yet run
+## Status (2026-10-15) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
 
 Phase 0 (SPEC §40, research grounding, 2026-10-02) is complete: related-work notes in `research/related-work/`, the novelty ledger, and the cross-reviewed ADR-0001 (EAG v0.1 schema) and ADR-0002 (EXP-0001 pre-registered design).
 
@@ -25,7 +25,7 @@ Not done yet:
 - single-lineage inheritance and the EXP-0001 run (#13);
 - filling the pre-registration fields (#6).
 
-There is no ALFWorld adapter and no experiment result yet, so nothing here supports a research claim (SPEC §34).
+The ALFWorld adapter (`runtime/tool_adapters/alfworld.py`) and the EXP-0001 orchestration (`evaluation/exp0001/`, run on Colab through `notebooks/`) exist. No pilot or EXP-0001 episode has run, so nothing here supports a research claim (SPEC §34).
 
 ## Repository rules (SPEC §31–34)
 
@@ -48,6 +48,9 @@ heritagent/
 ├── somatic/                     # persistent hash-chained somatic trait store
 ├── inheritance/                 # CIG: replay, ablation, generalization, regression, gate
 ├── evaluation/benchmarks/       # ALFWorld split-manifest builder (EXP-0001 splits)
+├── evaluation/exp0001/          # EXP-0001 run: ledger, lifetimes, gate, arms, pilot, CLI
+├── evaluation/metrics/          # EXP-0001 final statistics
+├── notebooks/                   # Colab notebooks: calibration pilot and EXP-0001 run
 ├── tests/                       # pytest suite
 ├── scripts/ci/                  # CI checks (schemas, manifests, links, wheel smoke test)
 └── research/

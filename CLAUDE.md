@@ -14,7 +14,7 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 - No experiment result is ever called validated (SPEC §32).
 - Claude never merges, reviews or pushes Zcode's PRs.
 
-**Critic duties (owner decision, 2026-10-14):** "codexi devreden çıkardım süreç sadece senin elinde yani codexin vereceği onayı da sen vereceksin". The owner removed Codex from the process. Claude now gives the approvals Codex gave: cross-reviews of ADRs and locked-element changes, phase clearances and handoffs. Each one runs as a review workflow on a model different from the author's, with every finding adversarially verified. Its result is posted on the item's issue. The owner's decision stays final; a clearance never turns a result into a validated one.
+**Critic duties (owner decision, 2026-10-14):** "codexi devreden çıkardım süreç sadece senin elinde yani codexin vereceği onayı da sen vereceksin". The owner removed Codex from the process. Claude now gives the approvals Codex gave: cross-reviews of ADRs and locked-element changes, phase clearances and handoffs. Each one runs as a review workflow on a model different from the author's; its findings are verified as the Subagents section says. Its result is posted on the item's issue. The owner's decision stays final; a clearance never turns a result into a validated one.
 
 ## Session start
 
@@ -25,7 +25,7 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 ## Builder protocol (issue #20 rules 1–6)
 
 - Work from issues and ADRs, never from chat. A research-relevant design change needs an ADR in SPEC §31 format first.
-- Commit to the designated `claude/*` branch and open one PR per work item. Before merging, run the own-review loop: a review workflow with at least two lenses on a model different from the author's, with each finding adversarially verified. Fix every confirmed finding and re-review the fix. Squash-merge only with CI green on the head. Then restart the branch from the new `main`. Never call a research result validated (SPEC §32).
+- Commit to the designated `claude/*` branch and open one PR per work item. Before merging, run the own-review loop: a review workflow with at least two lenses on a model different from the author's, its findings verified as the Subagents section says. Fix every confirmed finding and re-review the fix. Squash-merge only with CI green on the head. Then restart the branch from the new `main`. Never call a research result validated (SPEC §32).
 - Every builder report (PR or issue comment) gives what changed, the commit SHA, test results (CI-attested once CI exists), unresolved questions, and whether re-review is requested.
 - All agents post through one GitHub login, so every post starts with `**[Claude / builder-2]**`. Post only what coordination needs: the PR's builder report and a one-line #20 note when an item starts or merges. Post nothing on Zcode's PRs.
 
@@ -42,4 +42,4 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 - Haiku: mechanical extraction and test matrices. Sonnet: sweeps, triage, verification, reports. Opus: code audits, deep reads, ADR drafts. Fable: the hardest quantitative or judgement work.
 - A different model than the author re-checks every strong claim and reviews every diff adversarially before the push. Corrections are tagged `[corrected after independent verification YYYY-MM-DD]`.
 - Subagents are read-only, state their commit basis, and use the status keys V (verified by running or re-reading at a pinned commit), R (read from a source, not re-derived), M (model output under stated assumptions), S (subjective prior) and U (unverified). Only the main session commits.
-- Multi-agent Workflows need the owner's opt-in. For this workstream that is the autonomy decision plus the session's ultracode setting. Keep each run under about 10 agents (the session guideline): verify only the top-ranked findings and log the rest by title.
+- Multi-agent Workflows need the owner's opt-in. For this workstream that is the autonomy decision plus the session's ultracode setting. Keep each run under about 10 agents (the session guideline). Every finding of major severity or above, and every finding a verdict or merge rests on, is adversarially verified by a model different from the finder's. The rest are logged by title with status U; a plainly right fix for one of them is applied without verification.

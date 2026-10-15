@@ -114,14 +114,16 @@ def _model_block(model: Mapping, name: str, *, tokenizer: bool) -> dict:
 def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping,
                            teacher: Mapping, weights: Mapping, split_manifest: dict,
                            pilot_manifest: dict, g0_genome: dict, run_id: str,
-                           started_at: str,
+                           started_at: str, environment: Mapping | None = None,
                            expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
                            expected_pilot_sha256: str = LOCKED_PILOT_SHA256) -> dict:
     """Assemble the record. ``model`` is the agent adapter's metadata
     (model_id, revision, backend, backend_version) plus the identity of the
     token counter's tokenizer; ``teacher`` is the miner's adapter metadata;
-    ``weights`` is ``sha256_files`` output for the served weights. The split
-    and pilot manifests must verify and be the pre-registered ones."""
+    ``weights`` is ``sha256_files`` output for the served weights;
+    ``environment`` names the installed software stack and the verified data
+    (ADR-0008 D4, D6). The split and pilot manifests must verify and be the
+    pre-registered ones."""
     from genome.validation.identity import compute_genome_id
     from inheritance.ablation import BOOTSTRAP_CLUSTER_ORDER, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_SEED
     from inheritance.gate import PRIMARY_THRESHOLDS, THRESHOLD_VERSION
@@ -177,6 +179,7 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
                        "episode_max_steps": EPISODE_MAX_STEPS},
         "protocol": plain(PROTOCOL),
         "required_at_run_time": list(REQUIRED_AT_RUN_TIME),
+        "environment": None if environment is None else plain(environment),
     }
     record["record_sha256"] = canonical_sha256(record)
     return record

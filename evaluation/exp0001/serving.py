@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import time
+from importlib import metadata as importlib_metadata
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -29,6 +30,25 @@ PREPARED_SCHEMA = "heritagent/exp0001-prepared-model/0.1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # manifest model.name
 DEFAULT_PORT = 8000
 DEFAULT_MAX_MODEL_LEN = 32768  # Qwen2.5-7B-Instruct's native context; never truncates a prompt
+
+
+# the packages that serve, render, tokenize and constrain a request, and play
+# an episode: the notebooks pin each to one version (ADR-0008 D4)
+SOFTWARE_PACKAGES = ("vllm", "torch", "transformers", "tokenizers", "huggingface-hub", "xgrammar",
+                     "llguidance", "jinja2", "textworld", "alfworld")
+
+
+def software_stack(packages=SOFTWARE_PACKAGES,
+                   version: Callable[[str], str] = importlib_metadata.version) -> dict:
+    """The installed version of each package (None when it is not installed).
+    The server runs from the same environment as this process."""
+    stack = {}
+    for name in packages:
+        try:
+            stack[name] = version(name)
+        except importlib_metadata.PackageNotFoundError:
+            stack[name] = None
+    return stack
 
 
 def _is_commit(revision) -> bool:
