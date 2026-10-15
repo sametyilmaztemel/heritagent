@@ -279,6 +279,7 @@ class ReplayEvaluator:
             "stage": "replay",
             "measurements": {
                 "candidate_gene_id": self._candidate_gene_id,
+                **self._configs.binding(),  # ADR-0010
                 "allocation": allocation.allocation_metadata(),
                 "episodes": episodes,
                 "successes_with": successes_with,

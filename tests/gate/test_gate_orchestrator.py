@@ -66,7 +66,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
             rp = replay_pass_for[name]
         replay, ablation = coherent_stage11_children(
             gene_id, parent=parent, replay_pass=rp, ablation_pass=delta >= 0.05,
-            ablation_delta=delta)
+            ablation_delta=delta, envelope=envelope,
+            base_genome_id=g0_config(registry).genome_id)
         # generalization: with/without per scope
         for scope, w_ok in (("in", gen_in_with), ("out", gen_out_with)):
             for i in range(10):

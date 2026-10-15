@@ -10,9 +10,11 @@ undeclared/orphan evidence), child ids must carry the seed they claim, and
 An M0 gate bundle (``add_bundle``) is strictly one CIG run: exactly the
 five M0 stages, exactly one child per stage, exact ``<parent>/S<seed>-<stage>``
 child ids, one coherent seed across the bundle, and ``verdict = promote``
-iff every stage pass is true. ``verify()`` re-checks the same invariants
-for every M0-shaped aggregate (defense in depth against white-box
-corruption). ``SomaticStore`` enforces the candidate -> validated/rejected
+iff every stage pass is true. Each M0 bundle also names the artifact and
+the base genome it measured, and every child and pair evidence must agree
+with them (ADR-0010 B4). ``verify()`` re-checks the same invariants for
+every M0-shaped aggregate (defense in depth against white-box corruption),
+and links the two copies of each pair evidence across bundles. ``SomaticStore`` enforces the candidate -> validated/rejected
 lifecycle with immutable terminal decisions (SPEC section 9 fail path keeps
 rejected traits as somatic memory).
 """
@@ -24,7 +26,9 @@ import re
 
 from genome.validation.errors import GenomeValidationError, RecordConsistencyError
 from genome.validation.loader import load_cig
+from genome.validation.registry import parse_uri
 from somatic.store import SomaticStore as _PersistentSomaticStore
+from trajectory.storage.canonical import canonical_json, sha256_hex
 
 _SEED_IN_ID = re.compile(r"/S(\d+)")
 
@@ -139,17 +143,191 @@ class CigRecordStore:
                     f"{aggregate['cig_id']!r} stage {stage!r} pass {declared!r}")
         return None
 
+    # the child fields that name what a stage measured (ADR-0010 B1)
+    BINDING_KEYS = ("candidate_version", "candidate_artifact", "base_genome_id")
+
     @staticmethod
-    def _candidate_binding_issue(aggregate: dict, child: dict) -> str | None:
+    def _reference_issue(ref, where: str) -> str | None:
+        """A ``{gene_id, version, artifact}`` reference is coherent when its
+        version is a strict int and its registry URI parses and names that
+        gene id and version (ADR-0010 B4; the digest is not recomputed)."""
+        if not isinstance(ref, dict):
+            return f"{where} {ref!r} is not a {{gene_id, version, artifact}} reference"
+        gene_id, version, uri = ref.get("gene_id"), ref.get("version"), ref.get("artifact")
+        if type(version) is not int:
+            return f"{where} version {version!r} is not a strict int"
+        try:
+            parsed = parse_uri(uri) if isinstance(uri, str) else None
+        except GenomeValidationError:
+            parsed = None
+        if parsed is None:
+            return f"{where} artifact {uri!r} is not a registry URI"
+        if parsed["name"] != gene_id or int(parsed["version"]) != version:
+            return (f"{where} artifact {uri!r} does not name gene {gene_id!r} "
+                    f"version {version!r}")
+        return None
+
+    @staticmethod
+    def _references(aggregate: dict) -> tuple:
+        """The aggregate's ``artifacts.candidate`` and base genome id (either
+        may be missing or malformed; ``_m0_reference_issues`` says so)."""
+        artifacts = aggregate.get("artifacts")
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
+        base = artifacts.get("base_genome")
+        return (artifacts.get("candidate"),
+                base.get("genome_id") if isinstance(base, dict) else None)
+
+    @classmethod
+    def _m0_reference_issues(cls, aggregate: dict) -> list[str]:
+        """An M0 aggregate names a complete, coherent ``artifacts.candidate``
+        for its ``candidate_gene_id`` and, in ``artifacts.base_genome``, its
+        own ``genome_id`` (ADR-0010 B4)."""
+        where = f"aggregate {aggregate['cig_id']!r}"
+        candidate, genome_id = cls._references(aggregate)
+        issues = []
+        issue = cls._reference_issue(candidate, f"{where} artifacts.candidate")
+        if issue:
+            issues.append(issue)
+        elif candidate["gene_id"] != aggregate["candidate_gene_id"]:
+            issues.append(f"{where} artifacts.candidate gene_id {candidate['gene_id']!r} != "
+                          f"its candidate_gene_id {aggregate['candidate_gene_id']!r}")
+        if genome_id != aggregate["genome_id"]:
+            issues.append(f"{where} artifacts.base_genome.genome_id {genome_id!r} != its "
+                          f"genome_id {aggregate['genome_id']!r}")
+        return issues
+
+    @classmethod
+    def _candidate_binding_issues(cls, aggregate: dict, child: dict) -> list[str]:
         """The child must carry the aggregate's ``candidate_gene_id``
-        (borrowed evidence from another candidate is corruption)."""
+        (borrowed evidence from another candidate is corruption), and the
+        version, artifact and base genome the aggregate names, compared
+        with their types (ADR-0010 B4: a missing field is a mismatch)."""
         m = child.get("measurements") or {}
         if m.get("candidate_gene_id") != aggregate["candidate_gene_id"]:
-            return (f"child record {child['cig_id']!r} candidate_gene_id "
+            return [f"child record {child['cig_id']!r} candidate_gene_id "
                     f"{m.get('candidate_gene_id')!r} != aggregate "
                     f"{aggregate['cig_id']!r} candidate_gene_id "
-                    f"{aggregate['candidate_gene_id']!r}")
-        return None
+                    f"{aggregate['candidate_gene_id']!r}"]
+        candidate, genome_id = cls._references(aggregate)
+        candidate = candidate if isinstance(candidate, dict) else {}
+        expected = dict(zip(cls.BINDING_KEYS, (candidate.get("version"),
+                                                candidate.get("artifact"), genome_id)))
+        issues = []
+        for key, value in expected.items():
+            got = m.get(key)
+            if type(got) is not type(value) or got != value:
+                issues.append(f"child record {child['cig_id']!r} {key} {got!r} != aggregate "
+                              f"{aggregate['cig_id']!r} {value!r} (ADR-0010)")
+        issues.extend(cls._pair_evidence_issues(aggregate, child))
+        return issues
+
+    @staticmethod
+    def _pair_entries(child: dict):
+        """The pair evidence list of an interaction_regression child, or a
+        string naming why it is malformed (absent counts as none)."""
+        if child["stage"] != "interaction_regression":
+            return []
+        interaction = (child.get("measurements") or {}).get("interaction", {})
+        if not isinstance(interaction, dict):
+            return f"interaction {interaction!r} is not an object"
+        entries = interaction.get("pair_evidence", [])
+        if not isinstance(entries, list):
+            return f"pair_evidence {entries!r} is not a list"
+        return entries
+
+    @staticmethod
+    def _pair_genes(entry) -> list | None:
+        """The two distinct gene ids a pair evidence entry names, or None."""
+        canonical = entry.get("canonical_evidence") if isinstance(entry, dict) else None
+        gene_ids = canonical.get("gene_ids") if isinstance(canonical, dict) else None
+        if not isinstance(gene_ids, list) or len(gene_ids) != 2 or \
+                not all(isinstance(g, str) for g in gene_ids) or gene_ids[0] == gene_ids[1]:
+            return None
+        return gene_ids
+
+    @classmethod
+    def _pair_evidence_issues(cls, aggregate: dict, child: dict) -> list[str]:
+        """Each pair evidence of an interaction_regression child matches its
+        own digest, names the aggregate's candidate as one of its two genes
+        and the other as ``other_gene_id``, and carries one coherent
+        ``{gene_id, version, artifact}`` per gene in ``gene_ids`` order, the
+        candidate's equal to ``artifacts.candidate`` (ADR-0010 B2, B4)."""
+        where = f"child record {child['cig_id']!r}"
+        entries = cls._pair_entries(child)
+        if isinstance(entries, str):
+            return [f"{where} {entries}"]
+        candidate, _ = cls._references(aggregate)
+        gene = aggregate["candidate_gene_id"]
+        issues = []
+        for index, entry in enumerate(entries):
+            at = f"{where} pair evidence {index}"
+            canonical = entry.get("canonical_evidence") if isinstance(entry, dict) else None
+            if not isinstance(canonical, dict):
+                issues.append(f"{at} carries no canonical_evidence object")
+                continue
+            try:
+                digest = sha256_hex(canonical_json(canonical).encode("utf-8"))
+            except (TypeError, ValueError) as exc:
+                issues.append(f"{at} canonical_evidence is not canonical JSON ({exc})")
+                continue
+            if entry.get("evidence_sha256") != digest:
+                issues.append(f"{at} evidence_sha256 {entry.get('evidence_sha256')!r} != the "
+                              f"digest of its canonical_evidence {digest!r}")
+            gene_ids = cls._pair_genes(entry)
+            if gene_ids is None or gene not in gene_ids:
+                issues.append(f"{at} gene_ids {canonical.get('gene_ids')!r} are not two "
+                              f"distinct genes including {gene!r}")
+                continue
+            partner = gene_ids[1] if gene_ids[0] == gene else gene_ids[0]
+            if entry.get("other_gene_id") != partner:
+                issues.append(f"{at} other_gene_id {entry.get('other_gene_id')!r} != the "
+                              f"partner {partner!r} its gene_ids name")
+            artifacts = canonical.get("artifacts")
+            if not isinstance(artifacts, list) or len(artifacts) != len(gene_ids):
+                issues.append(f"{at} artifacts {artifacts!r} are not one reference per gene")
+                continue
+            for gene_id, ref in zip(gene_ids, artifacts):
+                issue = cls._reference_issue(ref, f"{at} artifact for {gene_id!r}")
+                if issue:
+                    issues.append(issue)
+                elif ref["gene_id"] != gene_id:
+                    issues.append(f"{at} artifacts name {ref['gene_id']!r} where gene_ids "
+                                  f"order names {gene_id!r}")
+                elif gene_id == gene and ref != candidate:
+                    issues.append(f"{at} entry for the candidate {ref!r} != aggregate "
+                                  f"{aggregate['cig_id']!r} artifacts.candidate {candidate!r}")
+        return issues
+
+    def _partner_link_issues(self) -> list[str]:
+        """Both copies of a pair evidence exist: every well-formed pair
+        evidence in an M0 interaction_regression child of candidate g that
+        names partner p is carried, with the same ``evidence_sha256``, by an
+        interaction_regression child of an M0 aggregate for p (ADR-0010 B4;
+        malformed entries are flagged per child)."""
+        carried: dict[str, set] = {}
+        named: list[tuple[str, str, str, object]] = []
+        for cig_id, aggregate in self._aggregates.items():
+            if set(aggregate["stages"]) != set(self.M0_STAGE_KEYS):
+                continue
+            gene = aggregate["candidate_gene_id"]
+            for ref in aggregate["child_records"]:
+                child = self._children.get(ref)
+                if child is None or child["parent_cig_id"] != cig_id:
+                    continue
+                entries = self._pair_entries(child)
+                for entry in entries if isinstance(entries, list) else []:
+                    gene_ids = self._pair_genes(entry)
+                    if gene_ids is None or gene not in gene_ids:
+                        continue
+                    digest = entry.get("evidence_sha256")
+                    carried.setdefault(gene, set()).add(digest)
+                    partner = gene_ids[1] if gene_ids[0] == gene else gene_ids[0]
+                    named.append((ref, gene, partner, digest))
+        return [f"pair evidence {digest!r} in child record {ref!r} of {gene!r} names partner "
+                f"{partner!r}, but no M0 interaction_regression child of {partner!r} carries "
+                f"it (ADR-0010)"
+                for ref, gene, partner, digest in named
+                if digest not in carried.get(partner, set())]
 
     def add_bundle(self, aggregate: dict, children: list[dict]) -> None:
         """ALL-OR-NOTHING atomic bundle commit (issue #12 criterion 12):
@@ -164,7 +342,10 @@ class CigRecordStore:
         must share one coherent seed, child ``candidate_gene_id`` must equal
         the aggregate's, child ``stage_pass`` must agree with the aggregate
         stage pass, and the verdict must be promote iff every stage pass is
-        true."""
+        true. The aggregate must name the evaluated artifact and base genome,
+        and every child and pair evidence must agree with them (ADR-0010 B4);
+        the link between the two copies of a pair evidence spans bundles, so
+        only ``verify()`` checks it."""
         staged_agg = copy.deepcopy(aggregate)
         staged_children = copy.deepcopy(children)
         issues: list[str] = []
@@ -188,6 +369,7 @@ class CigRecordStore:
         verdict_issue = self._verdict_issue(staged_agg)
         if verdict_issue:
             issues.append(verdict_issue)
+        issues.extend(self._m0_reference_issues(staged_agg))
         if issues:
             raise RecordConsistencyError(sorted(issues))
         # per-child checks (staged; store untouched)
@@ -216,10 +398,7 @@ class CigRecordStore:
                 issues.append(f"child {child['cig_id']!r} stage {stage!r} not "
                                f"present in aggregate stages")
                 continue
-            m = child["measurements"]
-            binding_issue = self._candidate_binding_issue(staged_agg, child)
-            if binding_issue:
-                issues.append(binding_issue)
+            issues.extend(self._candidate_binding_issues(staged_agg, child))
             pass_issue = self._stage_pass_issue(staged_agg, child, require=True)
             if pass_issue:
                 issues.append(pass_issue)
@@ -247,7 +426,9 @@ class CigRecordStore:
         disagreeing with the aggregate stage pass, verdicts incoherent with
         the stage passes, and — for M0-shaped aggregates (exactly the five
         M0 stage keys) — duplicate/missing per-stage children, non-exact
-        ``<parent>/S<seed>-<stage>`` child ids, and incoherent bundle seeds.
+        ``<parent>/S<seed>-<stage>`` child ids, incoherent bundle seeds, and
+        the ADR-0010 references, child bindings, pair evidence and the
+        cross-bundle link between the two copies of each pair evidence.
         """
         issues = []
         for cig_id, aggregate in self._aggregates.items():
@@ -267,15 +448,14 @@ class CigRecordStore:
                 if pass_issue:
                     issues.append(pass_issue)
                 if m0_shape:
-                    binding_issue = self._candidate_binding_issue(aggregate,
-                                                                   child)
-                    if binding_issue:
-                        issues.append(binding_issue)
+                    issues.extend(self._candidate_binding_issues(aggregate, child))
             verdict_issue = self._verdict_issue(aggregate)
             if verdict_issue:
                 issues.append(verdict_issue)
             if m0_shape:
                 issues.extend(self._m0_shape_issues(cig_id, aggregate))
+                issues.extend(self._m0_reference_issues(aggregate))
+        issues.extend(self._partner_link_issues())
         declared = {ref for agg in self._aggregates.values() for ref in agg["child_records"]}
         for child_id, child in self._children.items():
             if child_id not in declared:

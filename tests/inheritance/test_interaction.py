@@ -51,7 +51,7 @@ def test_gene_ids_canonical_regardless_of_caller_order(world):
     # same canonical order -> identical evidence hash from either caller order
     assert ev1.evidence_sha256 == ev2.evidence_sha256
     # the both-arm inserts skills in canonical order
-    config_a, _, _ = world["evaluator"]._build_pair_configs(
+    config_a, _, _, _ = world["evaluator"]._build_pair_configs(
         world["env_z"], world["env_a"])
     tail = [s.gene_id for s in config_a.skills[-2:]]
     assert tail == ["a_pair", "z_pair"]
@@ -66,7 +66,7 @@ def test_target_regulation_preserved_in_both_arm(world):
         registry=world["registry"], base_config=world["base"],
         runner=world["runner"], budgets=world["evaluator"]._budgets,
         target_regulation_by_gene={"z_pair": cond})
-    both, neither, gene_ids = regulated._build_pair_configs(
+    both, neither, gene_ids, _ = regulated._build_pair_configs(
         world["env_a"], world["env_z"])
     assert gene_ids == ("a_pair", "z_pair")
     # z_pair keeps its frozen regulation in the both arm

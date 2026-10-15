@@ -194,6 +194,8 @@ Design goals:
 
 Written before thresholds are re-tuned (SPEC §33 pre-registration applies at the trait level too).
 
+An M0 gate bundle (exactly the five stages, one child per stage) also names what it measured; see Amendment A2 below.
+
 ## 5. Example instance (v0)
 
 The `genome_id` is the canonical content hash of the heritable functional content
@@ -282,3 +284,22 @@ remain somatic through `candidate|rejected|validated`, and never carries a
 schema still rejects `acquired`; VTA/assimilation later creates the germline
 ref with `origin="assimilation"` + `cig_record`. Implemented in
 `genome/schema/eag-0.1.somatic.schema.json` (geneRef `allOf` rules).
+
+### Amendment A2 — M0 bundles name the artifact and the base genome (2026-10-15, ADR-0010)
+
+The CIG schema is unchanged: the fields below live in the free-form `artifacts` and `measurements` objects. `CigRecordStore` enforces them for every M0 bundle, at `add_bundle` and in `verify()`.
+
+- **Aggregate.** `artifacts.candidate` is `{gene_id, version, artifact}`:
+  - `gene_id` equals the aggregate's `candidate_gene_id`;
+  - `version` is a strict int;
+  - `artifact` is a registry URI whose name and version are those two values. The digest is not recomputed.
+
+  `artifacts.base_genome` is `{genome_id}`, equal to the aggregate's `genome_id`.
+- **Every child.** `measurements` carries `candidate_gene_id`, `candidate_version`, `candidate_artifact` and `base_genome_id`. Each equals the aggregate's reference, with its type; a missing field is a mismatch.
+- **Pair evidence.** Each entry of the interaction_regression child's `measurements.interaction.pair_evidence` must:
+  - match its own digest (`evidence_sha256` over the canonical JSON of `canonical_evidence`);
+  - name two distinct genes in `canonical_evidence.gene_ids`, one of them the candidate and the other its `other_gene_id`;
+  - carry `canonical_evidence.artifacts`: one coherent `{gene_id, version, artifact}` per gene, in `gene_ids` order, the candidate's equal to `artifacts.candidate`.
+- **Both copies.** The partner's bundle carries the same pair evidence, with the same `evidence_sha256`, in an interaction_regression child of an M0 aggregate for the partner. This spans two bundles, so `verify()` checks it. The gate runs it on its staged store after adding every bundle of the batch.
+
+These checks prove the records consistent with each other and with the artifact URI. They do not authenticate them: a forged, self-consistent set of bundles passes. The target regulation is not bound (ADR-0010 B5).

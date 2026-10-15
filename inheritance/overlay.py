@@ -49,6 +49,18 @@ class EvaluationConfigs:
     with_trait: RuntimeConfig
     without_trait: RuntimeConfig
     target_gene_id: str
+    # ADR-0010: the evaluated artifact and base genome, from the validated
+    # candidate and the base configuration
+    target_version: int | None = None
+    target_artifact: str | None = None
+    base_genome_id: str | None = None
+
+    def binding(self) -> dict:
+        """The fields every CIG child record carries beside its
+        ``candidate_gene_id`` (ADR-0010 B1)."""
+        return {"candidate_version": self.target_version,
+                "candidate_artifact": self.target_artifact,
+                "base_genome_id": self.base_genome_id}
 
 
 def _validate_candidate(envelope: dict, registry: TraitRegistry) -> dict:
@@ -124,7 +136,9 @@ def build_evaluation_configs(base_config: RuntimeConfig, envelope: dict,
             len(with_trait.skills) != len(base_config.skills) + 1:
         raise EvaluationSetupError("overlay corrupted the base configuration")
     return EvaluationConfigs(with_trait=with_trait, without_trait=without_trait,
-                              target_gene_id=gene_id)
+                              target_gene_id=gene_id, target_version=candidate["version"],
+                              target_artifact=candidate["artifact"],
+                              base_genome_id=base_config.genome_id)
 
 
 def evaluation_settings(max_tokens: int = 512, seed: int | None = None) -> GenerationSettings:

@@ -39,7 +39,8 @@ def mint_envelope(registry, name: str, family: str = "heat_and_place") -> dict:
 def coherent_stage11_children(gene_id: str, *, replay_pass: bool,
                                ablation_pass: bool, ablation_delta: float = 0.5,
                                parent: str = PARENT_CIG,
-                               seed: int = MINING_SEED) -> tuple:
+                               seed: int = MINING_SEED, envelope: dict | None = None,
+                               base_genome_id: str | None = None) -> tuple:
     """Coherent #11 replay/ablation result+child pairs (measurements agree
     with result.passed) under the candidate's OWN CIG run identity. The 20
     ablation deltas all equal ``ablation_delta``; the bound is the locked
@@ -51,11 +52,15 @@ def coherent_stage11_children(gene_id: str, *, replay_pass: bool,
     deltas = [ablation_delta] * 20
     bootstrap = paired_cluster_bootstrap(deltas, seed=0, n_resamples=10_000)
     assert stage_passes(bootstrap.point_estimate, bootstrap.lower_bound) is ablation_pass
+    candidate = (envelope or {}).get("candidate", {})
+    binding = {"candidate_version": candidate.get("version"),  # ADR-0010 B1
+               "candidate_artifact": candidate.get("artifact"),
+               "base_genome_id": base_genome_id}
     replay_child = {
         "cig_id": f"{parent}/S{seed}-replay",
         "parent_cig_id": parent, "seed": seed, "stage": "replay",
         "measurements": {
-            "candidate_gene_id": gene_id, "stage_pass": replay_pass,
+            "candidate_gene_id": gene_id, **binding, "stage_pass": replay_pass,
             "successes_with": 5 if replay_pass else 2,
             "delta_count": 5 if replay_pass else 1,
             "eval_generation_settings": {"temperature": 0.0, "max_tokens": 64,
@@ -66,7 +71,7 @@ def coherent_stage11_children(gene_id: str, *, replay_pass: bool,
         "cig_id": f"{parent}/S{seed}-ablation",
         "parent_cig_id": parent, "seed": seed, "stage": "ablation",
         "measurements": {
-            "candidate_gene_id": gene_id, "stage_pass": ablation_pass,
+            "candidate_gene_id": gene_id, **binding, "stage_pass": ablation_pass,
             "point_estimate_delta_success": bootstrap.point_estimate,
             "allocation": {"task_ids": list(reversed(task_ids))},  # any allocation order
             "paired_deltas": deltas,
