@@ -102,9 +102,11 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
     (tmp_path / "evaluation" / "__init__.py").write_text("")
     (stub / "__init__.py").write_text("")
     (stub / "cli.py").write_text(textwrap.dedent("""
-        import signal, sys, time
+        import os, signal, sys, time
         interrupts = []
         signal.signal(signal.SIGINT, lambda *_: interrupts.append(1))
+        print(f"group {os.getpgid(0)} pid {os.getpid()} "
+              f"stop-with-parent {os.environ.get('HERITAGENT_STOP_WITH_PARENT')}", flush=True)
         print("started", flush=True)
         while not interrupts:
             time.sleep(0.01)
@@ -122,6 +124,10 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
         timer.cancel()
     out = capsys.readouterr().out
     assert "started" in out and "stopped cleanly after 1 interrupt(s)" in out
+    group, pid = (int(x) for x in out.split("group ", 1)[1].split()[0:3:2])
+    # its own process group: a signal to the kernel's group never reaches it twice
+    assert group == pid != os.getpgrp()
+    assert f"stop-with-parent {os.getpid()}" in out and "Durduruluyor" in out
 
 
 def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False):
@@ -132,7 +138,8 @@ def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False):
     drive = types.ModuleType("google.colab.drive")
     runtime = types.ModuleType("google.colab.runtime")
 
-    def flush_and_unmount():
+    def flush_and_unmount(timeout_ms):
+        assert timeout_ms == 600_000  # a stuck Drive never holds the GPU for long
         calls.append("flush")
         if flush_fails:
             raise OSError("Drive is not mounted")
@@ -189,6 +196,15 @@ def test_the_error_handler_keeps_an_unmirrored_run_and_respects_auto_release(tmp
     assert calls == ["traceback"]  # neither flushed nor released: the run lives only here
     namespace["release"]()  # the final cell's path too
     assert calls == ["traceback"]
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_last_cell_releases_through_release(name):
+    """The session's end takes the same path as the error handler: an
+    unmirrored run keeps the runtime, and Drive is flushed first."""
+    last = code_cells(name)[-1]
+    assert [line.strip() for line in last.splitlines() if not line.startswith("#")] == \
+        ["if AUTO_RELEASE:", "release()"]
 
 
 def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():

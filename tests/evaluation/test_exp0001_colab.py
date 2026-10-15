@@ -650,6 +650,13 @@ def test_a_failed_last_snapshot_leaves_a_marker_and_exit_code_3(tmp_path, capsys
     blobs.unlink()  # Drive is back
     assert cli.main(["snapshot", "--run-dir", str(local), "--mirror-dir", str(mirror_dir)]) == 0
     assert not (local / cli.UNMIRRORED).exists() and latest_snapshot(mirror_dir) is not None
+    # the marker describes one machine: never mirrored, and dropped from a restore
+    (local / cli.UNMIRRORED).write_text("{}")
+    assert RunMirror(local, mirror_dir).snapshot() is not None
+    assert cli.UNMIRRORED not in latest_snapshot(mirror_dir)["files"]
+    fresh = tmp_path / "fresh"
+    cli._restore_if_missing(fresh, mirror_dir)
+    assert (fresh / "ledger.jsonl").exists() and not (fresh / cli.UNMIRRORED).exists()
     assert cli._final_snapshot(None, local) is True  # no mirror, nothing to keep
     with pytest.raises(cli.CliError, match="no run or pilot ledger"):
         cli.cmd_snapshot(type("Args", (), {"run_dir": tmp_path / "empty",
@@ -665,7 +672,7 @@ def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, mon
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b'{"data": []}')
+            self.wfile.write(b'{"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]}')
 
         def log_message(self, *args):
             pass
@@ -683,18 +690,18 @@ def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, mon
         monkeypatch.setattr(cli, "start_server", lambda *a, **k: started.append(a))
         info = tmp_path / "server.json"
         argv = ["serve", "--prepared", str(prepared), "--port", str(port), "--log",
-                str(tmp_path / "log"), "--info", str(info)]
+                str(tmp_path / "log"), "--info", str(info), "--timeout", "5"]
         args = cli.parser().parse_args(argv)
         command = cli.server_command(json.loads(prepared.read_text()), port=port,
                                      max_model_len=args.max_model_len,
                                      gpu_memory_utilization=args.gpu_memory_utilization)
-        with pytest.raises(cli.CliError, match="already answers"):
+        with pytest.raises(cli.CliError, match="already answers.*pgrep -f 'vllm serve'"):
             args.func(args)  # no record of who started it
         info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
                                     "port": port, "pid": os.getpid()}))
         assert args.func(args) == 0 and "reusing it" in capsys.readouterr().out
         other = cli.parser().parse_args(argv + ["--no-batch-invariant"])
-        with pytest.raises(cli.CliError, match="already answers"):
+        with pytest.raises(cli.CliError, match=f"already answers.*pid {os.getpid()}"):
             other.func(other)  # other settings
         info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
                                     "port": port, "pid": 2 ** 22 + 12345}))
@@ -703,5 +710,70 @@ def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, mon
         assert started == []
     finally:
         server.shutdown()
+        server.server_close()
     assert serving.port_answers(port) is False
+    # an interrupted serve: its info file names a live server that does not answer yet
+    waited = []
+    monkeypatch.setattr(cli, "wait_until_ready", lambda url, model, process, **k:
+                        waited.append(process.poll()))
+    info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
+                                "port": port, "pid": os.getpid()}))
+    assert args.func(args) == 0 and waited == [None] and started == []
+    # a new server: its info is written before the wait
+    seen = []
+    monkeypatch.setattr(cli, "start_server",
+                        lambda *a, **k: type("P", (), {"pid": 2 ** 22 + 7, "poll": lambda s: None})())
+    monkeypatch.setattr(cli, "wait_until_ready", lambda *a, **k: seen.append(
+        json.loads(info.read_text())["pid"]))
+    info.unlink()
+    assert args.func(args) == 0 and seen == [2 ** 22 + 7]
     assert serving.process_alive(os.getpid()) and not serving.process_alive(None)
+
+
+def test_a_stop_or_a_run_error_ends_without_a_traceback(monkeypatch, capsys):
+    from evaluation.exp0001.pipeline import RunError
+
+    def stopped(args):
+        raise KeyboardInterrupt
+
+    def locked(args):
+        raise RunError("/content/exp0001-run is in use by another run")
+
+    for func, code, text in ((stopped, 130, "run the same command again"),
+                             (locked, 2, "a previous `run` may still be running")):
+        monkeypatch.setattr(cli, "cmd_gpu_check", func)
+        assert cli.main(["gpu-check"]) == code
+        assert text in capsys.readouterr().err
+
+    def other(args):
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(cli, "cmd_gpu_check", other)
+    with pytest.raises(RuntimeError, match="a bug"):
+        cli.main(["gpu-check"])
+
+
+def test_a_command_stops_cleanly_when_its_parent_dies(tmp_path):
+    """The kernel restarts or dies: the command gets one SIGINT, as at the stop
+    button, instead of running on as an orphan that holds the run directory."""
+    import sys
+    import time as _time
+    out = tmp_path / "child.out"
+    child = (
+        "import os, sys, time\n"
+        "from evaluation.exp0001 import cli\n"
+        "try:\n"
+        "    cli._stop_with_parent(int(os.environ['PARENT']), poll_seconds=0.05)\n"
+        "    time.sleep(30)\n"
+        "except KeyboardInterrupt:\n"
+        "    print('stopped with the parent', flush=True)\n")
+    parent = (
+        "import os, subprocess, sys\n"
+        f"subprocess.Popen([sys.executable, '-c', {child!r}], stdout=open({str(out)!r}, 'w'), "
+        "start_new_session=True, env={**os.environ, 'PARENT': str(os.getpid())})\n")
+    # the parent exits at once, perhaps before the child starts watching
+    subprocess.run([sys.executable, "-c", parent], check=True, cwd=Path(cli.__file__).parents[2])
+    deadline = _time.monotonic() + 20
+    while _time.monotonic() < deadline and "stopped" not in (out.read_text() if out.exists() else ""):
+        _time.sleep(0.1)
+    assert out.read_text().strip() == "stopped with the parent"

@@ -224,25 +224,44 @@ def cmd_serve(args) -> int:
     command = server_command(prepared, port=args.port, max_model_len=args.max_model_len,
                              gpu_memory_utilization=args.gpu_memory_utilization)
     environment = server_environment(batch_invariant=not args.no_batch_invariant)
-    if port_answers(args.port):  # a server from an earlier attempt still runs
-        earlier = _json(args.info) if Path(args.info).exists() else {}
-        if (earlier.get("command"), earlier.get("environment"), earlier.get("port")) == \
-                (command, environment, args.port) and process_alive(earlier.get("pid")):
-            print(f"the model server (pid {earlier['pid']}) from an earlier attempt already "
-                  f"serves {prepared['model_id']} with these settings on port {args.port}; "
-                  f"reusing it")
-            return 0
+    url = f"http://127.0.0.1:{args.port}"
+    earlier = _json(args.info) if Path(args.info).exists() else {}
+    if (earlier.get("command"), earlier.get("environment"), earlier.get("port")) == \
+            (command, environment, args.port) and process_alive(earlier.get("pid")):
+        # this command's own server from an earlier attempt (an interrupted serve, say):
+        # wait for it if it is still loading, then reuse it
+        wait_until_ready(url, prepared["model_id"], process=_Pid(earlier["pid"]),
+                         log_path=args.log, timeout_seconds=args.timeout)
+        print(f"the model server (pid {earlier['pid']}) from an earlier attempt serves "
+              f"{prepared['model_id']} with these settings on port {args.port}; reusing it")
+        return 0
+    if port_answers(args.port):
+        who = f"pid {earlier['pid']}" if earlier.get("pid") else "find it with: pgrep -f 'vllm serve'"
         raise CliError(f"a server already answers on port {args.port}, and it is not one this "
-                       f"command started with these settings ({args.info}). Stop it (kill "
-                       f"{earlier.get('pid', 'its pid')}) or restart the runtime.")
+                       f"command started with these settings ({who}). Kill it, or use Runtime > "
+                       f"Disconnect and delete runtime; restarting the kernel does not stop it.")
     process = start_server(command, args.log, environment=environment)
-    wait_until_ready(f"http://127.0.0.1:{args.port}", prepared["model_id"], process=process,
-                     log_path=args.log, timeout_seconds=args.timeout)
+    # written before the wait, so a serve interrupted while the model loads finds it
     _write_json(args.info, {"command": command, "environment": environment, "pid": process.pid,
                             "port": args.port, "started_at": _now()})
+    wait_until_ready(url, prepared["model_id"], process=process, log_path=args.log,
+                     timeout_seconds=args.timeout)
     print(f"the model server (pid {process.pid}) serves {prepared['model_id']} on port "
           f"{args.port}; log {args.log}, settings {args.info}")
     return 0
+
+
+class _Pid:
+    """A running process known only by its pid, for ``wait_until_ready``."""
+
+    def __init__(self, pid: int):
+        self.pid, self.returncode = pid, None
+
+    def poll(self):
+        if process_alive(self.pid):
+            return None
+        self.returncode = "unknown (not a child of this process)"
+        return self.returncode
 
 
 def cmd_preflight(args) -> int:
@@ -295,6 +314,7 @@ def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
     if latest_snapshot(mirror_dir) is None:
         return  # a fresh run
     doc = restore(mirror_dir, local)
+    (local / UNMIRRORED).unlink(missing_ok=True)  # describes another machine, never mirrored
     print(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
 
 
@@ -569,12 +589,49 @@ def parser() -> argparse.ArgumentParser:
     return top
 
 
+STOP_WITH_PARENT = "HERITAGENT_STOP_WITH_PARENT"  # the starting process's pid (notebook helper)
+
+
+def _stop_with_parent(parent: int, poll_seconds: float = 2.0) -> None:
+    """When ``parent``, the process that started this one, is no longer our
+    parent (the notebook's kernel restarted or died, even before this
+    process got here), stop as at the stop button: one SIGINT to ourselves,
+    so the episodes in flight are recorded and a last snapshot is taken."""
+    import os
+    import signal
+    import threading
+
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(poll_seconds)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=watch, name="stop-with-parent", daemon=True).start()
+
+
 def main(argv: list[str] | None = None) -> int:
+    import os
     args = parser().parse_args(argv)
+    parent = os.environ.get(STOP_WITH_PARENT, "")
     try:
+        if parent.isdigit():  # its SIGINT may come at once: inside the try
+            _stop_with_parent(int(parent))
         return args.func(args)
     except (CliError, BackendError, ProvenanceError, LedgerError, MirrorError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("stopped: every recorded episode is kept; run the same command again to resume",
+              file=sys.stderr)
+        return 130
+    except RuntimeError as exc:
+        from evaluation.exp0001.pipeline import RunError  # a run raised it: already loaded
+        if not isinstance(exc, RunError):
+            raise
+        print(f"error: {exc}", file=sys.stderr)
+        if "in use by another run" in str(exc):
+            print("a previous `run` may still be running in this machine; wait for it to stop, "
+                  "or end its process group", file=sys.stderr)
         return 2
 
 

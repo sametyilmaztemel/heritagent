@@ -34,7 +34,7 @@ from pathlib import Path, PurePosixPath
 from evaluation.exp0001.ledger import TERMINAL, append_note
 
 MIRROR_SCHEMA = "heritagent/exp0001-mirror/0.1"
-SKIPPED_NAMES = (".lock",)
+SKIPPED_NAMES = (".lock", "UNMIRRORED.json")  # the marker describes this machine only
 KEEP_SNAPSHOTS = 2
 GC_EVERY = 20  # snapshots between blob collections (listing blobs is the slow part)
 OWNER_FILE = "owner.json"
