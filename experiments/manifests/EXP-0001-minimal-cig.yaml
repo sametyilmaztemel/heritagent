@@ -153,9 +153,9 @@ inheritance:
                       bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}}   # ADR-0005, pre-registered
     generalization:
       in_scope:      {tasks: 10, source: families-matching-frozen-applicability, runs_per_condition: 1, pass: "delta>=0"}
-      out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05"}
+      out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05", all_family_applicability: vacuous-pass}   # ADR-0007 E6; ADR-0009 D5
       scope_declaration: {declared_by: trait-miner-at-extraction, frozen_before: gate-stage-1, recorded_in: cig-record}
-    regression:      {tasks: 40, runs_per_condition: 1, pass: "drop<=0.03 (tau_r)"}
+    regression:      {tasks: 40, runs_per_condition: 1, pass: "paired drop (success_without - success_with)/40 <= 0.03 (tau_r)", g0_run: shared-per-seed-at-gate-settings}   # ADR-0009 D1 (owner, 2026-10-15)
     interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, runs_per_condition: 1, harmful_pair_threshold: -0.05}
   sampling_reuse:                     # critic round 2, R2
     within_trait_evaluation_set: no-replacement

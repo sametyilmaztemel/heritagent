@@ -73,10 +73,13 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
                 tid = f"{scope}-{name}-{i}"
                 runner.set(tid, "with_trait", w_ok, (gene_id,))
                 runner.set(tid, "without_trait", True, ())
-        # regression: first treg_success_count succeed
+        # regression: first treg_success_count succeed; G0 without the trait
+        # solves every T_reg task in the paired run (ADR-0009 D1), so the
+        # paired drop is the old absolute one
         for i in range(40):
             runner.set(f"treg-{name}-{i}", "with_trait",
                         i < treg_success_count, (gene_id,))
+            runner.set(f"treg-{name}-{i}", "without_trait", True, ())
         # interaction: both/neither outcomes shared per pair; explicit
         # dict form allows without-arm contamination simulation
         interaction = interaction or {"both": (True, (gene_id,)),

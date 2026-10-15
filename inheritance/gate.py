@@ -12,8 +12,10 @@ Orchestration order (handoff §14) for a frozen candidate set:
    ``load_cig`` validation + exact ``<parent>/S<seed>-<stage>`` child ids
    + full coherence, failing closed before any stage-3/4 runner call;
 3. stage-3 generalization for ALL candidates;
-4. regression + overhead for ALL candidates (the token counter contract
-   is validated fail-closed before first use);
+4. one shared G0 run on T_reg at the gate's locked settings, then
+   regression (paired against it, ADR-0009 D1) + overhead for ALL
+   candidates (the token counter contract is validated fail-closed before
+   first use);
 5. preliminary eligible set;
 6. every unordered interaction pair in that set evaluated exactly once,
    gene ids in canonical order, candidate target regulations preserved;
@@ -75,11 +77,13 @@ from inheritance.overlay import (
     evaluation_settings,
 )
 from inheritance.regression import (
+    REGRESSION_THRESHOLD_TEXT,
     RegressionEvaluation,
     RegressionEvaluator,
     TokenCounter,
-    drop_within,
     measure_expression_overhead,
+    paired_drop_within,
+    run_regression_baseline,
     validate_token_counter,
 )
 from inheritance.replay import ReplayEvaluation
@@ -350,9 +354,20 @@ class CigGateOrchestrator:
                 target_regulation=self._target_regulation_by_gene.get(gid))
             gen_results[gid] = evaluator.evaluate(inp.generalization_allocation)
 
-        # step 4: regression + overhead for ALL candidates
+        # step 4: one shared G0 run on T_reg (ADR-0009 D1), then regression
+        # paired against it + overhead for ALL candidates
         reg_results: dict[str, RegressionEvaluation] = {}
         overhead_results: dict[str, dict] = {}
+        # one G0 run per distinct T_reg, before any candidate (EXP-0001 has
+        # one T_reg per gate run, ADR-0006 D8, so one run of 40 episodes)
+        baselines: dict[tuple, object] = {}
+        for inp in inputs:
+            t_reg_ids = tuple(t.task_id for t in inp.regression_allocation.tasks)
+            if t_reg_ids not in baselines:
+                baselines[t_reg_ids] = run_regression_baseline(
+                    base_config=self._base_config, runner=self._runner,
+                    budgets=self._budgets, mining_seed=self._mining_seed,
+                    allocation=inp.regression_allocation)
         for inp, (parent, seed) in zip(inputs, identities):
             gid = inp.candidate_envelope["candidate"]["gene_id"]
             reg_evaluator = RegressionEvaluator(
@@ -361,7 +376,9 @@ class CigGateOrchestrator:
                 budgets=self._budgets, parent_cig_id=parent,
                 mining_seed=seed,
                 target_regulation=self._target_regulation_by_gene.get(gid))
-            reg_results[gid] = reg_evaluator.evaluate(inp.regression_allocation)
+            reg_results[gid] = reg_evaluator.evaluate(
+                inp.regression_allocation,
+                baselines[tuple(t.task_id for t in inp.regression_allocation.tasks)])
             target = [s for s in self._configs_by_gene(inp).with_trait.skills
                        if s.gene_id == gid][0]
             oh = measure_expression_overhead(target, self._token_counter)
@@ -500,6 +517,7 @@ class CigGateOrchestrator:
             gen_out[gid] = run.gen_results[gid].out_scope_passed
             overhead_ok[gid] = run.overhead_results[gid]["passed"]
             reg_counts[gid] = (run.reg_results[gid].successes_with,
+                               run.reg_results[gid].successes_without,
                                run.reg_results[gid].task_count)
         grid = {"gene_id": gene_id, "tau_c_grid": list(SENSITIVITY_TAU_C_GRID),
                  "tau_r_grid": list(SENSITIVITY_TAU_R_GRID),
@@ -517,7 +535,7 @@ class CigGateOrchestrator:
                               and ablation_lb[gene_id] > 0)
                             for tau in SENSITIVITY_TAU_C_GRID}
         grid["regression"] = {f"tau_r={tau}":
-                               drop_within(*reg_counts[gene_id], tau)
+                               paired_drop_within(*reg_counts[gene_id], tau)
                                for tau in SENSITIVITY_TAU_R_GRID}
         grid["interaction_note"] = (
             "interaction pair evidence exists only for pairs collected in "
@@ -537,7 +555,7 @@ class CigGateOrchestrator:
                         and overhead_ok[gid]
                         and ablation_delta[gid] >= tau_c
                         and ablation_lb[gid] > 0
-                        and drop_within(*reg_counts[gid], tau_r)))
+                        and paired_drop_within(*reg_counts[gid], tau_r)))
                 # identifiability = REQUIRED pair evidence exists: every
                 # unordered pair WITHIN the hypothetical eligible set must
                 # have been collected in the primary run. A single (or
@@ -761,8 +779,11 @@ class CigGateOrchestrator:
                     "allocation": reg_eval.allocation,
                     "episodes": reg_eval.episodes,
                     "successes_with": reg_eval.successes_with,
+                    "successes_without": reg_eval.successes_without,
                     "task_count": reg_eval.task_count,
                     "regression_drop": reg_eval.regression_drop,
+                    "rule": REGRESSION_THRESHOLD_TEXT,
+                    "paired_g0_run": reg_eval.baseline,
                     "tau_r": 0.03,
                     "regression_pass": regression_pass,
                     # exact generation settings every T_reg episode ran with
@@ -821,8 +842,8 @@ class CigGateOrchestrator:
             "interaction_regression": {
                 "measurements_ref": "children",
                 "pass": stage4["measurements"]["stage_pass"],
-                "threshold": "regression <= 0.03, overhead <= 512 tokens, "
-                              "not eliminated"},
+                "threshold": "paired regression drop <= 0.03 (ADR-0009 D1), overhead <= "
+                              "512 tokens, not eliminated"},
         }
         child_ids = [inp.replay_evaluation.child_record["cig_id"],
                       inp.ablation_evaluation.child_record["cig_id"],
