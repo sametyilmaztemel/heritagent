@@ -26,7 +26,7 @@ from evaluation.exp0001.episodes import EpisodeExecutor
 from evaluation.exp0001.gate_runner import LedgerGateRunner
 from evaluation.exp0001.ledger import RunLedger
 from evaluation.exp0001.pilot import build_pilot_manifest
-from evaluation.exp0001.pipeline import Exp0001Run, RunError, cig_id
+from evaluation.exp0001.pipeline import Exp0001Run, RunError, _record_store_issues, cig_id
 from evaluation.exp0001.protocol import CAPS, MINING_SEEDS
 from evaluation.exp0001.provenance import (
     ProvenanceError,
@@ -879,6 +879,75 @@ def test_the_gate_prefetch_covers_interaction_pairs_and_matches_sequential(tmp_p
     assert len(pair_keys) == 3 * 20  # one eligible pair per seed, 10 tasks x both/neither
     gate = json.loads((tmp_path / "par" / "seed-11" / "gate.json").read_text())
     assert sorted(gate["verdicts"].values()) == ["promote", "promote", "reject"]
+
+
+MARK_A, MARK_B = " Mark alpha.", " Mark beta."
+PAIRED = PROPOSALS[:1] + [proposal("check alpha", GOOD + MARK_A, [F[3]], 0.6),
+                          proposal("check beta", GOOD + MARK_B, [F[4]], 0.5)] + PROPOSALS[1:]
+
+
+class PairAgent(Agent):
+    """As Agent, except on the interaction games at temperature 0: G0 wins
+    them, and the two marked skills together lose them. So the gate sees one
+    harmful pair and two that are not."""
+
+    def __init__(self, interaction_games):
+        super().__init__()
+        self.interaction_games = tuple(interaction_games)
+
+    def generate(self, messages, settings):
+        text = "\n".join(m.content for m in messages)
+        if settings.temperature == 0 and any(f"solve {game}." in text
+                                             for game in self.interaction_games):
+            self.calls += 1
+            self.settings.append(settings)
+            win = not (MARK_A in text and MARK_B in text)
+            return GenerationResult(text=react_action("act", {"command": "win"}) if win
+                                    else react_final("Giving up."), finish_reason="stop")
+        return super().generate(messages, settings)
+
+
+def test_a_harmful_and_a_harmless_pair_bind_their_artifacts_end_to_end(tmp_path, splits):
+    """ADR-0010 with real pair evidence (the Critic's merge condition): three
+    eligible candidates per seed give one harmful pair and two harmless ones;
+    every stored record verifies as a record store, a resume passes, and a
+    tampered copy of the harmful pair's evidence stops the resumed run."""
+    from evaluation.exp0001.allocations import interaction_allocation
+    games = [t.task_id for t in interaction_allocation(splits).tasks]
+    run_dir = tmp_path / "run"
+    report = make_run(run_dir, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run()
+    assert report["status"] == "complete"
+    for seed in MINING_SEEDS:
+        gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
+        assert sorted(gate["verdicts"].values()) == ["promote", "promote", "reject", "reject"]
+        eliminated = {g: by for g, by in gate["eliminated_by_interaction"].items() if by}
+        assert len(eliminated) == 1 and gate["verdicts"][next(iter(eliminated))] == "reject"
+        pairs = {}
+        for child in gate["children"].values():
+            if child["stage"] == "interaction_regression":
+                for pair in child["measurements"]["interaction"]["pair_evidence"]:
+                    pairs.setdefault(pair["evidence_sha256"], []).append(pair)
+                    gene_ids = pair["canonical_evidence"]["gene_ids"]
+                    assert [a["gene_id"] for a in pair["canonical_evidence"]["artifacts"]] \
+                        == gene_ids
+        assert len(pairs) == 3 and all(len(copies) == 2 for copies in pairs.values())
+        assert sorted(copies[0]["harmful"] for copies in pairs.values()) == [False, False, True]
+        assert _record_store_issues(gate["aggregates"], gate["children"]) == []
+    honest = reopened_copy((run_dir,), tmp_path / "honest")
+    assert make_run(honest, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run() \
+        == report
+
+    def harm_less(gate):
+        for child in gate["children"].values():
+            for pair in child["measurements"].get("interaction", {}).get("pair_evidence", []):
+                if pair["harmful"]:
+                    pair["canonical_evidence"]["delta_pair"] = 0.0
+                    return
+
+    tampered = reopened_copy((run_dir,), tmp_path / "tampered")
+    edit(tampered / "seed-11" / "gate.json", harm_less)
+    with pytest.raises(RunError, match="gate.json's CIG records do not verify"):
+        make_run(tampered, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run()
 
 
 def test_a_recorded_gate_episode_the_gate_never_requests_fails_closed_on_resume(

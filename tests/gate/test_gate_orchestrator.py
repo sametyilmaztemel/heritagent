@@ -419,6 +419,52 @@ def _replay_with_child(replay, child):
         _child_record=child, _allocation=replay.allocation)
 
 
+OTHER_ARTIFACT = "registry://skills/a@1/sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize("stage", ["replay", "ablation"])
+@pytest.mark.parametrize("key,value", [
+    ("candidate_version", 2), ("candidate_version", True), ("candidate_version", 1.0),
+    ("candidate_version", "1"), ("candidate_version", None),
+    ("candidate_artifact", OTHER_ARTIFACT), ("candidate_artifact", None),
+    ("base_genome_id", "G-" + "0" * 16), ("base_genome_id", None),
+    ("candidate_version", "delete"), ("candidate_artifact", "delete"),
+    ("base_genome_id", "delete"),
+])
+def test_stage12_children_for_another_artifact_or_genome_fail_before_any_episode(
+        tmp_path, stage, key, value):
+    """ADR-0010 B3: a stage 1-2 child that names another version, artifact or
+    base genome, by type or by value, or lacks the field, refuses the batch
+    before any episode."""
+    import copy
+    import dataclasses
+    from inheritance.gate import EvidenceCoherenceError
+    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    evaluation = getattr(inputs[0], f"{stage}_evaluation")
+    child = copy.deepcopy(evaluation.child_record)
+    if value == "delete":
+        del child["measurements"][key]
+    else:
+        child["measurements"][key] = value
+    changed = dataclasses.replace(
+        inputs[0], **{f"{stage}_evaluation": dataclasses.replace(evaluation,
+                                                                 _child_record=child)})
+    with pytest.raises(EvidenceCoherenceError, match=f"{stage} child {key} .*ADR-0010"):
+        orch.run([changed])
+    assert runner.calls == []
+
+
+def test_a_gate_on_another_base_genome_refuses_the_evidence_before_any_episode(tmp_path):
+    """ADR-0010 B3: the gate's own base genome is the one the children must name."""
+    import dataclasses
+    from inheritance.gate import EvidenceCoherenceError
+    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    orch._base_config = dataclasses.replace(orch._base_config, genome_id="G-" + "0" * 16)
+    with pytest.raises(EvidenceCoherenceError, match="base_genome_id .*ADR-0010"):
+        orch.run(inputs)
+    assert runner.calls == []
+
+
 def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):
     """A structurally invalid #11 child (load_cig failure) and a wrong
     exact child id each fail closed BEFORE any stage-3/4 runner call."""

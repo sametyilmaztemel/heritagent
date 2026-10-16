@@ -1,12 +1,12 @@
 # ADR-0010 — Every CIG child record names the artifact and the base genome it measured
 
-Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15). The owner accepted it in chat as ADR-0009 D7: the draft's option A with the Critic's modifications. The draft's four questions were answered as recommended:
+Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15). The owner accepted it in chat as ADR-0009 D7: the draft's option A with the Critic's modifications. The draft's four questions were answered as builder-2's Critic cross-review recommended (the draft recommended answers to the first three and left the fourth open):
 - A, not B or C;
 - the interaction evidence carries versions and artifacts too, beside its gene ids;
 - evidence for another version fails closed;
-- the base genome is bound, the target regulation is not.
+- the base genome is bound, the target regulation is not (the cross-review's answer to the fourth).
 
-Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeover note §5.8; the draft `research/proposals/ADR-draft-child-artifact-binding.md` (2026-10-14), which this ADR supersedes; builder-2's Critic cross-review of it (workflow `wf_ba6185ce-d72`, posted on #13). Artifacts: `inheritance/replay.py`, `ablation.py`, `generalization.py`, `interaction.py`, `gate.py`, `genome/validation/records.py`, `architecture/eag-v0-schema.md`, the tests that build records by hand.
+Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeover note §5.8; the draft `research/proposals/ADR-draft-child-artifact-binding.md` (2026-10-14), which this ADR supersedes; builder-2's Critic cross-review of it (workflow `wf_ba6185ce-d72`, posted on #13). Artifacts: `inheritance/overlay.py`, `replay.py`, `ablation.py`, `generalization.py`, `interaction.py`, `gate.py`, `genome/validation/records.py`, `evaluation/exp0001/pipeline.py`, `architecture/eag-v0-schema.md` (Amendment A2), the tests that build records by hand.
 
 **Problem.**
 - A gate run promotes or rejects one *artifact*. The somatic store keys candidates by `(gene_id, version)`, and registry artifacts are content-addressed (`registry://skills/<gene_id>@<version>/sha256:<digest>`). Since #31 the aggregate record names the evaluated artifact (`artifacts.candidate`).
@@ -32,21 +32,22 @@ Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeove
     - the URI parses;
     - its name is `artifacts.candidate.gene_id`, which equals the aggregate's `candidate_gene_id`;
     - its version, read as an int from the URI's string, equals `artifacts.candidate.version`, a strict int.
-  - The bundle also needs `artifacts.base_genome.genome_id`.
+  - The bundle also needs `artifacts.base_genome.genome_id`, equal to the aggregate's own `genome_id` (B1 takes both from the base configuration).
   - Every child's four fields must equal those references.
   - In the interaction_regression child, each pair evidence must:
     - match its own digest;
+    - name two distinct genes, the candidate and the partner its `other_gene_id` names;
     - carry an entry for the candidate equal to `artifacts.candidate`;
     - have every entry coherent in the same way.
-  - Both copies of a pair evidence are linked: for every pair evidence in a child of candidate g that names partner p, an interaction_regression child of an M0 aggregate for p carries a pair evidence with the same `evidence_sha256`. This check spans two bundles. It therefore runs in `verify()`, and as a store-wide check on the staged store after the gate's commit has added every bundle.
-- **B5 Not bound.** The target regulation is not recorded or compared (owner, Q4); it stays a recorded residual.
+  - Both copies of a pair evidence are linked: for every pair evidence in a child of candidate g that names partner p, an interaction_regression child of an M0 aggregate for p carries a pair evidence with the same `evidence_sha256`. This check spans two bundles. It therefore runs in `verify()`, and in the gate as a store-wide check on the staged store, once every bundle of the batch is added and before any live store changes.
+- **B5 Not bound.** The target regulation is not recorded or compared (owner, Q4, as the cross-review recommended); it stays a recorded residual. A regulated candidate would first have to become part of the candidate, pinned by its artifact URI, in its own ADR.
 - **B6 Scope.** The store checks prove that the records are consistent with each other and with the artifact URI (name and version; the digest is not recomputed). They do not authenticate the records: a forged, self-consistent set of bundles is not caught.
 - **B7 Compatibility.** `THRESHOLD_VERSION` stays `EXP-0001-CIG-M0-v1` (as in ADR-0005: free-form fields, no record yet). `architecture/eag-v0-schema.md` documents `artifacts.candidate`, `artifacts.base_genome` and the child fields.
 
 **Reason.**
 - **B1–B4** close the version gap where the evidence is consumed (the gate, before any episode) and where it is kept (the store), with the URI the aggregate and the somatic store already use. They need no schema change.
-- **Binding the base genome** costs one field and closes the second gap the draft's review reproduced.
-- **The regulation** is not bound because no EXP-0001 candidate carries one: the gate runs every candidate constitutively. Binding it would add a configuration digest (the draft's option C) for a path the run never takes.
+- **Binding the base genome** costs one field and closes the second gap the draft's review reproduced: the aggregate asserts a `genome_id` that no child attested.
+- **The regulation** is not bound, for the cross-review's reasons: it is a parameter the caller passes beside the candidate, not part of the candidate or its artifact; no EXP-0001 path passes one, so the gate runs every candidate constitutively; and the aggregate asserts nothing about it.
 
 **Research implication.**
 - None for the hypotheses.
@@ -57,7 +58,8 @@ Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeove
 
 **Compatibility impact.**
 - **Records.** Child `measurements` gain three fields. The aggregate's `artifacts` gains `base_genome`. Pair evidence gains `artifacts`, so its `evidence_sha256` changes for the same outcomes. The CIG schema is unchanged, and no stored record exists.
-- **Gate.** It gains one pre-episode check, and a store-wide check after its commit.
+- **Gate.** It gains one pre-episode check, and a store-wide check on its staged store before any live store changes.
+- **Run.** A resumed EXP-0001 run re-verifies each seed's stored `gate.json` records as a record store (B4 on stored state) before the somatic journal takes their decisions, and stops if they do not verify. This adds refusals only.
 - **Store.** It gains:
   - the per-child comparison;
   - the coherence of `artifacts.candidate`;

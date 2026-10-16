@@ -10,7 +10,8 @@ harmful iff delta_pair < -0.05.
 
 Interaction evidence is SHARED between the two candidates of a pair: a
 deterministic evidence id/hash over the CANONICAL (gene-id sorted) pair
-order, the frozen 10-task allocation with COMPLETE per-task provenance
+order, each gene's evaluated version and artifact in that order (ADR-0010
+B2), the frozen 10-task allocation with COMPLETE per-task provenance
 (task_id, family, bank_id, deterministic payload digest), paired outcomes
 (success, trajectory_id, expressed_gene_ids), exact locked settings
 (temperature/max_tokens/seed/stop), delta_pair and harmful flag. Each
