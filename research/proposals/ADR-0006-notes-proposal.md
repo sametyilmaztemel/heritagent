@@ -35,15 +35,20 @@ The record's `scope` label on the clause states only D4's scope, in D5's words; 
 
 ## N5 — Detectability under the locked rule (Research implication)
 
-Status M. Computed with the pinned implementation before any data.
+Status M. Computed with the pinned implementation before any data. Where the tasks fall in `task_id` order can change a bound, so each case names how its placements were covered: "every placement" means all of them were computed; otherwise random placements and a search for the extreme ones were computed, and the stated range is what they found, not a proof.
 
 - **The regression clause at n = 40.** Take C failing k fewer T_reg tasks than B, on the same tasks in every seed:
-  - k ≥ 4 (10 pp) is needed to exclude 0;
-  - k = 3 (7.5 pp) gives an upper bound of exactly 0, so the clause fails.
+  - k = 3 (7.5 pp) gives an upper bound of exactly 0 in every placement (all 9,880), so the clause fails;
+  - k = 4 (10 pp) gives −1/40 in every placement (all 91,390), so it passes.
 
-  On disjoint tasks per seed, k ≥ 2 (5 pp) passes.
+  So the floor is k = 4. On disjoint tasks per seed, k = 1 fails in every placement (all 9,880, upper bound 0), and k = 2 (5 pp) passed in every placement computed (upper bound −1/60 at most).
 - **The expected reduction.** The pre-registered expectation is 3–8 pp (1.2–3.2 tasks). In the same-tasks pattern, all of that range is below the floor.
-- **The success clause at n = 134.** Take a net +7.46 pp made of 20 wins and 10 losses per seed, on the same tasks in every seed: it fails (lower bound −1/134 ≈ −0.0075, or 0, depending on where the tasks fall in `task_id` order). 15 wins and 5 losses on the same tasks pass. On disjoint tasks per seed, both pass, whatever the placement: the lower bound is 11/402 to 13/402 (about +0.027 to +0.032; 2/67 in most placements) for 20 and 10, and 5/134 or 8/201 (about +0.037 to +0.040) for 15 and 5. The expected central value is +7 pp.
+- **The success clause at n = 134.** The point estimate is +7.46 pp (5/67) in each case below.
+  - 20 wins and 10 losses per seed, on the same tasks in every seed: it failed in every placement computed (lower bound −1/134 ≈ −0.0075, or 0).
+  - 15 wins and 5 losses on the same tasks: it passed in every placement computed (lower bound 1/134 to 1/67).
+  - On disjoint tasks per seed, both passed in every placement computed: the lower bound ranged from 10/402 to 14/402 (about +0.025 to +0.035) for 20 and 10, and from 14/402 to 17/402 (about +0.035 to +0.042) for 15 and 5.
+
+  The expected central value is +7 pp.
 - **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. This is conservative, not a bias, and no threshold changes.
 
 The proposal reads a null on the regression clause as "below detectability at n = 40", not as evidence against the mechanism. That reading is an interpretation of a future result, which is why it needs the owner's decision.
