@@ -1006,7 +1006,8 @@ def test_a_stopped_command_exits_130_or_3_and_holds_its_directory_through_the_la
     monkeypatch.setattr(cli, "run_pilot", stop)
     snapshots = []
 
-    def final(mirror, run_dir):
+    def final(mirror, run_dir, *, marker=True):
+        assert marker is True  # a pilot or a run keeps its unmirrored marker
         with pytest.raises(RunError, match="in use"):
             lock_run_dir(run_dir)  # still held: nobody else takes the mirror now
         snapshots.append(run_dir)

@@ -57,12 +57,20 @@ def _is_commit(revision) -> bool:
         all(c in "0123456789abcdef" for c in revision)
 
 
-def prepare_model(model_id: str = DEFAULT_MODEL, *, revision: str | None = None,
-                  cache_dir: Path | None = None) -> dict:
-    from huggingface_hub import HfApi, snapshot_download
+def resolve_revision(model_id: str, revision: str | None = None) -> str:
+    """The hub commit of ``revision`` (a commit, branch or tag; None: the
+    hub's current one)."""
+    from huggingface_hub import HfApi
     commit = HfApi().model_info(model_id, revision=revision).sha  # a branch or tag -> its commit
     if not _is_commit(commit):
         raise ProvenanceError(f"{model_id}@{revision} did not resolve to a commit ({commit!r})")
+    return commit
+
+
+def prepare_model(model_id: str = DEFAULT_MODEL, *, revision: str | None = None,
+                  cache_dir: Path | None = None) -> dict:
+    from huggingface_hub import snapshot_download
+    commit = resolve_revision(model_id, revision)
     path = Path(snapshot_download(model_id, revision=commit,
                                   cache_dir=None if cache_dir is None else str(cache_dir)))
     return {"schema": PREPARED_SCHEMA, "model_id": model_id, "revision": commit,

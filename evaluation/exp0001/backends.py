@@ -116,6 +116,10 @@ class TokenizerCounter:
     def identity(self) -> str:
         return self._identity
 
+    @property
+    def tokenizer(self):
+        return self._tokenizer
+
     def count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text, add_special_tokens=False))
 
@@ -123,7 +127,13 @@ class TokenizerCounter:
         """The prompt tokens of a request whose only message is this system
         message, rendered with the model's chat template as the server
         renders it (the generation prompt included)."""
-        ids = self._tokenizer.apply_chat_template([{"role": "system", "content": text}],
+        return self.count_chat_tokens([{"role": "system", "content": text}])
+
+    def count_chat_tokens(self, messages) -> int:
+        """The prompt tokens of a chat request's messages (role and content),
+        rendered with the model's chat template as the server renders them
+        (the generation prompt included)."""
+        ids = self._tokenizer.apply_chat_template([dict(m) for m in messages],
                                                   add_generation_prompt=True, tokenize=True)
         if isinstance(ids, Mapping):  # a BatchEncoding
             ids = ids["input_ids"]
