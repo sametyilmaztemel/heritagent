@@ -5,8 +5,10 @@ The pilot runs on train games disjoint from every EXP-0001 pool: the games
 the split manifest left, 5 per family, drawn with seed 0 by the split
 builder's keyed-hash rule under the pool name ``calibration_pilot``. Its
 selection and its measurement plan are frozen here, before any pilot
-episode. The pilot measures; it tunes nothing (a protocol change after the
-pilot is a pre-execution amendment or a new experiment id)."""
+episode. ADR-0009 (owner, 2026-10-15) added the temperature-0.7 attempts,
+the context window, seven measures and three execution entries before any
+pilot episode ran. The pilot measures; it tunes nothing (a protocol change
+after the pilot is a pre-execution amendment or a new experiment id)."""
 
 from __future__ import annotations
 
@@ -42,6 +44,16 @@ PILOT_MEASURES = (
     "throughput_episodes_per_hour",
     "arm_b_rendering_smoke_test",
     "temperature_0_repeat_determinism",
+    # ADR-0009 D3 (owner, 2026-10-15): what the lifetime and T_reg turn on
+    "temperature_0_7_attempt_success_rate",
+    "temperature_0_7_pair_yield",
+    "temperature_0_7_solved_in_any_attempt",
+    "temperature_0_success_among_0_7_solved",
+    # ADR-0009 D4: the context window, and loop steps next to game steps
+    "prompt_tokens_per_call_max",
+    "loop_steps_per_episode",
+    # ADR-0009 D8: does a mining pair's teacher prompt fit the window?
+    "miner_prompt_tokens_t07_pairs",
 )
 PILOT_EXECUTION = {
     "genome": "G0 (planner_react_v2, 50 steps; ADR-0003 D4)",
@@ -51,6 +63,20 @@ PILOT_EXECUTION = {
                           "trajectories must be identical",
     "arm_b_rendering_smoke_test": "one fixed synthetic skill block rendered into G0's prompt; "
                                   "checks the ReAct format survives, measures nothing else",
+    "temperature_0_7_attempts": "every pilot game 3 times more at the mining temperature 0.7, "
+                                "attempts 0, 1, 2, sampling seed int(sha256('heritagent-attempt"
+                                "|0|<game_id>|<attempt>')[:8], 16) mod 2**31 (ADR-0007 E1's rule "
+                                "with pilot seed 0); stop, request budget and episode budget as "
+                                "in the run",
+    "context_window": "32768 tokens; a call fits if its prompt tokens plus its max_tokens "
+                      "(512 for every ReAct call) are at most 32768; a call that does not fit "
+                      "ends the episode as budget_exhausted (context_window), a failure "
+                      "(ADR-0009 D4)",
+    "miner_prompt": "for every game with a temperature-0.7 success and failure, the first of "
+                    "each (E1's pair), the miner's teacher prompt in the full evidence form and "
+                    "without the admissible-command lists, counted with the model's tokenizer "
+                    "and chat template; it fits if its tokens plus the miner's 2048 output "
+                    "tokens are at most 32768 (ADR-0009 D8); no teacher call is made",
     "no_tuning": "the pilot measures only; no protocol, prompt or threshold changes inside it",
 }
 

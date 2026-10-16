@@ -23,13 +23,14 @@ from importlib import metadata as importlib_metadata
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from evaluation.exp0001.protocol import CONTEXT_WINDOW
 from evaluation.exp0001.provenance import ProvenanceError, sha256_files
 from runtime.model_adapters.openai_server import VLLMServerAdapter
 
 PREPARED_SCHEMA = "heritagent/exp0001-prepared-model/0.1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # manifest model.name
 DEFAULT_PORT = 8000
-DEFAULT_MAX_MODEL_LEN = 32768  # Qwen2.5-7B-Instruct's native context; never truncates a prompt
+DEFAULT_MAX_MODEL_LEN = CONTEXT_WINDOW  # pre-registered (ADR-0009 D4)
 
 
 # the packages that serve, render, tokenize and constrain a request, and play

@@ -331,10 +331,10 @@ def _locked_floor_through(pool: str) -> int:
     train set too small for every locked count at once (fewer than 174
     accepted games), it can reject a plan whose shortfall is real; that case
     is the owner's decision, not an allocation for the builder to search.
-    ALFWorld's train split is far larger (3,553 games and a smallest family
-    of 308 before loader filtering, per the prior analysis of the ALFWorld
-    split table; filtered counts are not yet verified), so the case is not
-    expected there; the manifest records the loader's per-family counts."""
+    ALFWorld's train split is far larger: 3,553 loader-accepted games and a
+    smallest family of 308 in the committed manifest (ADR-0009 D5), so the
+    case does not arise there; the manifest records the loader's per-family
+    counts."""
     return sum(POOL_PER_FAMILY_MIN.get(p, 0) for p in POOL_ORDER[:POOL_ORDER.index(pool) + 1])
 
 

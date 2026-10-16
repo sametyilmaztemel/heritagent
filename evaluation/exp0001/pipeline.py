@@ -66,6 +66,8 @@ from evaluation.exp0001.protocol import (
     CANDIDATE_CAP,
     LOCKED_SPLIT_MANIFEST_SHA256,
     MAX_TOKENS_PER_REQUEST,
+    MINER_CALLS_PER_PAIR_MAX,
+    MINER_MAX_TOKENS,
     MINING_SEEDS,
     MINING_TEMPERATURE,
 )
@@ -96,10 +98,18 @@ from runtime.model_adapters.base import ModelAdapter
 from runtime.seed_g0 import build_g0_seed_genome
 from somatic.store import SomaticStore
 from trajectory.storage.canonical import canonical_json, sha256_hex
+from traits.miner.evidence import EVIDENCE_FORMS
 from traits.miner.miner import MiningSettings, TraitMiner
 
-MINER_MAX_TOKENS = 2048  # traits.miner.MiningSettings default
 CANDIDATES_SCHEMA = "heritagent/exp0001-candidates/0.1"
+
+
+def teacher_calls(mining_records) -> int:
+    """The teacher calls behind the frozen mining records: one per evidence
+    form a pair was sent in (ADR-0009 D8). A record names the last form; the
+    forms before it overflowed the context window."""
+    return sum(1 + EVIDENCE_FORMS.index(record.get("evidence_form", EVIDENCE_FORMS[0]))
+               for record in mining_records)
 GATE_SCHEMA = "heritagent/exp0001-gate/0.1"
 ARMS_SCHEMA = "heritagent/exp0001-arms/0.1"
 REPORT_SCHEMA = "heritagent/exp0001-report/0.1"
@@ -233,9 +243,10 @@ class Exp0001Run:
         key = f"mining/{seed}"
         if frozen is None:
             batch = mining_batch(results, self.t_mine, seed)
-            # one teacher call per pair (traits.miner.TraitMiner.mine); a crash
-            # before the frozen set re-mines, and the aborted attempt stays charged
-            if not self.ledger.admit_calls(key, len(batch.pairs)):
+            # at most two teacher calls per pair (traits.miner.TraitMiner.mine,
+            # ADR-0009 D8); a crash before the frozen set re-mines, and the
+            # aborted attempt stays charged
+            if not self.ledger.admit_calls(key, MINER_CALLS_PER_PAIR_MAX * len(batch.pairs)):
                 # charged only after the set was frozen: the set was removed by hand
                 raise RunError(f"{key} was charged but its frozen candidate set is missing")
             miner = TraitMiner(_Heartbeat(self.teacher, self.ledger.heartbeat), self.registry,
@@ -250,9 +261,8 @@ class Exp0001Run:
                 "candidate_set_sha256": mined.candidate_set_sha256,
                 "mining_records": list(mined.mining_records), "rejected": list(mined.rejected)})
         if not self.ledger.is_charged(key):
-            # frozen before the calls were recorded (or a crash in between):
-            # one teacher call per mining record
-            self.ledger.record_calls(key, model_calls=len(frozen["mining_records"]))
+            # frozen before the calls were recorded (or a crash in between)
+            self.ledger.record_calls(key, model_calls=teacher_calls(frozen["mining_records"]))
         digest = sha256_hex(canonical_json(frozen["candidates"]).encode("utf-8"))
         if digest != frozen["candidate_set_sha256"]:  # the miner's own digest rule
             raise RunError(f"{path}: the candidate set does not match its digest")

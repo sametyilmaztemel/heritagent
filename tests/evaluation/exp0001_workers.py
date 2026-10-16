@@ -48,3 +48,28 @@ class WinsOnGames(ScriptedAdapter):
         won = any(f"solve {game_id}." in text for game_id in self.wins)
         return GenerationResult(text=react_action("act", {"command": "win"}) if won
                                 else react_final("I am done."), finish_reason="stop")
+
+
+class AlsoWinsOnOddSeeds(WinsOnGames):
+    """As WinsOnGames, and at a temperature above 0 it also wins every game
+    whose sampling seed is odd: the temperature-0.7 attempts form pairs."""
+
+    def generate(self, messages, settings):
+        if settings.temperature > 0 and settings.seed is not None and settings.seed % 2:
+            return GenerationResult(text=react_action("act", {"command": "win"}),
+                                    finish_reason="stop")
+        return super().generate(messages, settings)
+
+
+class WinsOnGamesButFailsOn(WinsOnGames):
+    """As WinsOnGames, but the backend dies on every call of one game."""
+
+    def __init__(self, wins=(), fail_task=None):
+        super().__init__(wins)
+        self.fail_task = fail_task
+
+    def generate(self, messages, settings):
+        if any(f"solve {self.fail_task}." in m.content for m in messages):
+            raise RuntimeError(f"backend died on {self.fail_task}")
+        return super().generate(messages, settings)
+

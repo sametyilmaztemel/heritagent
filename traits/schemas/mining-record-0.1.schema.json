@@ -145,7 +145,8 @@
               "invalid_runtime_payload",
               "invalid_applicability",
               "exact_duplicate",
-              "outside_cap"
+              "outside_cap",
+              "context_overflow"
             ]
           },
           "proposal_name": {
@@ -198,6 +199,13 @@
         "null"
       ],
       "description": "exact raw teacher output for this call (audit); present for both valid and malformed calls; null only if unavailable"
+    },
+    "evidence_form": {
+      "enum": [
+        "full",
+        "without-admissible-commands"
+      ],
+      "description": "the evidence form the last teacher call of this pair used (ADR-0009 D8): the full evidence, or the evidence without the admissible-command lists when the full form's prompt did not fit the context window"
     },
     "rendered_prompt_sha256": {
       "type": "string",

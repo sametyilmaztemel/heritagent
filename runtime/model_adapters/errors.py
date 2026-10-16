@@ -13,6 +13,14 @@ class UnsupportedFeatureError(AdapterError):
     """The backend cannot serve the requested feature (e.g. guided decoding)."""
 
 
+class ContextWindowExceeded(AdapterError):
+    """The prompt does not fit the model's context window. The runtime loop
+    ends the episode as budget_exhausted (budget context_window), counted as
+    a failure (ADR-0009 D4); the trait miner sends the pair's evidence without
+    the admissible-command lists, then rejects the pair (ADR-0009 D8). A
+    prompt is never truncated and no call is retried as it was."""
+
+
 class ModelResponseError(AdapterError):
     """The model's response violated the requested contract (invalid JSON,
     schema mismatch, malformed tool call). `raw_text` preserves the exact

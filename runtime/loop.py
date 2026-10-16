@@ -35,6 +35,7 @@ from jsonschema import Draft202012Validator
 from runtime.events import EventLog, RuntimeEvent
 from runtime.expression import RuntimeConfig
 from runtime.model_adapters import GenerationSettings, ModelAdapter, ModelMessage, ToolSpec
+from runtime.model_adapters.errors import ContextWindowExceeded
 from runtime.policies.decisions import StepDecision, ToolAction
 from runtime.policies.errors import PlanParseError
 from runtime.policies.planner_react import ReActPlanner
@@ -205,7 +206,14 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
         decision = None
         while True:
             started = clock()
-            result = model.generate(messages, settings)
+            try:
+                result = model.generate(messages, settings)
+            except ContextWindowExceeded as exc:
+                # ADR-0009: the prompt no longer fits; the episode ends as a
+                # failure, never truncated or retried, identically in every arm
+                log.emit("budget_exhausted", step=step, budget="context_window",
+                         detail=str(exc)[:500])
+                return RunResult("budget_exhausted", None, step, counters, log)
             model_latency_ms = (clock() - started) * 1000.0
             # exactness provenance (issue #8): counts from the adapter are
             # exact; a missing count is an ESTIMATE and must be labeled as

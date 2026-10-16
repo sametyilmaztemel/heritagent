@@ -10,7 +10,7 @@ admitted afterwards. A resumed run reads the ledger back and skips every
 key it already holds, so no recorded episode runs twice.
 
 Every admission first appends an ``attempt`` record with the calls it
-reserves (an episode's worst case, or the miner's one call per pair). An
+reserves (an episode's worst case, or the miner's two calls per pair). An
 attempt that a crash left without its finishing record is charged its
 whole reservation when the ledger is read back, so calls made before a
 crash still count against the caps (conservatively), and the number of

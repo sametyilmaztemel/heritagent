@@ -691,7 +691,15 @@ def test_a_teacher_crash_reruns_the_batch_and_keeps_its_reservation(tmp_path, sp
     report = make_run(run_dir, splits, caps=caps).run()  # stops at the cap in seed 11's gate
     pairs = len(json.loads((run_dir / "seed-11" / "candidates.json").read_text())["mining_records"])
     assert report["stage"] == "gate/11" and report["aborted_attempts"] == 1
-    assert report["model_calls"] == 540 + 10 + 2 * pairs  # the aborted batch stays charged
+    # the aborted batch stays charged its reservation (two calls per pair, ADR-0009 D8);
+    # the rerun is charged its calls (every pair fit in its full form)
+    assert report["model_calls"] == 540 + 10 + 2 * pairs + pairs
+
+
+def test_a_pair_sent_in_both_evidence_forms_is_charged_two_calls():
+    from evaluation.exp0001.pipeline import teacher_calls
+    assert teacher_calls([{"evidence_form": "full"},
+                          {"evidence_form": "without-admissible-commands"}, {}]) == 1 + 2 + 1
 
 
 @pytest.mark.parametrize("change,message", [

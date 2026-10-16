@@ -1,6 +1,6 @@
 # ADR-0003 — ALFWorld `ToolEnvironment` adapter for EXP-0001
 
-Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat); **amendment A2** chosen by the owner on 2026-10-14 (explicit answer in chat). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
+Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat); **amendment A2** chosen by the owner on 2026-10-14 (explicit answer in chat). **Amended by ADR-0009** (owner, 2026-10-15): a pre-registered context window of 32,768 tokens with an overflow that ends the episode as a failure (D4); D8's data tree is the two pinned ALFWorld 0.2.2 archives plus every game's content hash (ADR-0008 D6); the task text's repetition as observation 0 is part of the frozen G0 prompt (D5); `won` fails closed (D6). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
 
 **Problem.** EXP-0001 runs on ALFWorld, but the repo has no adapter from ALFWorld's text games to the runtime's `ToolEnvironment` boundary. The adapter's protocol choices set G0's success level. Published Qwen2.5-7B-Instruct results span 14.8–45.5 % across protocols, and rendering alone moves 83.6 % to 1.5 %. G0's level in turn sets T_reg feasibility, the expected number of mining pairs and every power number. These choices are therefore pre-registration elements.
 
@@ -30,7 +30,7 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
   - `alfworld==0.4.2` and `textworld==1.7.0` in an optional `alfworld` extra.
   - `AlfredDemangler(shuffle=False)` and `AlfredInfos` on every split, no expert.
   - One TextWorld env per episode.
-  - The data-tree hash recorded in the split manifest.
+  - The data-tree hash recorded in the split manifest. [ADR-0009 D5: the tree is pinned by the two ALFWorld 0.2.2 archive hashes (ADR-0008 D6), and every game the run uses by its content hash.]
 
 **Reason.**
 - D1, D2, D4 and D7 follow the published protocols closest to EXP-0001's cited anchors (the SAGA and verl-agent step limit of 50; text actions).

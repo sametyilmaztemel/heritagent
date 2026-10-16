@@ -353,11 +353,145 @@ def test_the_pilot_measures_what_its_manifest_froze(tmp_path, registry, splits, 
     assert measures["arm_b_rendering_smoke_test"]["passed"] is True
     assert measures["throughput_episodes_per_hour"]["workers"] == workers
     assert measures["model_calls_per_episode"]["max"] == 1
-    assert ledger.episodes == 30 + 6 + 1
+    # the scripted model wins the same games at any temperature: no pair
+    assert measures["temperature_0_7_attempt_success_rate"]["value"] == 0.5
+    assert measures["temperature_0_7_pair_yield"]["value"] == 0.0
+    assert measures["temperature_0_7_solved_in_any_attempt"]["value"] == 0.5
+    assert measures["temperature_0_success_among_0_7_solved"]["value"] == 1.0
+    assert measures["prompt_tokens_per_call_max"]["context_window"] == 32768
+    assert measures["prompt_tokens_per_call_max"]["context_overflows"] == 0
+    assert measures["loop_steps_per_episode"]["max"] == 1
+    assert ledger.episodes == 30 + 6 + 1 + 90
+    assert measures["miner_prompt_tokens_t07_pairs"] == {
+        "pairs": 0, "counted": False, "prompt_limit": 32768 - 2048, "context_window": 32768,
+        "miner_max_tokens": 2048, "full": None, "without_admissible_commands": None,
+        "pairs_that_fit": None}
     specs = pilot_specs(pilot, g0_runtime_config(registry))
     assert [s.config.skills[-1].gene_id for s in specs["smoke"]] == [SMOKE_GENE_ID]
     assert all(s.settings.temperature == 0.0 and s.settings.seed is None
-               for kind in specs.values() for s in kind)
+               for kind in ("run", "repeat", "smoke") for s in specs[kind])
+    from evaluation.exp0001.protocol import attempt_sampling_seed
+    assert len(specs["t07"]) == 90 and {s.settings.temperature for s in specs["t07"]} == {0.7}
+    first = specs["t07"][0]
+    assert first.settings.seed == attempt_sampling_seed(0, first.task_id, 0)
+    assert first.settings.stop == ("\nObservation:",) and first.settings.max_tokens == 512
+
+
+def test_a_resumed_pilot_keeps_the_throughput_of_its_run_pass(tmp_path, registry, splits):  # noqa: F811
+    """A pilot resumed after its run pass (most of its episodes come after it)
+    still reports the throughput that pass was played at, so the projection
+    keeps its hours."""
+    import itertools
+    pilot = PILOTS[splits["manifest_sha256"]]
+    games = sorted(g["game_id"] for g in pilot["games"])
+    ticks = itertools.count(0, 10)
+    timing = tmp_path / "pilot-throughput.json"
+    seen = []
+    for workers in (1, 2):  # the whole pilot, then a resume of it at another worker count
+        executor = EpisodeExecutor(
+            model=WinsOnGames(games[::2]), env_factory=GameFactory(),
+            ledger=RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock()),
+            trajectories_dir=tmp_path / "trajectories", run_id="pilot", code_commit="a" * 40,
+            workers=workers, sleep_between_retries=False)
+        try:
+            measured = run_pilot(executor, pilot, g0_runtime_config(registry),
+                                 clock=lambda: next(ticks), timing_path=timing)
+        finally:
+            executor.close()
+        seen.append(measured["measures"]["throughput_episodes_per_hour"])
+    session = {"episodes": 30, "seconds": 10, "workers": 1}
+    assert seen[0] == {"episodes": 30, "seconds": 10, "workers": 1, "sessions": [session],
+                       "complete": True, "value": 10800.0}
+    # every run-pass episode was resumed the second time: the pass's own timing and
+    # worker count, not the resuming session's
+    assert seen[1] == seen[0]
+    assert json.loads(timing.read_text())["sessions"] == [session]
+
+
+def test_a_pilot_crashed_inside_its_run_pass_reports_a_partial_throughput(
+        tmp_path, registry, splits):  # noqa: F811
+    """A session that crashed inside the run pass leaves no timing: the
+    throughput then rests on the session that finished the pass, at that
+    session's worker count, and says it is partial."""
+    import itertools
+    from tests.evaluation.exp0001_workers import WinsOnGamesButFailsOn
+    pilot = PILOTS[splits["manifest_sha256"]]
+    games = sorted(g["game_id"] for g in pilot["games"])
+    ticks = itertools.count(0, 10)
+    timing = tmp_path / "pilot-throughput.json"
+    played = [g["game_id"] for g in pilot["games"]]  # the run pass's order
+    for model, workers in ((WinsOnGamesButFailsOn(games[::2], played[20]), 1),
+                           (WinsOnGames(games[::2]), 2)):
+        executor = EpisodeExecutor(
+            model=model, env_factory=GameFactory(),
+            ledger=RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock()),
+            trajectories_dir=tmp_path / "trajectories", run_id="pilot", code_commit="a" * 40,
+            workers=workers, sleep_between_retries=False)
+        try:
+            measured = run_pilot(executor, pilot, g0_runtime_config(registry),
+                                 clock=lambda: next(ticks), timing_path=timing)
+        except Exception:  # noqa: BLE001 - the first session's backend dies in the run pass
+            assert workers == 1 and not timing.exists()
+            continue
+        finally:
+            executor.close()
+    throughput = measured["measures"]["throughput_episodes_per_hour"]
+    assert throughput["workers"] == 2 and throughput["complete"] is False
+    assert 0 < throughput["episodes"] < 30 and throughput["sessions"] == [
+        {"episodes": throughput["episodes"], "seconds": 10, "workers": 2}]
+
+
+def test_the_pilot_counts_each_pairs_miner_prompt_in_both_forms(tmp_path, registry, splits):  # noqa: F811
+    from tests.evaluation.exp0001_workers import AlsoWinsOnOddSeeds
+    pilot = PILOTS[splits["manifest_sha256"]]
+    games = sorted(g["game_id"] for g in pilot["games"])
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock())
+    executor = EpisodeExecutor(model=AlsoWinsOnOddSeeds(games[::2]), env_factory=GameFactory(),
+                               ledger=ledger, trajectories_dir=tmp_path / "trajectories",
+                               run_id="pilot", code_commit="a" * 40, workers=1,
+                               sleep_between_retries=False)
+    counted = []
+
+    def count(prompt):  # the full form is "too long", the second form fits
+        counted.append(prompt)
+        return 40_000 if '"form":' not in prompt else len(prompt) // 4
+
+    try:
+        measured = run_pilot(executor, pilot, g0_runtime_config(registry),
+                             count_prompt_tokens=count)
+    finally:
+        executor.close()
+    measures = measured["measures"]
+    pairs = measures["temperature_0_7_pair_yield"]["numerator"]
+    assert pairs > 0
+    miner = measures["miner_prompt_tokens_t07_pairs"]
+    assert miner["pairs"] == pairs and miner["counted"] is True
+    assert len(counted) == 2 * pairs  # both forms of every pair, no teacher call
+    assert miner["full"]["min"] == 40_000 and miner["without_admissible_commands"]["n"] == pairs
+    assert miner["pairs_that_fit"] == {"full": 0, "only_without_admissible_commands": pairs,
+                                       "neither": 0}
+
+
+def test_a_system_prompt_is_counted_with_the_chat_template():
+    from evaluation.exp0001.backends import TokenizerCounter
+
+    class Tokenizer:
+        def __init__(self, batch):
+            self.batch = batch
+
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+        def apply_chat_template(self, messages, add_generation_prompt, tokenize):
+            assert messages == [{"role": "system", "content": "a b c"}]
+            assert add_generation_prompt is True and tokenize is True
+            ids = [1, 2, 3, 4, 5, 6, 7]
+            return {"input_ids": ids} if self.batch else ids
+
+    for batch in (False, True):
+        counter = TokenizerCounter(Tokenizer(batch), "t")
+        assert counter.count_tokens("a b c") == 3
+        assert counter.count_system_prompt_tokens("a b c") == 7
 
 
 def test_the_projection_counts_the_protocols_episodes():
@@ -372,7 +506,7 @@ def test_the_projection_counts_the_protocols_episodes():
     worst = projection["scenarios"][-1]
     assert worst["episodes"] == 540 + 1358 + 3 * (10 * 130 + 45 * 20)
     assert worst["within_caps"]["episodes"] is False  # 8498 > 7000
-    assert two[0]["model_calls_at_pilot_mean"] == 2678 * 20 + 180
+    assert two[0]["model_calls_at_pilot_mean"] == 2678 * 20 + 360  # two teacher calls per pair
     assert projection["status"].startswith("M ")
 
 
@@ -464,10 +598,10 @@ def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, caps
     prepared.write_text(json.dumps({"schema": PREPARED_SCHEMA, "model_id": "Qwen/Qwen2.5-7B-Instruct",
                                     "revision": "a" * 40, "path": "/nowhere",
                                     "weights": {"sha256": "b" * 64}}))
-    served = (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]})
-    server = Server([(200, {"version": "0.29.0"}), served, completion("Thought: ready"),
+    served = (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct", "max_model_len": 32768}]})
+    server = Server([(200, {"version": "0.29.0"}), served, served, completion("Thought: ready"),
                      completion('{"proposals": []}'),
-                     (200, {"version": "0.29.0"}), served,
+                     (200, {"version": "0.29.0"}), served, served,
                      (200, {"choices": [{"message": {"content": "Thought: ready"}}]})])
     try:
         argv = ["preflight", "--prepared", str(prepared), "--server-url", server.url]
@@ -477,9 +611,9 @@ def test_preflight_checks_the_react_reply_and_the_teachers_schema(tmp_path, caps
         assert "token usage" in capsys.readouterr().err
     finally:
         server.close()
-    teacher = server.requests[3][2]
+    teacher = server.requests[4][2]
     assert teacher["response_format"]["json_schema"]["schema"]["required"] == ["proposals"]
-    assert teacher["temperature"] == 0.7 and server.requests[2][2]["stop"] == ["\nObservation:"]
+    assert teacher["temperature"] == 0.7 and server.requests[3][2]["stop"] == ["\nObservation:"]
 
 
 # -- review of #69: the data release, the server's grammar, a finished run restored -------
@@ -797,8 +931,8 @@ def stub_command(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {"games": []}))
     monkeypatch.setattr(cli, "verify_data", lambda *a: {})
     monkeypatch.setattr(cli, "_adapter", lambda args, prepared: object())
-    monkeypatch.setattr(cli, "hf_token_counter",
-                        lambda *a, **k: types.SimpleNamespace(identity="t"))
+    monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(
+        identity="t", count_system_prompt_tokens=len))
     monkeypatch.setattr(cli, "_run_start", lambda *a: {})
     monkeypatch.setattr(cli, "_environment", lambda verified: {})
     monkeypatch.setattr(cli, "_session_info", lambda *a: {})
@@ -858,7 +992,7 @@ def test_a_stopped_command_exits_130_or_3_and_holds_its_directory_through_the_la
 
     monkeypatch.setattr(pipeline, "Exp0001Run", Stopped)
 
-    def stop(*args):
+    def stop(*args, **kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "run_pilot", stop)
@@ -989,3 +1123,63 @@ def test_the_sigterm_handler_is_the_previous_one_after_the_command(tmp_path):
     assert signal.getsignal(signal.SIGTERM) == before
     assert not (tmp_path / "run" / cli.UNMIRRORED).exists()
 
+
+
+
+def test_a_prompt_too_long_for_the_window_is_a_context_overflow_not_a_crash():
+    from runtime.model_adapters.errors import ContextWindowExceeded
+    server = Server([(400, {"error": "This model's maximum context length is 32768 tokens. "
+                                     "However, you requested 512 output tokens"}),
+                     (400, {"error": "The decoder prompt (length 40000) is longer than the "
+                                     "maximum model length of 32768."}),
+                     (400, {"error": "unknown field"})])
+    try:
+        model = adapter(server)
+        for _ in range(2):
+            with pytest.raises(ContextWindowExceeded):
+                model.generate(MESSAGES, SETTINGS)
+        with pytest.raises(ServerRequestError, match="unknown field"):
+            model.generate(MESSAGES, SETTINGS)
+    finally:
+        server.close()
+    assert len(server.requests) == 3  # nothing retried
+
+
+def test_the_server_must_serve_the_pre_registered_context_window(tmp_path):
+    from types import SimpleNamespace
+    server = Server([(200, {"version": "0.29.0"}),
+                     (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct"}]}),
+                     (200, {"data": [{"id": "Qwen/Qwen2.5-7B-Instruct", "max_model_len": 8192}]})])
+    try:
+        with pytest.raises(cli.CliError, match="context window is 8192"):
+            cli._adapter(SimpleNamespace(server_url=server.url),
+                         {"model_id": "Qwen/Qwen2.5-7B-Instruct", "revision": "a" * 40})
+    finally:
+        server.close()
+
+
+def test_an_episode_ended_by_the_context_window_is_a_recorded_failure(tmp_path, registry):  # noqa: F811
+    from evaluation.exp0001.lifetime import lifetime_specs
+    from evaluation.exp0001.protocol import MINING_SEEDS
+    from runtime.model_adapters.errors import ContextWindowExceeded
+    from tests.evaluation.test_exp0001_lifetime import tasks
+
+    class TooLong:
+        def metadata(self):
+            from runtime.model_adapters.base import ModelMetadata
+            return ModelMetadata("m", "r", "scripted", None, {})
+
+        def generate(self, messages, settings):
+            raise ContextWindowExceeded("maximum context length")
+
+        def estimate_tokens(self, text):
+            return 1
+
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock())
+    executor = EpisodeExecutor(model=TooLong(), env_factory=GameFactory(), ledger=ledger,
+                               trajectories_dir=tmp_path / "t", run_id="r", code_commit="a" * 40)
+    spec = lifetime_specs(tasks(1), g0_runtime_config(registry), MINING_SEEDS[0])[0]
+    result = executor.run(spec)
+    assert (result.status, result.success, result.exhausted_budget, result.model_calls) == \
+        ("budget_exhausted", False, "context_window", 0)
+    assert ledger.episodes == 1 and ledger.aborted_attempts == 0

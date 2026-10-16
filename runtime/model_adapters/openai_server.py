@@ -53,8 +53,13 @@ from runtime.model_adapters.base import (
 from runtime.model_adapters.errors import (
     AdapterError,
     BackendUnavailableError,
+    ContextWindowExceeded,
     ModelResponseError,
 )
+
+# vLLM 0.29.0's messages for a prompt that does not fit (renderers/params.py,
+# v1/engine/input_processor.py)
+CONTEXT_OVERFLOW_MARKERS = ("maximum context length", "longer than the maximum model length")
 
 SERVER_BACKEND = "vllm-server"
 UNSUPPORTED_SCHEMA_KEYWORDS = ("uniqueItems",)  # not implemented by vLLM 0.29.0's grammars
@@ -111,6 +116,8 @@ class VLLMServerAdapter(ModelAdapter):
                 if exc.code >= 500 or exc.code == 429:
                     last = exc
                     continue
+                if exc.code == 400 and any(m in detail for m in CONTEXT_OVERFLOW_MARKERS):
+                    raise ContextWindowExceeded(detail) from None
                 raise ServerRequestError(f"{method} {path} was rejected ({exc.code}): "
                                          f"{detail}") from None
             except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
@@ -128,6 +135,14 @@ class VLLMServerAdapter(ModelAdapter):
     def served_models(self) -> list[str]:
         body = self._request("GET", "/v1/models")
         return [entry.get("id") for entry in body.get("data") or []]
+
+    def served_context_window(self) -> int | None:
+        """The served model's context window, as vLLM reports it."""
+        body = self._request("GET", "/v1/models")
+        for entry in body.get("data") or []:
+            if entry.get("id") == self._model:
+                return entry.get("max_model_len")
+        return None
 
     def require_served(self) -> None:
         """Fail closed unless the server serves this adapter's model id."""

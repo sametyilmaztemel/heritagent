@@ -560,3 +560,12 @@ def test_a_deferred_admission_writes_nothing(tmp_path):
     with pytest.raises(CapExceeded):
         ledger.admit("e1")  # nothing in flight: the stop is written
     assert ledger.done_keys("e") == ("e0",)
+
+
+def test_one_step_budget_and_the_context_window_are_pre_registered():
+    from evaluation.exp0001.protocol import CONTEXT_WINDOW
+    from evaluation.exp0001.serving import DEFAULT_MAX_MODEL_LEN
+    from runtime.seed_g0 import EPISODE_MAX_STEPS
+    assert PROTOCOL["budgets"]["max_steps"] == EPISODE_MAX_STEPS == 50
+    assert PROTOCOL["context_window"] == CONTEXT_WINDOW == DEFAULT_MAX_MODEL_LEN == 32768
+    assert "never truncated" in PROTOCOL["context_overflow"]

@@ -119,6 +119,16 @@ class TokenizerCounter:
     def count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text, add_special_tokens=False))
 
+    def count_system_prompt_tokens(self, text: str) -> int:
+        """The prompt tokens of a request whose only message is this system
+        message, rendered with the model's chat template as the server
+        renders it (the generation prompt included)."""
+        ids = self._tokenizer.apply_chat_template([{"role": "system", "content": text}],
+                                                  add_generation_prompt=True, tokenize=True)
+        if isinstance(ids, Mapping):  # a BatchEncoding
+            ids = ids["input_ids"]
+        return len(ids)
+
 
 def hf_token_counter(model_id: str, revision: str, path: Path | None = None) -> TokenizerCounter:
     """The model's tokenizer; ``path`` is the local snapshot of exactly that
@@ -130,9 +140,11 @@ def hf_token_counter(model_id: str, revision: str, path: Path | None = None) -> 
 
 
 def pinned_vllm_model(model_id: str, revision: str, **kwargs) -> VLLMAdapter:
+    from evaluation.exp0001.protocol import CONTEXT_WINDOW
     if not isinstance(revision, str) or not revision.strip():
         raise BackendError("the model revision must be pinned (manifest: pin-at-run-time)")
-    return VLLMAdapter(model=model_id, revision=revision, **kwargs)
+    return VLLMAdapter(model=model_id, revision=revision,
+                       **{"max_model_len": CONTEXT_WINDOW, **kwargs})
 
 
 # -- the accelerator (ADR-0008: an A100 80 GB only) ------------------------------

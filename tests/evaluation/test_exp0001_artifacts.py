@@ -148,3 +148,20 @@ def test_the_manifest_points_at_the_committed_artifacts(splits):
     assert re.search(r"generalization_allocation: \{split: even-over-families, .*"
                      r"all_family_applicability: vacuous-out-of-scope\}", body)
     assert "pending" not in block.group(0)  # E1-E8 are owner decisions
+
+
+def test_the_manifest_model_block_names_the_protocols_context_window():
+    """ADR-0009 D4 and D8: the window and the overflow rules the manifest
+    records are the protocol's."""
+    import re
+    from evaluation.exp0001.protocol import CONTEXT_WINDOW, PROTOCOL
+    text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    block = re.search(r"^model:[^\n]*\n((?:  .*\n)+)", text, re.MULTILINE)
+    assert block, "the model block is missing"
+    body = block.group(1)
+    assert re.search(rf"^  context_window: {CONTEXT_WINDOW}\s", body, re.MULTILINE)
+    assert PROTOCOL["context_window"] == CONTEXT_WINDOW
+    assert re.search(r"^  context_overflow: episode-ends-budget-exhausted-context-window-failure"
+                     r"-never-truncated\s", body, re.MULTILINE)
+    assert re.search(r"^  miner_context_overflow: full-evidence-then-without-admissible-commands"
+                     r"-then-reject-never-truncated\s", body, re.MULTILINE)
