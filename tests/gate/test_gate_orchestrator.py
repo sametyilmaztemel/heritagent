@@ -305,6 +305,46 @@ def test_duplicate_parent_cig_ids_rejected_before_any_episode(tmp_path):
     assert len(runner.calls) == calls_before
 
 
+def _shared_t_reg_inputs(inputs, seed_b):
+    """Both candidates on candidate a's T_reg; candidate b at ``seed_b``."""
+    a, b = inputs
+    gid_b = b.candidate_envelope["candidate"]["gene_id"]
+    replay, ablation = coherent_stage11_children(
+        gid_b, parent=b.parent_cig_id, replay_pass=True, ablation_pass=True,
+        seed=seed_b)
+    return [a, GateCandidateInput(
+        candidate_envelope=b.candidate_envelope, frozen_rank=b.frozen_rank,
+        replay_evaluation=replay, ablation_evaluation=ablation,
+        generalization_allocation=b.generalization_allocation,
+        regression_allocation=a.regression_allocation,
+        parent_cig_id=b.parent_cig_id, mining_seed=seed_b)]
+
+
+@pytest.mark.parametrize("seed_b,runs", [(MINING_SEED, 1), (MINING_SEED + 1, 2)])
+def test_the_shared_g0_run_is_per_mining_seed(tmp_path, seed_b, runs):
+    """ADR-0009 D1: G0 plays T_reg once per mining seed at that seed, and
+    every candidate of the seed is paired against that run."""
+    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a", "b"))
+    seen = []
+    play = runner.run_episode
+
+    def recording(task, config, budgets, condition, settings=None):
+        seen.append((task.task_id, condition, settings.seed))
+        return play(task, config, budgets, condition, settings)
+
+    runner.run_episode = recording
+    outcome = orch.run(_shared_t_reg_inputs(inputs, seed_b))
+    g0_runs = [(tid, seed) for tid, condition, seed in seen
+               if tid.startswith("treg-") and condition == "without_trait"]
+    assert len(g0_runs) == 40 * runs
+    assert {seed for _, seed in g0_runs} == {MINING_SEED, seed_b}
+    for result, seed in zip(outcome.results, (MINING_SEED, seed_b)):
+        regression = result.stage4_child["measurements"]["regression"]
+        assert regression["paired_g0_run"]["eval_generation_settings"]["seed"] == seed
+        assert regression["eval_generation_settings"]["seed"] == seed
+        assert regression["successes_without"] == 40
+
+
 def test_control_expression_of_target_aborts_no_child(tmp_path):
     """Neither-arm expression of either target = contaminated intervention:
     typed integrity error, stage abort, no completed child record."""

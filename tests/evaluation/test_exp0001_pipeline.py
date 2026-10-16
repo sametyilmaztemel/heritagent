@@ -599,6 +599,17 @@ def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path
     (lambda g, gene: next(c for c in g["children"].values() if c["stage"] == "ablation")[
         "measurements"]["bootstrap"].update({"lower_bound": 0.99}),
      "does not recompute"),  # ADR-0005; ADR-0009 D5
+    (lambda g, gene: g["sensitivity"].pop(gene), "sensitivity grids are not the frozen"),
+    (lambda g, gene: g["sensitivity"].update({"extra_gene": g["sensitivity"][gene]}),
+     "sensitivity grids are not the frozen"),
+    (lambda g, gene: g["sensitivity"][gene].update({"analysis_only": False}),
+     "not the pre-planned analysis-only grid"),
+    (lambda g, gene: g["sensitivity"][gene].update({"runner_calls": 40}),
+     "not the pre-planned analysis-only grid"),
+    (lambda g, gene: g["sensitivity"][gene].update({"gene_id": "someone_else"}),
+     "not the pre-planned analysis-only grid"),
+    (lambda g, gene: g["sensitivity"][gene]["cells"].pop("tau_c=0.05|tau_r=0.03"),
+     "not the pre-planned analysis-only grid"),
     (lambda g, gene: (g["verdicts"].update({gene: "reject"}),
                       g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"})),
      "in the somatic journal"),

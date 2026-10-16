@@ -502,14 +502,19 @@ def test_the_projection_counts_the_protocols_episodes():
                              "throughput_episodes_per_hour": {"value": 500.0}}}
     projection = project_exp0001(measured, t_mine_size=60, t_eval_size=134, transfer_size=20,
                                  candidates_per_seed=(2, 10))
+    # the final evaluation at its maximum: G0 and a distinct B and C genome per seed
     assert projection["fixed_episodes"] == {"lifetime": 540, "final_evaluation": 1358}
     assert GATE_EPISODES_PER_CANDIDATE == 130
+    assert projection["shared_g0_episodes_per_gate"] == 40  # ADR-0009 D1
     two = [s for s in projection["scenarios"] if s["candidates_per_seed"] == 2]
-    assert [s["episodes"] for s in two] == [2678, 2678 + 3 * 20]  # the scripted run's 2678
+    assert [s["episodes"] for s in two] == [2798, 2798 + 3 * 20]  # 540 + 1358 + 3 * (40 + 260)
     worst = projection["scenarios"][-1]
-    assert worst["episodes"] == 540 + 1358 + 3 * (10 * 130 + 45 * 20)
-    assert worst["within_caps"]["episodes"] is False  # 8498 > 7000
-    assert two[0]["model_calls_at_pilot_mean"] == 2678 * 20 + 360  # two teacher calls per pair
+    assert worst["episodes"] == 540 + 1358 + 3 * (40 + 10 * 130 + 45 * 20)
+    assert worst["within_caps"]["episodes"] is False  # 8618 > 7000
+    assert two[0]["model_calls_at_pilot_mean"] == 2798 * 20 + 360  # two teacher calls per pair
+    none = project_exp0001(measured, t_mine_size=60, t_eval_size=134, transfer_size=20,
+                           candidates_per_seed=(0,))["scenarios"]
+    assert [s["episodes"] for s in none] == [540 + 1358]  # no gate episode without a candidate
     assert projection["status"].startswith("M ")
 
 

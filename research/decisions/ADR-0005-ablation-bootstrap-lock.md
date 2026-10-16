@@ -19,9 +19,9 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
   - The child record stores `paired_deltas` in task_id order, with `paired_delta_task_ids` naming each delta's task, so the bound recomputes from the record alone.
 - **Resamples.** 10,000, unchanged (ADR-0002).
 - **Recording.**
-  - The child record's bootstrap block carries `seed`, `n_resamples` and `cluster_order: "task_id"`.
+  - The child record's bootstrap block carries `seed`, `n_resamples` and `cluster_order: "task_id"`. (Extended by ADR-0009 D5: it also carries the `confidence`, 0.95, next to the `method`.)
   - The aggregate's `thresholds_used` carries `bootstrap_seed` and `bootstrap_cluster_order`.
-  - The manifest's ablation stage carries `bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}`.
+  - The manifest's ablation stage carries `bootstrap: {seed: 0, resamples: 10000, cluster_order: task_id}`. (Extended by ADR-0009 D5: `method: percentile`, `confidence: 0.95`, the `generator` and `recomputed_by_gate: true`.)
   - The gate checks these values before any stage-3/4 episode: the child's and the evaluation's bootstrap blocks must carry seed 0, 10,000 resamples and `cluster_order: "task_id"`, and `paired_delta_task_ids` must be distinct strings in ascending order. So the aggregate's `thresholds_used` matches what the ablation evidence declares. The gate checks the declared values; it does not recompute the bound. (Superseded by ADR-0009 D5: the gate now recomputes the bound, the point estimate and the stage verdict from the record's deltas, and checks that the deltas' tasks are the allocation's.)
 - **Scope.**
   - This covers the gate's primary ablation stage only.

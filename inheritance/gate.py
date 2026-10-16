@@ -404,15 +404,20 @@ class CigGateOrchestrator:
         # paired against it + overhead for ALL candidates
         reg_results: dict[str, RegressionEvaluation] = {}
         overhead_results: dict[str, dict] = {}
-        # one G0 run per distinct T_reg, before any candidate (EXP-0001 has
-        # one T_reg per gate run, ADR-0006 D8, so one run of 40 episodes)
+        # one G0 run per distinct (mining seed, T_reg), before any candidate,
+        # at the seed each candidate is measured at (EXP-0001 has one seed
+        # and one T_reg per gate run, ADR-0006 D8, so one run of 40 episodes)
         baselines: dict[tuple, object] = {}
-        for inp in inputs:
-            t_reg_ids = tuple(t.task_id for t in inp.regression_allocation.tasks)
-            if t_reg_ids not in baselines:
-                baselines[t_reg_ids] = run_regression_baseline(
+
+        def baseline_key(inp, seed):
+            return seed, tuple(t.task_id for t in inp.regression_allocation.tasks)
+
+        for inp, (_, seed) in zip(inputs, identities):
+            key = baseline_key(inp, seed)
+            if key not in baselines:
+                baselines[key] = run_regression_baseline(
                     base_config=self._base_config, runner=self._runner,
-                    budgets=self._budgets, mining_seed=self._mining_seed,
+                    budgets=self._budgets, mining_seed=seed,
                     allocation=inp.regression_allocation)
         for inp, (parent, seed) in zip(inputs, identities):
             gid = inp.candidate_envelope["candidate"]["gene_id"]
@@ -423,8 +428,7 @@ class CigGateOrchestrator:
                 mining_seed=seed,
                 target_regulation=self._target_regulation_by_gene.get(gid))
             reg_results[gid] = reg_evaluator.evaluate(
-                inp.regression_allocation,
-                baselines[tuple(t.task_id for t in inp.regression_allocation.tasks)])
+                inp.regression_allocation, baselines[baseline_key(inp, seed)])
             target = [s for s in self._configs_by_gene(inp).with_trait.skills
                        if s.gene_id == gid][0]
             oh = measure_expression_overhead(target, self._token_counter)

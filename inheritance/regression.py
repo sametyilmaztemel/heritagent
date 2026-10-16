@@ -172,7 +172,8 @@ class RegressionAllocation:
 @dataclass(frozen=True)
 class RegressionBaseline:
     """G0 without the trait on every T_reg task at the gate's locked
-    settings, once per gate run and shared by every candidate (ADR-0009 D1)."""
+    settings, once per mining seed in a gate run and shared by every
+    candidate of that seed (ADR-0009 D1)."""
 
     episodes: tuple[dict, ...]
     locked_settings: dict

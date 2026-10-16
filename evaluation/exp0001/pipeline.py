@@ -89,7 +89,13 @@ from evaluation.metrics.final_statistics import (
 from genome.validation.records import CigRecordStore
 from genome.validation.registry import TraitRegistry
 from inheritance.ablation import AblationEvaluator
-from inheritance.gate import CigGateOrchestrator, GateCandidateInput, ablation_evidence_issues
+from inheritance.gate import (
+    SENSITIVITY_TAU_C_GRID,
+    SENSITIVITY_TAU_R_GRID,
+    CigGateOrchestrator,
+    GateCandidateInput,
+    ablation_evidence_issues,
+)
 from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.replay import ReplayEvaluator
@@ -322,6 +328,19 @@ class Exp0001Run:
                 issues = ablation_evidence_issues(child["measurements"])
                 if issues:
                     raise RunError(f"seed {seed}: {child_id} does not recompute: {issues}")
+        # the frozen tau_c/tau_r grid is the pre-planned analysis-only one, per gated candidate
+        sensitivity = gate.get("sensitivity")
+        if not isinstance(sensitivity, Mapping) or set(sensitivity) != set(genes):
+            raise RunError(f"seed {seed}: gate.json's sensitivity grids are not the frozen "
+                           f"candidates'")
+        cells = {f"tau_c={tau_c}|tau_r={tau_r}" for tau_c in SENSITIVITY_TAU_C_GRID
+                 for tau_r in SENSITIVITY_TAU_R_GRID}
+        for gene, grid in sensitivity.items():
+            if not isinstance(grid, Mapping) or grid.get("gene_id") != gene \
+                    or grid.get("analysis_only") is not True or grid.get("runner_calls") != 0 \
+                    or not isinstance(grid.get("cells"), Mapping) or set(grid["cells"]) != cells:
+                raise RunError(f"seed {seed}: gate.json's sensitivity grid for {gene!r} is not "
+                               f"the pre-planned analysis-only grid")
 
     def _apply_decisions(self, seed: int, candidates, gate: Mapping) -> None:
         """The gate artifact is written first; the somatic journal then takes

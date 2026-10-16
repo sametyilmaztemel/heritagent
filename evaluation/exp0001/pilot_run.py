@@ -67,6 +67,8 @@ SMOKE_SKILL = {"name": "search likely places first",
 # 20, generalization 10 + 10, each with and without the trait; regression 40
 # with it only; interaction 10 tasks per eligible pair, both and neither
 GATE_EPISODES_PER_CANDIDATE = 2 * 5 + 2 * 20 + 2 * 20 + T_REG_SIZE
+# without it, G0 plays T_reg once per gate that has a candidate (ADR-0009 D1)
+SHARED_G0_EPISODES_PER_GATE = T_REG_SIZE
 INTERACTION_EPISODES_PER_PAIR = 2 * 10
 
 
@@ -282,6 +284,8 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
     calls and active hours at the pilot's means. A model estimate (M)."""
     seeds = len(MINING_SEEDS)
     lifetime = seeds * t_mine_size * LIFETIME_ATTEMPTS_PER_TASK
+    # at most G0 and a distinct B and C genome per seed; identical genomes share
+    # their cells (ADR-0009 D2), which can only lower it
     final = (1 + 2 * seeds) * (t_eval_size + T_REG_SIZE + transfer_size)
     # one pair per T_mine task at most, two calls per pair at most (ADR-0009 D8)
     teacher_calls_max = seeds * t_mine_size * MINER_CALLS_PER_PAIR_MAX
@@ -293,8 +297,9 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
     scenarios = []
     for k in candidates_per_seed:
         for pairs, label in ((0, "no interaction pair"), (comb(k, 2), "every pair eligible")):
-            episodes = lifetime + final + seeds * (k * GATE_EPISODES_PER_CANDIDATE
-                                                   + pairs * INTERACTION_EPISODES_PER_PAIR)
+            # a gate with a candidate plays G0 once on T_reg (ADR-0009 D1)
+            gate = (k and SHARED_G0_EPISODES_PER_GATE) + k * GATE_EPISODES_PER_CANDIDATE
+            episodes = lifetime + final + seeds * (gate + pairs * INTERACTION_EPISODES_PER_PAIR)
             calls = None if calls_mean is None else round(episodes * calls_mean
                                                           + teacher_calls_max)
             hours = None if not throughput else episodes / throughput
@@ -316,8 +321,11 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
                 "workers; none when its sessions differ) holds for the whole run; when its "
                 "timing does not cover every run-pass episode (complete: false), it rests on "
                 "the sessions that finished their part",
-                "teacher calls at their maximum: two per T_mine task and seed"],
+                "teacher calls at their maximum: two per T_mine task and seed",
+                "the final evaluation at its maximum: G0 and a distinct B and C genome per "
+                "seed; arms with identical genomes share their cells (ADR-0009 D2)"],
             "fixed_episodes": {"lifetime": lifetime, "final_evaluation": final},
+            "shared_g0_episodes_per_gate": SHARED_G0_EPISODES_PER_GATE,
             "gate_episodes_per_candidate": GATE_EPISODES_PER_CANDIDATE,
             "interaction_episodes_per_pair": INTERACTION_EPISODES_PER_PAIR,
             "caps": dict(caps), "scenarios": scenarios,

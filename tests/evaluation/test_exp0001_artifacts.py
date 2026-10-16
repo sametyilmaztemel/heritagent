@@ -150,6 +150,29 @@ def test_the_manifest_points_at_the_committed_artifacts(splits):
     assert "pending" not in block.group(0)  # E1-E8 are owner decisions
 
 
+def test_the_manifest_stage_lines_name_the_codes_rules():
+    """ADR-0009 D1, D2 and D5: the regression, out-of-scope and final-evaluation
+    lines the manifest records are the ones the code runs."""
+    import re
+    from evaluation.metrics.final_statistics import FINAL_RULE
+    from inheritance.regression import REGRESSION_TASK_COUNT, TAU_R
+    text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    stages = re.search(r"^inheritance:[^\n]*\n((?:  .*\n|\n)+)", text, re.MULTILINE)
+    assert stages, "the inheritance block is missing"
+    regression = re.search(r"^    regression: +\{(.*)\}", stages.group(1), re.MULTILINE)
+    assert regression, "the regression stage line is missing"
+    assert regression.group(1) == (
+        f"tasks: {REGRESSION_TASK_COUNT}, runs_per_condition: 1, pass: \"paired drop "
+        f"(success_without - success_with)/{REGRESSION_TASK_COUNT} <= {TAU_R} (tau_r)\", "
+        "g0_run: shared-per-seed-at-gate-settings")
+    assert re.search(r"^      out_of_scope: +\{.*, all_family_applicability: vacuous-pass\}",
+                     stages.group(1), re.MULTILINE)
+    run_protocol = re.search(r"^run_protocol:[^\n]*\n((?:  .*\n)+)", text, re.MULTILINE)
+    final = re.search(r"^  final_evaluation: \{(.*)\}", run_protocol.group(1), re.MULTILINE)
+    assert final.group(1) == ("temperature: 0.0, sampling_seed: none, arm_a: once, "
+                              f"identical_genomes: {FINAL_RULE['identical_genomes']}")
+
+
 def test_the_manifest_model_block_names_the_protocols_context_window():
     """ADR-0009 D4 and D8: the window and the overflow rules the manifest
     records are the protocol's."""
