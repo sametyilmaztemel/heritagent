@@ -893,7 +893,10 @@ def test_the_last_snapshot_is_not_cut_short_by_a_stop(tmp_path, monkeypatch):
     monkeypatch.setattr(mirror, "_snapshot", interrupted)
     previous = signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
-        assert cli._final_snapshot(mirror, local) is True
+        try:
+            assert cli._final_snapshot(mirror, local) is True
+        except KeyboardInterrupt:  # a regression fails this test, not the whole session
+            pytest.fail("the stop cut the last snapshot short")
         assert signal.getsignal(signal.SIGINT) is signal.default_int_handler  # restored
     finally:
         signal.signal(signal.SIGINT, previous)
@@ -946,4 +949,42 @@ def test_anything_but_a_takeover_that_stops_the_last_snapshot_leaves_the_marker(
     with pytest.raises(MirrorError):  # another machine holds the run now (ADR-0008 D5)
         cli._final_snapshot(Mirror(MirrorError("another process took over")), local)
     assert not (local / cli.UNMIRRORED).exists()
+
+
+def test_a_terminated_command_leaves_the_marker(tmp_path):
+    """The stop button's second press sends SIGTERM to the command's group:
+    while the command holds its run directory, the marker is written first,
+    so the notebooks keep the runtime until `snapshot` has run."""
+    import signal
+    import sys
+    local = tmp_path / "run"
+    child = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from evaluation.exp0001 import cli\n"
+        f"with cli._run_dir_lock(Path({str(local)!r})):\n"
+        "    print('held', flush=True)\n"
+        "    time.sleep(30)\n")
+    process = subprocess.Popen([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True,
+                               cwd=Path(cli.__file__).parents[2])
+    try:
+        assert process.stdout.readline().strip() == "held"
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=20) == -signal.SIGTERM
+    finally:
+        process.kill()
+        process.wait()
+    marker = json.loads((local / cli.UNMIRRORED).read_text())
+    assert "SIGTERM" in marker["last_error"]
+    from evaluation.exp0001.pipeline import lock_run_dir
+    lock_run_dir(local).close()  # the dead command holds nothing
+
+
+def test_the_sigterm_handler_is_the_previous_one_after_the_command(tmp_path):
+    import signal
+    before = signal.getsignal(signal.SIGTERM)
+    with cli._run_dir_lock(tmp_path / "run"):
+        assert signal.getsignal(signal.SIGTERM) is not before
+    assert signal.getsignal(signal.SIGTERM) == before
+    assert not (tmp_path / "run" / cli.UNMIRRORED).exists()
 
