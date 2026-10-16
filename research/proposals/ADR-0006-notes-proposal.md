@@ -41,15 +41,15 @@ Status M. Computed with the pinned implementation before any data. Where the tas
   - k = 3 (7.5 pp) gives an upper bound of exactly 0 in every placement (all 9,880), so the clause fails;
   - k = 4 (10 pp) gives −1/40 in every placement (all 91,390), so it passes.
 
-  So the floor is k = 4. On disjoint tasks per seed, k = 1 fails in every placement (all 9,880, upper bound 0), and k = 2 (5 pp) passed in every placement computed (upper bound −1/60 at most).
+  So the floor is k = 4, and a larger k passes too. On disjoint tasks per seed, k = 1 fails in every placement (all 9,880, upper bound 0), and k = 2 (5 pp) passes in every placement (all 3,838,380, upper bound −1/60).
 - **The expected reduction.** The pre-registered expectation is 3–8 pp (1.2–3.2 tasks). In the same-tasks pattern, all of that range is below the floor.
-- **The success clause at n = 134.** The point estimate is +7.46 pp (5/67) in each case below.
-  - 20 wins and 10 losses per seed, on the same tasks in every seed: it failed in every placement computed (lower bound −1/134 ≈ −0.0075, or 0).
+- **The success clause at n = 134.** The point estimate is +7.46 pp (5/67) in each case below, above the 5 pp threshold, so the lower bound decides.
+  - 20 wins and 10 losses per seed, on the same tasks in every seed: the clause failed in all of 12,000 random placements (lower bound −1/134 ≈ −0.0075, or 0). A search for extreme placements found lower bounds from −1/67 to +1/134, and at +1/134 the clause passes. So the outcome depends on where those tasks fall in `task_id` order; in a typical placement it fails.
   - 15 wins and 5 losses on the same tasks: it passed in every placement computed (lower bound 1/134 to 1/67).
-  - On disjoint tasks per seed, both passed in every placement computed: the lower bound ranged from 10/402 to 14/402 (about +0.025 to +0.035) for 20 and 10, and from 14/402 to 17/402 (about +0.035 to +0.042) for 15 and 5.
+  - On disjoint tasks per seed, both passed in every placement computed: the lower bound ranged from 9/402 to 14/402 (about +0.022 to +0.035) for 20 and 10, and from 14/402 to 17/402 (about +0.035 to +0.042) for 15 and 5.
 
   The expected central value is +7 pp.
-- **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. This is conservative, not a bias, and no threshold changes.
+- **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. Near the success clause's boundary, where the tasks fall in `task_id` order can decide it. Both follow from the pre-registered bootstrap at these sample sizes, and no threshold changes.
 
 The proposal reads a null on the regression clause as "below detectability at n = 40", not as evidence against the mechanism. That reading is an interpretation of a future result, which is why it needs the owner's decision.
 
