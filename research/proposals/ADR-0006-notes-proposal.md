@@ -49,7 +49,7 @@ Status M. Computed with the pinned implementation before any data. Where the tas
   - On disjoint tasks per seed, both passed in every placement computed: the lower bound ranged from 9/402 to 14/402 (about +0.022 to +0.035) for 20 and 10, and from 14/402 to 17/402 (about +0.035 to +0.042) for 15 and 5.
 
   The expected central value is +7 pp.
-- **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. Near the success clause's boundary, where the tasks fall in `task_id` order can decide it. Both follow from the pre-registered bootstrap at these sample sizes, and no threshold changes.
+- **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. Near the success clause's boundary, where the tasks fall in `task_id` order can decide the success clause. Both follow from the pre-registered bootstrap at these sample sizes, and no threshold changes.
 
 The proposal reads a null on the regression clause as "below detectability at n = 40", not as evidence against the mechanism. That reading is an interpretation of a future result, which is why it needs the owner's decision.
 
