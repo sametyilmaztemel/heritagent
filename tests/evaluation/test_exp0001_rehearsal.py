@@ -220,3 +220,32 @@ def test_the_rehearsal_refuses_a_changed_checkout(tmp_path, stubbed, monkeypatch
     assert rehearse(tmp_path) == 2
     assert "has changes" in capsys.readouterr().err
 
+
+
+def test_a_pilot_directory_resumes_only_with_its_own_code_and_model(tmp_path, stubbed):
+    """A pilot directory (or its mirror) holding another commit's or model's
+    pilot, or one from before the start record, is refused before the mirror
+    is taken over; the notebooks give each commit and model its own."""
+    from argparse import Namespace
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "ledger.jsonl").write_text("")
+    session = Namespace(repo=tmp_path, data_root=tmp_path / "data", out_dir=out, mirror_dir=None,
+                        workers=1, server_url="http://127.0.0.1:9", server_info=None,
+                        progress_every=0)
+    prepared = {"model_id": MODEL, "revision": "c" * 40, "path": None,
+                "weights": {"sha256": "d" * 64}}
+
+    def pilot():
+        return cli._pilot(session, gpu={}, prepared=prepared, adapter=lambda: None,
+                          counter=lambda: None)
+
+    with pytest.raises(cli.CliError, match="unknown code and model"):
+        pilot()
+    other = {"run_id": "EXP-0001-calibration-pilot", "commit": "a" * 40,
+             "model_id": "Qwen/Qwen2.5-7B-Instruct", "revision": "c" * 40,
+             "weights_sha256": "d" * 64}
+    (out / cli.PILOT_START).write_text(json.dumps(other))
+    with pytest.raises(cli.CliError, match="Qwen2.5-7B-Instruct"):
+        pilot()
+    assert not (out / "UNMIRRORED.json").exists()

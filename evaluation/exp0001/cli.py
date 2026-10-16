@@ -486,19 +486,21 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
     if report_path.exists():
         _out(report_path.read_text(encoding="utf-8"))
         return 0
-    # a resumed pilot plays on with the code, model and weights it started with, or not at all
-    identity = {"run_id": run_id, "commit": commit, "model_id": prepared["model_id"],
-                "revision": prepared["revision"],
-                "weights_sha256": prepared["weights"]["sha256"]}
-    started = out / PILOT_START
-    if (out / "ledger.jsonl").exists() and \
-            (not started.exists() or _json(started) != identity):
-        raise CliError(f"{out} holds a pilot of {_json(started) if started.exists() else 'unknown'}"
-                       f" code and model, not {identity}; give this pilot a new directory "
-                       f"(and a new mirror)")
     adapter = adapter()
     counter = counter()
     with _run_dir_lock(out):  # one writer, before the mirror is taken over
+        # a resumed pilot plays on with the code, model and weights it started with, or not
+        # at all
+        identity = {"run_id": run_id, "commit": commit, "model_id": prepared["model_id"],
+                    "revision": prepared["revision"],
+                    "weights_sha256": prepared["weights"]["sha256"]}
+        started = out / PILOT_START
+        if (out / "ledger.jsonl").exists() and \
+                (not started.exists() or _json(started) != identity):
+            raise CliError(f"{out} holds a pilot of "
+                           f"{_json(started) if started.exists() else 'unknown'} code and "
+                           f"model, not {identity}; give this pilot a new directory (and a "
+                           f"new mirror)")
         if not started.exists():
             _write_json(started, identity)
         mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
