@@ -101,7 +101,12 @@ def expert_commands(gamefile: str, *, max_steps: int) -> tuple[list[str], bool]:
 
 def game_plan(env_factory, data_root: str, game_id: str, max_steps: int) -> dict:
     """One pilot game's task text as the episode shows it (through the run's
-    own game factory) and its expert plan; run in a worker process."""
+    own game factory) and its expert plan; run in a worker process. The
+    handcoded expert draws from ``random`` unseeded, so it is seeded per game
+    here (and the plan pool runs with a fixed hash seed): the same games
+    give the same plans in every rehearsal."""
+    import random
+    random.seed(f"heritagent-rehearsal-expert|{game_id}")
     env = env_factory("train", game_id)
     try:
         task = env.start()

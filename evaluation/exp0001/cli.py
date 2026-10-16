@@ -621,9 +621,18 @@ def cmd_rehearse(args) -> int:
     if args.workers == 1:  # in this process, as the pilot's episodes then are
         plans = list(map(rehearsal.game_plan, *jobs))
     else:
-        with ProcessPoolExecutor(max_workers=min(args.workers, len(games)),
-                                 mp_context=multiprocessing.get_context("spawn")) as pool:
-            plans = list(pool.map(rehearsal.game_plan, *jobs))
+        import os
+        hash_seed = os.environ.get("PYTHONHASHSEED")
+        os.environ["PYTHONHASHSEED"] = "0"  # the plan workers only: the expert's set orders
+        try:
+            with ProcessPoolExecutor(max_workers=min(args.workers, len(games)),
+                                     mp_context=multiprocessing.get_context("spawn")) as pool:
+                plans = list(pool.map(rehearsal.game_plan, *jobs))
+        finally:
+            if hash_seed is None:
+                os.environ.pop("PYTHONHASHSEED", None)
+            else:
+                os.environ["PYTHONHASHSEED"] = hash_seed
     tasks = [plan["task"] for plan in plans]
     for plan in plans:  # a task text two games share cannot tell them apart: never won
         plan["won"] = plan["won"] and tasks.count(plan["task"]) == 1
@@ -714,6 +723,8 @@ def cmd_rehearse(args) -> int:
         "the pairs' teacher prompts counted with the tokenizer":
             m["miner_prompt_tokens_t07_pairs"]["counted"] is True
             and m["miner_prompt_tokens_t07_pairs"]["pairs"] == expected["t07_pairs"],
+        # the model's chat template rendered at least one real teacher prompt
+        "a pair's teacher prompt was rendered": expected["t07_pairs"] >= 1,
         "no prompt overflowed": m["prompt_tokens_per_call_max"]["context_overflows"] == 0,
     })
     failed = [name for name, ok in checks.items() if not ok]
