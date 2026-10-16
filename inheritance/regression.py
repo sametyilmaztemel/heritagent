@@ -5,8 +5,9 @@ Regression: T_reg is the frozen 40-task subset of T_mine that G0 solved in
 a lifetime episode. Every task carries immutable provenance (the original
 successful G0 trajectory id, baseline_success == True). Since ADR-0009 D1
 (owner, 2026-10-15) the stage is paired: G0 without the trait plays every
-T_reg task once at the gate's locked settings, shared by every candidate of
-the gate run (``run_regression_baseline``), and each candidate runs T_reg
+T_reg task once per mining seed at the gate's locked settings, shared by
+every candidate of that seed (``run_regression_baseline``), and each
+candidate runs T_reg
 with ``genome ∪ trait`` at the same settings. Locked threshold:
 ``regression_drop = (success_without - success_with) / 40 <= 0.03`` (tau_r;
 with 40 binary tasks a net loss of at most one task; a net gain passes).

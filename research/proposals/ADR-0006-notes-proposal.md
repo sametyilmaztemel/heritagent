@@ -43,7 +43,7 @@ Status M. Computed with the pinned implementation before any data.
 
   On disjoint tasks per seed, k ≥ 2 (5 pp) passes.
 - **The expected reduction.** The pre-registered expectation is 3–8 pp (1.2–3.2 tasks). In the same-tasks pattern, all of that range is below the floor.
-- **The success clause at n = 134.** Take a net +7.46 pp made of 20 wins and 10 losses per seed, on the same tasks in every seed: it fails (lower bound −1/134 ≈ −0.0075, or 0, depending on where the tasks fall in `task_id` order). 15 wins and 5 losses on the same tasks pass. On disjoint tasks per seed, both pass (lower bound 2/67 ≈ +0.030 for 20 and 10; 5/134 or 8/201, about +0.037 to +0.040, for 15 and 5). The expected central value is +7 pp.
+- **The success clause at n = 134.** Take a net +7.46 pp made of 20 wins and 10 losses per seed, on the same tasks in every seed: it fails (lower bound −1/134 ≈ −0.0075, or 0, depending on where the tasks fall in `task_id` order). 15 wins and 5 losses on the same tasks pass. On disjoint tasks per seed, both pass, whatever the placement: the lower bound is 11/402 to 13/402 (about +0.027 to +0.032; 2/67 in most placements) for 20 and 10, and 5/134 or 8/201 (about +0.037 to +0.040) for 15 and 5. The expected central value is +7 pp.
 - **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. This is conservative, not a bias, and no threshold changes.
 
 The proposal reads a null on the regression clause as "below detectability at n = 40", not as evidence against the mechanism. That reading is an interpretation of a future result, which is why it needs the owner's decision.

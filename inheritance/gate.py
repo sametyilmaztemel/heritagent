@@ -12,7 +12,8 @@ Orchestration order (handoff §14) for a frozen candidate set:
    ``load_cig`` validation + exact ``<parent>/S<seed>-<stage>`` child ids
    + full coherence, failing closed before any stage-3/4 runner call;
 3. stage-3 generalization for ALL candidates;
-4. one shared G0 run on T_reg at the gate's locked settings, then
+4. one shared G0 run on T_reg per mining seed at the gate's locked settings,
+   then
    regression (paired against it, ADR-0009 D1) + overhead for ALL
    candidates (the token counter contract is validated fail-closed before
    first use);

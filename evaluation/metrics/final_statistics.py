@@ -24,7 +24,9 @@ retunes a threshold. The locked rules (EXP-0001-design section 5, manifest
 - D5 incomplete data fails closed: no primary verdict unless every
   (arm, seed, task) cell holds exactly one recorded outcome.
 - D6 bloat and adaptation cost are descriptive only: no CI, no test.
-- D7 arm A (unchanged G0) runs once; its outcomes serve every seed.
+- D7 arm A (unchanged G0) runs once; its outcomes serve every seed. ADR-0009
+  D2 extends this to every arm: each distinct genome is evaluated once, and
+  every arm and seed whose genome it is reads the same cells.
 
 The output states rule outcomes only. It never calls a result validated
 (SPEC section 32) and makes no causal or inheritance claim (SPEC section 34).
