@@ -313,6 +313,17 @@ def test_a_rehearsal_stopped_while_its_mirror_fails_still_stops(tmp_path, stubbe
     assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
 
 
+def test_a_rehearsal_stopped_before_its_pilot_says_it_does_not_resume(tmp_path, stubbed,
+                                                                      monkeypatch, capsys):
+    def stopped(adapter):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_preflight", stopped)
+    assert rehearse(tmp_path) == 130
+    err = capsys.readouterr().err
+    assert "did not finish" in err and cli.STOPPED not in err
+
+
 def test_the_stand_in_keeps_from_xgrammar_what_vllm_does():
     """vLLM 0.29.0's rule, on the schema the miner sends and on its full one."""
     from runtime.model_adapters.openai_server import server_constraint

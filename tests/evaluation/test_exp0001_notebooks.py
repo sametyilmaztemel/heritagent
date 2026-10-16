@@ -113,6 +113,7 @@ def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
     if "run" in name:  # the guard checks the commit a resumed run continues with
         assert first(cells, '"run-commit"') < required
         assert first(cells, "COMMIT = checkout(run_commit)") < required
+        assert "if run_commit:" in cells[required]  # whatever CODE_REF says
 
 
 def test_the_rehearsal_writes_the_records_the_a100_notebooks_read():

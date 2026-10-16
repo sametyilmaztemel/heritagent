@@ -1041,6 +1041,8 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"error: {exc}")
         return 2
     except KeyboardInterrupt:
+        if args.func is cmd_rehearse:  # stopped outside a pass: a rehearsal never resumes
+            return _rehearsal_stopped()
         _say(STOPPED)
         return 130
     except RuntimeError as exc:
