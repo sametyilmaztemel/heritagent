@@ -11,10 +11,11 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   a new run)
   prepare-model   download and hash one pinned model revision -> prepared.json
   serve           start ``vllm serve`` on it and wait until it answers
-  preflight       two calls outside any ledger that check the serving stack:
-                  a ReAct-format reply with the stop sequence, and the
-                  miner's structured output under its JSON schema (the
-                  teacher first runs only after the 540 lifetime episodes)
+  preflight       two calls outside any ledger that check the serving stack,
+                  each in its own message shape: G0's ReAct reply with the
+                  stop sequence, and the teacher's structured output under
+                  the miner's JSON schema (the teacher first runs only after
+                  the 540 lifetime episodes)
   pilot           the calibration pilot -> pilot-report.json
   rehearse        the pilot without a GPU or a model: the same checks, games,
                   workers, ledger, tokenizer, mirror and report against a
@@ -31,7 +32,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   repair-ledger   cut off a torn last ledger line, keeping it on record
 
 Exit codes: 0 done; 2 an error the message explains (a run directory
-another command still holds, say); 130 stopped (the stop button, or the
+another command still holds, or a request the model server refused or
+failed); 130 stopped (the stop button, or the
 notebook kernel that started the command restarted or died: environment
 variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
 3 when a ``run`` or ``pilot`` that finished, paused or was stopped, or a
@@ -107,6 +109,7 @@ from evaluation.exp0001.serving import (
     start_server,
     wait_until_ready,
 )
+from runtime.model_adapters.errors import AdapterError
 from runtime.model_adapters.openai_server import VLLMServerAdapter
 
 MANIFESTS = Path("experiments") / "manifests"
@@ -156,9 +159,10 @@ def _server_version(url: str) -> str | None:
 
 
 def _adapter(args, prepared: dict, **options) -> VLLMServerAdapter:
-    from evaluation.exp0001.protocol import CONTEXT_WINDOW
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS, CONTEXT_WINDOW
     adapter = VLLMServerAdapter(args.server_url, prepared["model_id"], prepared["revision"],
-                                backend_version=_server_version(args.server_url), **options)
+                                backend_version=_server_version(args.server_url),
+                                chat_template_kwargs=CHAT_TEMPLATE_KWARGS, **options)
     adapter.require_served()
     window = adapter.served_context_window()
     if window != CONTEXT_WINDOW:  # pre-registered (ADR-0009 D4)
@@ -255,7 +259,7 @@ def cmd_serve(args) -> int:
     prepared = load_prepared(args.prepared)
     command = server_command(prepared, port=args.port, max_model_len=args.max_model_len,
                              gpu_memory_utilization=args.gpu_memory_utilization)
-    environment = server_environment(batch_invariant=not args.no_batch_invariant)
+    environment = server_environment()
     url = f"http://127.0.0.1:{args.port}"
     earlier = _json(args.info) if Path(args.info).exists() else {}
     if process_alive(earlier.get("pid")):
@@ -308,19 +312,31 @@ def cmd_preflight(args) -> int:
 
 
 def _preflight(adapter: VLLMServerAdapter) -> dict:
-    from runtime.model_adapters.base import GenerationSettings, ModelMessage
-    from runtime.policies.planner_react import STOP_SEQUENCES
-    from traits.miner.miner import output_schema
+    """G0's own message shape (system and user, ReActPlanner) with its stop
+    sequence, and the teacher's (one user message, ``teacher_messages``)
+    under the miner's schema: a chat template that refuses either shape
+    fails here, before any episode."""
+    from evaluation.benchmarks.alfworld.splits import ALFWORLD_TASK_TYPES
+    from runtime.model_adapters.base import GenerationSettings
+    from runtime.policies.planner_react import STOP_SEQUENCES, ReActPlanner
+    from runtime.tool_adapters.alfworld import ACT_TOOL
+    from traits.miner.miner import output_schema, render_teacher_prompt, teacher_messages
 
+    task = ("You are in the middle of a room.\n\nYour task is to: look at the room.\n\n"
+            "Admissible commands:\nlook")
+    planner = ReActPlanner({"style": "react", "max_plan_steps": 1})
     reply = adapter.generate(
-        [ModelMessage("user", "Reply with one line: Thought: ready")],
+        planner.build_messages(task=task, observations=[task], skills=(), tools=[ACT_TOOL],
+                               step=1, max_steps=1),
         GenerationSettings(temperature=0.0, max_tokens=64, seed=None, stop=STOP_SEQUENCES))
     if reply.prompt_tokens is None or reply.completion_tokens is None:
         raise CliError("the server reports no token usage; the run needs exact counts")
+    prompt = render_teacher_prompt(
+        evidence_text="(a preflight call: no trajectories; propose at most one short skill)",
+        family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)), max_proposals=1)
     teacher = adapter.structured_generate(  # validated against the schema by the adapter
-        [ModelMessage("user", "Propose at most one short household-task skill as JSON that "
-                              "follows the given schema.")],
-        GenerationSettings(temperature=0.7, max_tokens=2048, seed=11), output_schema())
+        teacher_messages(prompt), GenerationSettings(temperature=0.7, max_tokens=2048, seed=11),
+        output_schema())
     return {"react_reply": reply.text[:200], "react_tokens": [
         reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
         "teacher_finish_reason": teacher.finish_reason}
@@ -529,7 +545,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
         try:
             try:
                 measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry),
-                                     count_prompt_tokens=counter.count_system_prompt_tokens,
+                                     count_prompt_tokens=counter.count_teacher_prompt_tokens,
                                      timing_path=out / "pilot-throughput.json")
             finally:
                 executor.close()
@@ -559,7 +575,9 @@ def _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verifie
               "finished_at": _now(), "code": {"commit": commit, "dirty": dirty},
               "model": {"model_id": metadata.model_id, "revision": metadata.revision,
                         "backend": metadata.backend, "backend_version": metadata.backend_version,
-                        "weights_sha256": prepared["weights"]["sha256"]},
+                        "weights_sha256": prepared["weights"]["sha256"],
+                        "chat_template_kwargs": metadata.capabilities.get(
+                            "chat_template_kwargs")},
               "accelerator": gpu, "workers": args.workers, "environment": _environment(verified),
               "note": "a calibration measurement; it tunes nothing and is no EXP-0001 result",
               **measured, "projection": projection}
@@ -645,8 +663,10 @@ def cmd_rehearse(args) -> int:
     prepared = {"model_id": args.model, "revision": revision, "path": None,
                 "weights": {"sha256": None, "note": "a rehearsal loads no weights"}}
     checks: dict[str, bool] = {}
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
     check_schema = rehearsal.xgrammar_check(counter.tokenizer)
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
+                                 template_kwargs=CHAT_TEMPLATE_KWARGS,
                                  check_schema=check_schema) as server:
         session = Namespace(repo=repo, data_root=args.data_root, out_dir=out,
                             mirror_dir=mirror_dir, workers=args.workers, server_url=server.url,
@@ -934,8 +954,6 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--log", type=Path, default=Path("vllm-server.log"))
     p.add_argument("--info", type=Path, default=Path("vllm-server.json"),
                    help="where the server's command and settings are written")
-    p.add_argument("--no-batch-invariant", action="store_true",
-                   help="faster, but a reply may then depend on the batch (ADR-0008 D4)")
     p.add_argument("--timeout", type=float, default=1800.0)
     p.set_defaults(func=cmd_serve)
 
@@ -1039,6 +1057,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (CliError, BackendError, ProvenanceError, LedgerError, MirrorError) as exc:
         _say(f"error: {exc}")
+        return 2
+    except AdapterError as exc:  # the model server refused or failed a request
+        _say(f"error: the model server: {type(exc).__name__}: {exc}")
         return 2
     except KeyboardInterrupt:
         if args.func is cmd_rehearse:  # stopped outside a pass: a rehearsal never resumes

@@ -193,3 +193,23 @@ def test_the_manifest_model_block_names_the_protocols_context_window():
                      r"-never-truncated\s", body, re.MULTILINE)
     assert re.search(r"^  miner_context_overflow: full-evidence-then-without-admissible-commands"
                      r"-then-reject-never-truncated\s", body, re.MULTILINE)
+
+
+def test_the_manifest_names_the_served_model_and_its_serving_rules():
+    """ADR-0011: the manifest's model is the one the run serves and the
+    notebooks name; thinking off; no batch-invariant kernels."""
+    import json
+    import re
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
+    from evaluation.exp0001.serving import DEFAULT_MODEL, server_environment
+    text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    body = re.search(r"^model:[^\n]*\n((?:  .*\n)+)", text, re.MULTILINE).group(1)
+    assert re.search(r"^  name: (\S+)", body, re.MULTILINE).group(1) == DEFAULT_MODEL.split("/")[1]
+    assert re.search(r"^  chat_template_kwargs: \{enable_thinking: false\}\s", body, re.MULTILINE)
+    assert dict(CHAT_TEMPLATE_KWARGS) == {"enable_thinking": False}
+    assert re.search(r"^    backend: no-batch-invariant-kernels\s", body, re.MULTILINE)
+    assert server_environment() == {"VLLM_BATCH_INVARIANT": "0"}
+    notebooks = Path(__file__).resolve().parents[2] / "notebooks"
+    for name in ("EXP-0001-pilot.ipynb", "EXP-0001-run.ipynb", "EXP-0001-rehearsal.ipynb"):
+        cells = json.loads((notebooks / name).read_text(encoding="utf-8"))["cells"]
+        assert f'MODEL = "{DEFAULT_MODEL}"' in "".join(cells[1]["source"]), name

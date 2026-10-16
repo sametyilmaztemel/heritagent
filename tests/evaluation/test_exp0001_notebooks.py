@@ -23,7 +23,7 @@ NAMES = ["EXP-0001-pilot.ipynb", "EXP-0001-run.ipynb"]  # the A100 notebooks
 REHEARSAL = "EXP-0001-rehearsal.ipynb"  # the CPU notebook that comes first
 ALL = NAMES + [REHEARSAL]
 # the optional flags' two branches: every other name reads as "1"
-BRANCHES = [{}, {"BATCH_INVARIANT": False, "STOP_AFTER_HOURS": None, "revision": None}]
+BRANCHES = [{}, {"STOP_AFTER_HOURS": None, "revision": None}]
 
 
 class Names(dict):

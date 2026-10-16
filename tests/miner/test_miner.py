@@ -462,6 +462,8 @@ def test_family_universe_canonical_order(tmp_path, registry, context, miner):
     scripted = scripted_miner(miner, [{"proposals": []}])
     miner.mine(batch_a)
     prompt_a = miner._model.requests[0].messages[0].content
+    # one user message: Qwen3.8's chat template refuses a request without one (ADR-0011 D4)
+    assert [m.role for m in miner._model.requests[0].messages] == ["user"]
     scripted_b = ScriptedAdapter([{"proposals": []}])
     miner._model = scripted_b
     miner.mine(batch_b)

@@ -12,8 +12,9 @@ server in this process that answers ``/version``, ``/v1/models`` and
 request with the model's own chat template (a template that refuses the
 request is a 400, as on the server), compiles a response-format schema with
 xgrammar and the model's tokenizer when xgrammar is installed, refuses a
-request that breaks the pilot's protocol (``protocol_issues``), and plays
-ALFWorld's handcoded expert on the episodes it is set to win.
+request that breaks the pilot's protocol (``protocol_issues``) or lacks the
+protocol's chat-template arguments, and plays ALFWorld's handcoded expert on
+the episodes it is set to win.
 
 A rehearsal measures nothing about any model. Its ledger is its own run
 (``REHEARSAL_RUN_ID``), its report is not a pilot report, and the command
@@ -286,8 +287,10 @@ class StandInServer:
                  count_prompt: Callable[[list[dict]], int],
                  context_window: int = CONTEXT_WINDOW,
                  check_protocol: bool = True,
-                 check_schema: Callable[[dict], None] | None = None):
+                 check_schema: Callable[[dict], None] | None = None,
+                 template_kwargs: Mapping | None = None):
         self.model_id = model_id
+        self.template_kwargs = dict(template_kwargs or {})
         self.outage_seed = None
         self.requests = 0
         self.failed = 0  # the outage's 503s
@@ -332,6 +335,9 @@ class StandInServer:
                 self.failed += 1
                 return 503, {"object": "error", "message": "the stand-in is down"}
         issues = protocol_issues(payload) if self._check_protocol else []
+        if dict(payload.get("chat_template_kwargs") or {}) != self.template_kwargs:
+            issues.append(f"chat_template_kwargs {payload.get('chat_template_kwargs')!r} are "
+                          f"not the protocol's {self.template_kwargs!r}")
         if issues:
             return self._refuse(f"the stand-in refuses a request that breaks the pilot's "
                                 f"protocol: {'; '.join(issues)}")

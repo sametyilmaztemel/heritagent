@@ -63,12 +63,13 @@ experiment:
     immutability: once-execution-starts-immutable-under-same-experiment-id
 
 model:
-  name: Qwen2.5-7B-Instruct
+  name: Qwen3.8-27B                # ADR-0011 D1 (owner, 2026-10-16): bf16, served text-only; G0 and the teacher (was Qwen2.5-7B-Instruct)
   serving: vllm-local
   revision: pin-at-run-time          # record weights hash at run start
   eval_temperature: 0.0
   eval_stop: ["\nObservation:"]    # ADR-0003 A2: ReAct generation stops before an observation line; every ReAct call, the lifetime's temperature-0.7 calls included (ADR-0009 D5)
-  context_window: 32768              # ADR-0009 D4 (owner, 2026-10-15): Qwen2.5-7B-Instruct's native length; the server must report it
+  context_window: 32768              # ADR-0009 D4 (owner, 2026-10-15), kept by ADR-0011 D5 (Qwen3.8-27B's native length is 262,144); the server must report it
+  chat_template_kwargs: {enable_thinking: false}   # ADR-0011 D3: every request, the server's default and the token counter; the teacher prompt is one user message (D4)
   context_overflow: episode-ends-budget-exhausted-context-window-failure-never-truncated   # ADR-0009 D4: a call fits if its prompt tokens plus its max_tokens are at most the window
   miner_context_overflow: full-evidence-then-without-admissible-commands-then-reject-never-truncated   # ADR-0009 D8 (owner, 2026-10-15); the cap check reserves 2 teacher calls per pair, the run records the forms sent
   mining_temperature: 0.7
@@ -77,6 +78,7 @@ model:
     no_pseudo_replication: true      # duplicate deterministic runs are never independent evidence
     uncertainty_sources: [distinct-task-instances, independent-mining-seeds]
     future_stochastic_repeats: require-explicit-pre-registered-stochastic-source
+    backend: no-batch-invariant-kernels   # ADR-0011 D2 (owner, 2026-10-16): vLLM has none for Qwen3.8's Gated-DeltaNet layers; a temperature-0 reply may depend on the batch; never averaged, measured by the pilot's repeat check, disclosed
 
 genome:
   initial: G0-seed-react              # planner_react_v2 + retry_backoff_v1, no skills (ADR-0003 D4)

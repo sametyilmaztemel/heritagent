@@ -5,11 +5,14 @@
   current one) and hash its files with ``sha256_files``. The weights the
   run-start record names are the files the server loads.
 - ``server_command`` / ``start_server``: ``vllm serve`` on that local
-  snapshot under the model's hub id, with vLLM's neutral sampling defaults
-  (``--generation-config vllm``), a fixed engine seed and batch-invariant
-  kernels (``VLLM_BATCH_INVARIANT=1``: a reply does not depend on what else
-  is in the batch; vLLM lists Qwen2.5-7B-Instruct among the validated
-  models and needs compute capability 8.0, which the A100 has).
+  snapshot under the model's hub id, text only (``--language-model-only``:
+  Qwen3.8-27B is a vision-language checkpoint), with vLLM's neutral sampling
+  defaults (``--generation-config vllm``), a fixed engine seed and thinking
+  off by default (``--default-chat-template-kwargs``; every request also
+  sends it). Batch-invariant kernels are off (``VLLM_BATCH_INVARIANT=0``):
+  vLLM 0.29.0 refuses them for Qwen3.8's Gated-DeltaNet layers, so a
+  temperature-0 reply may depend on what else is in the batch (ADR-0011 D2,
+  amending ADR-0008 D4).
 - ``wait_until_ready``: poll the server until it serves the model, or fail
   with the tail of its log."""
 
@@ -23,12 +26,12 @@ from importlib import metadata as importlib_metadata
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from evaluation.exp0001.protocol import CONTEXT_WINDOW
+from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS, CONTEXT_WINDOW
 from evaluation.exp0001.provenance import ProvenanceError, sha256_files
 from runtime.model_adapters.openai_server import VLLMServerAdapter
 
 PREPARED_SCHEMA = "heritagent/exp0001-prepared-model/0.1"
-DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # manifest model.name
+DEFAULT_MODEL = "Qwen/Qwen3.8-27B"  # manifest model.name (ADR-0011 D1)
 DEFAULT_PORT = 8000
 DEFAULT_MAX_MODEL_LEN = CONTEXT_WINDOW  # pre-registered (ADR-0009 D4)
 
@@ -91,11 +94,15 @@ def server_command(prepared: Mapping, *, port: int = DEFAULT_PORT,
             "--host", "127.0.0.1", "--port", str(port),
             "--max-model-len", str(max_model_len),
             "--gpu-memory-utilization", str(gpu_memory_utilization),
-            "--generation-config", "vllm", "--seed", "0"]
+            "--generation-config", "vllm", "--seed", "0", "--language-model-only",
+            "--default-chat-template-kwargs",
+            json.dumps(dict(CHAT_TEMPLATE_KWARGS), sort_keys=True)]
 
 
-def server_environment(*, batch_invariant: bool = True) -> dict:
-    return {"VLLM_BATCH_INVARIANT": "1" if batch_invariant else "0"}
+def server_environment() -> dict:
+    """No batch-invariant kernels: vLLM 0.29.0 has none for Gated-DeltaNet
+    layers and refuses to start with them (ADR-0011 D2)."""
+    return {"VLLM_BATCH_INVARIANT": "0"}
 
 
 def start_server(command: list[str], log_path: Path, *, environment: Mapping | None = None,
