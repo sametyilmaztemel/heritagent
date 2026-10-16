@@ -16,6 +16,10 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   miner's structured output under its JSON schema (the
                   teacher first runs only after the 540 lifetime episodes)
   pilot           the calibration pilot -> pilot-report.json
+  rehearse        the pilot without a GPU or a model: the same checks, games,
+                  workers, ledger, tokenizer, mirror and report against a
+                  stand-in server, with an outage and a restore on the way
+                  (run it on a CPU runtime before the A100 is paid for)
   run             EXP-0001: write (or check) the run-start record, restore the
                   run directory from its mirror if it is missing, run or
                   resume, snapshot to the mirror
@@ -149,10 +153,10 @@ def _server_version(url: str) -> str | None:
         return None
 
 
-def _adapter(args, prepared: dict) -> VLLMServerAdapter:
+def _adapter(args, prepared: dict, **options) -> VLLMServerAdapter:
     from evaluation.exp0001.protocol import CONTEXT_WINDOW
     adapter = VLLMServerAdapter(args.server_url, prepared["model_id"], prepared["revision"],
-                                backend_version=_server_version(args.server_url))
+                                backend_version=_server_version(args.server_url), **options)
     adapter.require_served()
     window = adapter.served_context_window()
     if window != CONTEXT_WINDOW:  # pre-registered (ADR-0009 D4)
@@ -296,12 +300,16 @@ class _Pid:
 
 
 def cmd_preflight(args) -> int:
+    prepared = load_prepared(args.prepared)
+    print(json.dumps(_preflight(_adapter(args, prepared)), indent=2))
+    return 0
+
+
+def _preflight(adapter: VLLMServerAdapter) -> dict:
     from runtime.model_adapters.base import GenerationSettings, ModelMessage
     from runtime.policies.planner_react import STOP_SEQUENCES
     from traits.miner.miner import output_schema
 
-    prepared = load_prepared(args.prepared)
-    adapter = _adapter(args, prepared)
     reply = adapter.generate(
         [ModelMessage("user", "Reply with one line: Thought: ready")],
         GenerationSettings(temperature=0.0, max_tokens=64, seed=None, stop=STOP_SEQUENCES))
@@ -311,10 +319,9 @@ def cmd_preflight(args) -> int:
         [ModelMessage("user", "Propose at most one short household-task skill as JSON that "
                               "follows the given schema.")],
         GenerationSettings(temperature=0.7, max_tokens=2048, seed=11), output_schema())
-    print(json.dumps({"react_reply": reply.text[:200], "react_tokens": [
+    return {"react_reply": reply.text[:200], "react_tokens": [
         reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
-        "teacher_finish_reason": teacher.finish_reason}, indent=2))
-    return 0
+        "teacher_finish_reason": teacher.finish_reason}
 
 
 EXIT_UNMIRRORED = 3
@@ -445,12 +452,25 @@ def _stopped(mirrored: bool) -> int:
 
 
 def cmd_pilot(args) -> int:
+    gpu = require_a100_80gb(gpu_inventory())
+    prepared = load_prepared(args.prepared)
+
+    def counter():  # the miner prompts of the pilot's pairs, with the model's own tokenizer
+        return hf_token_counter(prepared["model_id"], prepared["revision"],
+                                path=Path(prepared["path"]))
+
+    return _pilot(args, gpu=gpu, prepared=prepared, adapter=lambda: _adapter(args, prepared),
+                  counter=counter)
+
+
+def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = PILOT_RUN_ID,
+           report_name: str = "pilot-report.json", report_fields: Mapping | None = None) -> int:
+    """The pilot from its checks to its last snapshot; ``rehearse`` runs the
+    same against its stand-in server (its own run id and report)."""
     from runtime.expression import compile_runtime_config
     from runtime.seed_g0 import build_g0_seed_genome
     from genome.validation.registry import TraitRegistry
 
-    gpu = require_a100_80gb(gpu_inventory())
-    prepared = load_prepared(args.prepared)
     repo = Path(args.repo)
     commit, dirty = git_state(repo)
     if dirty:
@@ -459,17 +479,15 @@ def cmd_pilot(args) -> int:
     verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
     out = Path(args.out_dir)
     _restore_if_missing(out, args.mirror_dir)
-    report_path = out / "pilot-report.json"
+    report_path = out / report_name
     if report_path.exists():
         _out(report_path.read_text(encoding="utf-8"))
         return 0
-    adapter = _adapter(args, prepared)
-    # the miner prompts of the pilot's pairs are counted with the model's own tokenizer
-    counter = hf_token_counter(prepared["model_id"], prepared["revision"],
-                               path=Path(prepared["path"]))
+    adapter = adapter()
+    counter = counter()
     with _run_dir_lock(out):  # one writer, before the mirror is taken over
         mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
-        ledger = RunLedger(out / "ledger.jsonl", run_id=PILOT_RUN_ID, clock=time.time, caps=CAPS,
+        ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=CAPS,
                            session_info=_session_info(gpu, adapter, args.workers,
                                                       args.server_info),
                            on_append=Progress(mirror, args.progress_every))
@@ -479,7 +497,7 @@ def cmd_pilot(args) -> int:
         executor = EpisodeExecutor(
             model=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits,
                                                           extra_games=pilot_games),
-            ledger=ledger, trajectories_dir=out / "trajectories", run_id=PILOT_RUN_ID,
+            ledger=ledger, trajectories_dir=out / "trajectories", run_id=run_id,
             code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
         started = _now()
         report, stopped, mirrored = None, False, False
@@ -490,8 +508,9 @@ def cmd_pilot(args) -> int:
                                      timing_path=out / "pilot-throughput.json")
             finally:
                 executor.close()
-            report = _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu,
-                                   verified, commit, dirty, started)
+            report = {**_pilot_report(args, measured, splits, pilot, adapter, prepared, gpu,
+                                      verified, commit, dirty, started),
+                      **dict(report_fields or {})}
             freeze_json(report_path, report)
         except KeyboardInterrupt:
             stopped = True
@@ -520,6 +539,151 @@ def _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verifie
               "note": "a calibration measurement; it tunes nothing and is no EXP-0001 result",
               **measured, "projection": projection}
     return report
+
+
+def _empty_dir(path: Path | None, what: str) -> None:
+    if path is not None and Path(path).exists() and any(Path(path).iterdir()):
+        raise CliError(f"the rehearsal's {what} {path} is not empty; give each rehearsal a new "
+                       f"one (a rehearsal never touches a pilot or a run)")
+
+
+def _ledger_lines(path: Path) -> list[dict]:
+    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
+
+
+def cmd_rehearse(args) -> int:
+    """The pilot without a GPU or a model (``evaluation.exp0001.rehearsal``):
+    the same checks, games, workers, ledger, tokenizer, mirror and report,
+    against a stand-in server, with one outage and a restore on the way."""
+    import multiprocessing
+    import shutil
+    from concurrent.futures import ProcessPoolExecutor
+    from argparse import Namespace
+
+    from evaluation.exp0001 import rehearsal
+    from evaluation.exp0001.pilot_run import PILOT_ATTEMPT_SEED, pilot_specs
+    from evaluation.exp0001.protocol import attempt_sampling_seed
+    from evaluation.exp0001.serving import resolve_revision
+    from genome.validation.registry import TraitRegistry
+    from runtime.expression import compile_runtime_config
+    from runtime.model_adapters.errors import BackendUnavailableError
+    from runtime.seed_g0 import build_g0_seed_genome
+
+    out, mirror_dir = Path(args.out_dir), args.mirror_dir
+    _empty_dir(out, "directory")
+    _empty_dir(mirror_dir, "mirror directory")
+    repo = Path(args.repo)
+    commit, dirty = git_state(repo)
+    if dirty:
+        raise CliError(f"the checkout at {repo} has changes; the pilot report names a clean commit")
+    splits, pilot = _manifests(repo)
+    verify_data(args.data_root, splits, pilot)
+    revision = resolve_revision(args.model, args.revision)
+    counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
+    _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python {sys.version.split()[0]}")
+
+    games = sorted(g["game_id"] for g in pilot["games"])
+    factory = AlfworldEnvFactory(args.data_root, splits, extra_games={
+        ("train", g["game_id"]): g["content_sha256"] for g in pilot["games"]})
+    max_steps = protocol_budgets().max_steps
+    with ProcessPoolExecutor(max_workers=min(args.workers, len(games)),
+                             mp_context=multiprocessing.get_context("spawn")) as pool:
+        plans = list(pool.map(rehearsal.game_plan, [factory] * len(games),
+                              [str(args.data_root)] * len(games), games,
+                              [max_steps] * len(games)))
+    tasks = [plan["task"] for plan in plans]
+    for plan in plans:  # a task text two games share cannot tell them apart: never won
+        plan["won"] = plan["won"] and tasks.count(plan["task"]) == 1
+    expected = rehearsal.expected_counts(plans)
+    _out(f"[rehearsal] {len(plans)} pilot games opened in worker processes; the expert wins "
+         f"{sum(p['won'] for p in plans)}; the stand-in will win {expected}")
+
+    policy = rehearsal.StandInPolicy({p["task"]: p["commands"] for p in plans if p["won"]})
+    prepared = {"model_id": args.model, "revision": revision, "path": None,
+                "weights": {"sha256": None, "note": "a rehearsal loads no weights"}}
+    checks: dict[str, bool] = {}
+    with rehearsal.StandInServer(args.model, policy,
+                                 count_prompt=counter.count_chat_tokens) as server:
+        session = Namespace(repo=repo, data_root=args.data_root, out_dir=out,
+                            mirror_dir=mirror_dir, workers=args.workers, server_url=server.url,
+                            server_info=None, progress_every=args.progress_every)
+
+        def adapter():  # retried briefly: the outage below must end the pass quickly
+            return _adapter(session, prepared, transport_retries=1, backoff_seconds=0.05)
+
+        def run():
+            return _pilot(session, gpu=dict(rehearsal.REHEARSAL_GPU), prepared=prepared,
+                          adapter=adapter, counter=lambda: counter,
+                          run_id=rehearsal.REHEARSAL_RUN_ID,
+                          report_name=rehearsal.REHEARSAL_REPORT, report_fields={
+                              "schema": rehearsal.REHEARSAL_REPORT_SCHEMA,
+                              "note": "a rehearsal against a stand-in model server: it checks "
+                                      "the code path and measures nothing about any model"})
+
+        preflight = _preflight(adapter())
+        checks["preflight"] = preflight["teacher_reply"] == {"proposals": []}
+        server.outage_seed = attempt_sampling_seed(PILOT_ATTEMPT_SEED, games[len(games) // 2], 1)
+        try:
+            run()
+            checks["the outage stopped the first pass"] = False
+        except BackendUnavailableError as exc:
+            checks["the outage stopped the first pass"] = server.url in str(exc)
+        server.outage_seed = None
+        first = {r["key"] for r in _ledger_lines(out / "ledger.jsonl")
+                 if r.get("type") == "episode"}
+        checks["the first pass recorded part of the pilot"] = 0 < len(first)
+        checks["the first pass left no unmirrored marker"] = not (out / UNMIRRORED).exists()
+        if mirror_dir is not None:
+            shutil.rmtree(out)  # the rehearsal's own directory: the next pass restores it
+        _out(f"[rehearsal] first pass stopped by the outage after {len(first)} episodes; "
+             + ("restoring from the mirror" if mirror_dir is not None else "resuming in place"))
+        code = run()
+        checks["the second pass finished"] = code == 0
+    report = _json(out / rehearsal.REHEARSAL_REPORT)
+    lines = _ledger_lines(out / "ledger.jsonl")
+    registry = TraitRegistry(out / "registry")
+    specs = pilot_specs(pilot, compile_runtime_config(build_g0_seed_genome(registry), registry))
+    keys = sorted(spec.key for kind in specs.values() for spec in kind)
+    recorded = [r["key"] for r in lines if r.get("type") == "episode"]
+    ledger = RunLedger(out / "ledger.jsonl", run_id=rehearsal.REHEARSAL_RUN_ID, clock=time.time,
+                       caps=CAPS, readonly=True).summary()
+    m = report["measures"]
+    checks.update({
+        "every pilot episode recorded once": sorted(recorded) == keys,
+        "the first pass's episodes were not played again": first <= set(recorded)
+        and len(recorded) == len(set(recorded)),
+        "the outage's attempt was charged": ledger["aborted_attempts"] >= 1,
+        "the restore is on record": mirror_dir is None or "restore" in ledger["notes"],
+        "the temperature-0 successes": m["g0_success_rate_p0"]["numerator"]
+        == expected["t0_successes"],
+        "the temperature-0.7 successes": m["temperature_0_7_attempt_success_rate"]["numerator"]
+        == expected["t07_successes"],
+        "the temperature-0.7 pairs": m["temperature_0_7_pair_yield"]["numerator"]
+        == expected["t07_pairs"],
+        "solved in any attempt": m["temperature_0_7_solved_in_any_attempt"]["numerator"]
+        == expected["t07_solved_in_any_attempt"],
+        "the repeats are identical": m["temperature_0_repeat_determinism"]["all_identical"]
+        is True,
+        "the arm-B smoke test": m["arm_b_rendering_smoke_test"]["passed"] is True,
+        "the pairs' teacher prompts counted with the tokenizer":
+            m["miner_prompt_tokens_t07_pairs"]["counted"] is True
+            and m["miner_prompt_tokens_t07_pairs"]["pairs"] == expected["t07_pairs"],
+        "no prompt overflowed": m["prompt_tokens_per_call_max"]["context_overflows"] == 0,
+    })
+    failed = [name for name, ok in checks.items() if not ok]
+    summary = {"schema": rehearsal.REHEARSAL_PASSED_SCHEMA, "passed": not failed,
+               "code": {"commit": commit}, "python": sys.version.split()[0],
+               "software": software_stack(), "model": {"model_id": args.model,
+                                                       "revision": revision,
+                                                       "tokenizer": counter.identity},
+               "workers": args.workers, "expected": expected, "checks": checks,
+               "stand_in_requests": server.requests, "finished_at": _now()}
+    _out(json.dumps(summary, indent=2))
+    if failed:
+        raise CliError(f"the rehearsal failed: {failed}")
+    _write_json(out / rehearsal.REHEARSAL_PASSED, summary)
+    _out(f"[rehearsal] PASSED; record {out / rehearsal.REHEARSAL_PASSED}")
+    return 0
 
 
 def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
@@ -715,6 +879,21 @@ def parser() -> argparse.ArgumentParser:
                            help="admit no new episode after this many hours of this session; "
                                 "the run stays resumable (compute-unit budgeting)")
         p.set_defaults(func=func)
+
+    p = sub.add_parser("rehearse")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--revision", default=None, help="a commit, branch or tag; default the "
+                   "hub's current commit")
+    p.add_argument("--data-root", type=Path, required=True,
+                   help="ALFWorld's json_2.1.1 directory")
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--progress-every", type=int, default=50)
+    p.add_argument("--out-dir", type=Path, required=True, help="a new, empty directory")
+    p.add_argument("--mirror-dir", type=Path, default=None,
+                   help="a new, empty directory (on Colab, on Google Drive): the rehearsal "
+                        "restores the pilot from it once")
+    p.set_defaults(func=cmd_rehearse)
 
     p = sub.add_parser("status")
     p.add_argument("--run-dir", type=Path, required=True)
