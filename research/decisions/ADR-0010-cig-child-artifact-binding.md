@@ -6,7 +6,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15). The o
 - evidence for another version fails closed;
 - the base genome is bound, the target regulation is not (the cross-review's answer to the fourth).
 
-Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeover note §5.8; the draft `research/proposals/ADR-draft-child-artifact-binding.md` (2026-10-14), which this ADR supersedes; builder-2's Critic cross-review of it (workflow `wf_ba6185ce-d72`, posted on #13). Artifacts: `inheritance/overlay.py`, `replay.py`, `ablation.py`, `generalization.py`, `interaction.py`, `gate.py`, `genome/validation/records.py`, `evaluation/exp0001/pipeline.py`, `architecture/eag-v0-schema.md` (Amendment A2), the tests that build records by hand.
+Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeover note §5.8; the draft `research/proposals/ADR-draft-child-artifact-binding.md` (2026-10-14), which this ADR supersedes; builder-2's Critic cross-review of it (workflow `wf_ba6185ce-d72`, posted on #13). Artifacts: `inheritance/overlay.py`, `replay.py`, `ablation.py`, `generalization.py`, `interaction.py`, `gate.py`, `genome/validation/records.py`, `evaluation/exp0001/pipeline.py`, `architecture/eag-v0-schema.md` (its ADR-0010 section), the tests that build records by hand.
 
 **Problem.**
 - A gate run promotes or rejects one *artifact*. The somatic store keys candidates by `(gene_id, version)`, and registry artifacts are content-addressed (`registry://skills/<gene_id>@<version>/sha256:<digest>`). Since #31 the aggregate record names the evaluated artifact (`artifacts.candidate`).
@@ -26,7 +26,7 @@ Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeove
   - The values come from the validated candidate and the base runtime configuration, not from the raw envelope. The vacuous out-of-scope child (ADR-0007 E6) carries them too.
   - The aggregate's `artifacts` gains `base_genome: {genome_id}` beside `candidate`.
 - **B2 Interaction evidence.** Each pair evidence keeps `gene_ids` and adds `artifacts`: one `{gene_id, version, artifact}` per gene, in `gene_ids` order. Its `evidence_sha256` covers them.
-- **B3 Gate check before any episode.** The gate refuses the batch when a stage 1–2 child names another `(gene_id, version, artifact)` than the candidate it evaluates, or another base genome than the gate's. A child that lacks a field is a mismatch. This is the only check that fails before a stage-3 episode is spent.
+- **B3 Gate check before any episode.** The gate refuses the batch when a stage 1–2 child names another `(gene_id, version, artifact)` than the candidate it evaluates, or another base genome than the gate's. A child that lacks a field is a mismatch. This is the only binding check that fails before a stage-3 episode is spent: it saves the stage 3–4 episodes, not the stage 1–2 episodes already run.
 - **B4 Store check at commit and on stored state.**
   - An M0 bundle needs a complete and coherent `artifacts.candidate`:
     - the URI parses;

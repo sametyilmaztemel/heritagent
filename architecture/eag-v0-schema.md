@@ -194,7 +194,7 @@ Design goals:
 
 Written before thresholds are re-tuned (SPEC §33 pre-registration applies at the trait level too).
 
-An M0 gate bundle (exactly the five stages, one child per stage) also names what it measured; see Amendment A2 below.
+An M0 gate bundle (exactly the five stages, one child per stage) also names what it measured; see the ADR-0010 section below.
 
 ## 5. Example instance (v0)
 
@@ -285,7 +285,7 @@ schema still rejects `acquired`; VTA/assimilation later creates the germline
 ref with `origin="assimilation"` + `cig_record`. Implemented in
 `genome/schema/eag-0.1.somatic.schema.json` (geneRef `allOf` rules).
 
-### Amendment A2 — M0 bundles name the artifact and the base genome (2026-10-15, ADR-0010)
+### ADR-0010 — M0 bundles name the artifact and the base genome (2026-10-15)
 
 The CIG schema is unchanged: the fields below live in the free-form `artifacts` and `measurements` objects. `CigRecordStore` enforces them for every M0 bundle, at `add_bundle` and in `verify()`.
 

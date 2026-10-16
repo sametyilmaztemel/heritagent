@@ -631,6 +631,11 @@ def one_copy_of_a_pair(gate, gene):
      "not the pre-planned analysis-only grid"),
     (lambda g, gene: g["sensitivity"][gene]["cells"].pop("tau_c=0.05|tau_r=0.03"),
      "not the pre-planned analysis-only grid"),
+    (lambda g, gene: g["aggregates"].update(  # ADR-0010 B4 on stored state
+        {"CIG-9999": g["aggregates"][g["aggregate_ids"][gene]]}), "is stored as"),
+    (lambda g, gene: g["children"].pop(next(iter(
+        g["aggregates"][g["aggregate_ids"][gene]]["child_records"]))),
+     "a declared record is missing or malformed"),
     (lambda g, gene: (g["verdicts"].update({gene: "reject"}),
                       g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"}),
                       g["aggregates"][g["aggregate_ids"][gene]]["stages"]["replay"].update(

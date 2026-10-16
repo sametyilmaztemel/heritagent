@@ -459,8 +459,29 @@ def _rehashed(entry):
     return entry
 
 
+def _self_pair(entry):
+    """A self-consistent pair of the candidate with itself (digest recomputed)."""
+    gene = CANDIDATE_REF["gene_id"]
+    entry["canonical_evidence"].update(gene_ids=[gene, gene],
+                                       artifacts=[dict(CANDIDATE_REF), dict(CANDIDATE_REF)])
+    entry["other_gene_id"] = gene
+    return _rehashed(entry)
+
+
+def _three_genes(entry):
+    """A self-consistent evidence naming three genes (digest recomputed)."""
+    third = {"gene_id": "zz_third_v1", "version": 1,
+             "artifact": fake_uri("skills", "zz_third_v1", 1)}
+    entry["canonical_evidence"].update(
+        gene_ids=[PARTNER_REF["gene_id"], CANDIDATE_REF["gene_id"], third["gene_id"]],
+        artifacts=[dict(PARTNER_REF), dict(CANDIDATE_REF), third])
+    return _rehashed(entry)
+
+
 @pytest.mark.parametrize("corrupt, match", [
     (lambda e: e.update(evidence_sha256="0" * 64), "!= the digest of its canonical_evidence"),
+    (_self_pair, "are not two distinct genes including"),
+    (_three_genes, "are not two distinct genes including"),
     (lambda e: e["canonical_evidence"].update(delta_pair=0.5),
      "!= the digest of its canonical_evidence"),
     # the candidate's own entry names another version (digest recomputed)

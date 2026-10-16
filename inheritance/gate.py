@@ -705,7 +705,8 @@ class CigGateOrchestrator:
         stage names, pass agreement, EXACT locked eval settings
         (temperature 0.0, gate max_tokens, resolved mining seed, the ReAct
         protocol stop of ADR-0003 A2), the pre-registered ablation
-        bootstrap (ADR-0005), and unique child ids."""
+        bootstrap (ADR-0005), the evaluated version, artifact and base
+        genome (ADR-0010 B3), and unique child ids."""
         evaluated = self._validated_of(inp.candidate_envelope)["candidate"]
         gene_id = evaluated["gene_id"]
         binding = self._binding(evaluated)
