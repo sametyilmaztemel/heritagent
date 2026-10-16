@@ -54,7 +54,7 @@ The calibration pilot on Qwen3.8-27B (127 episodes, pilot manifest unchanged), a
   - the manifest's `model.name` and determinism lines;
   - ADR-0002 and ADR-0008 D4 (pointers to this ADR);
   - ADR-0009 D4's reason;
-  - design §2 and §8 notes.
+  - the design's model line in §2, with a note that §8's G0 expectation was written for Qwen2.5-7B.
 - **Engineering:**
   - `DEFAULT_MODEL`;
   - `server_command` (`--language-model-only`, `--default-chat-template-kwargs`, no batch-invariant environment);
