@@ -81,7 +81,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
   - If the server reports that the prompt and the miner's 2,048 output tokens do not fit the 32,768-token window, the same pair is sent once more in a second fixed form: the evidence with the admissible-command list removed from every tool result. Nothing else changes; the task text keeps its initial list (ADR-0003 A1).
   - If that does not fit either, the pair is rejected with reason `context_overflow` and recorded. No evidence is truncated and no form is sent twice.
   - The mining record names the form its call used (`evidence_form`), and the second form's evidence names itself, so its hash differs from the full form's. The full form's bytes are unchanged.
-  - The cap check charges two teacher calls per pair.
+  - The cap check reserves two teacher calls per pair; the run records the calls actually sent, one per form tried. [corrected after independent verification 2026-10-16: it said the cap check charges two calls per pair.]
 
 **Reason.**
 - **D1.** It keeps τ_r = 0.03 and the 40-task T_reg. It measures regression the way every other stage measures a trait, with and without it at the same settings, and it costs 120 episodes, under 2 % of the episode cap. The alternatives were:
@@ -110,7 +110,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
 - **Pilot manifest.** It gets a new hash. Its 30 games are unchanged, and its measures list gains seven measures.
 - **`EpisodeResult`** gains `loop_steps` and `exhausted_budget`.
 - **The runtime loop** catches `ContextWindowExceeded`. Every other path is unchanged.
-- **The miner (D8)** catches `ContextWindowExceeded`. The mining record gains `evidence_form` and the rejection reason `context_overflow` (schema 0.1, both additive). The cap check reserves two teacher calls per pair; the run records the calls actually sent, one per evidence form tried, so a form the server rejected counts (D8). The pilot's projection counts two per pair.
+- **The miner (D8)** catches `ContextWindowExceeded`. The mining record gains `evidence_form` and the rejection reason `context_overflow` (schema 0.1, both additive). The cap check reserves two teacher calls per pair; the run records the calls actually sent, one per evidence form tried, so a form the server rejected counts (D8). The pilot's projection counts two per pair. [corrected after independent verification 2026-10-15: it said the run charges two calls per pair.]
 - **Protocol.** It gains `context_window` and `context_overflow`, and the run-start record changes with it.
 - **Stage 4A (D1)** changes the stage-4 child record (a baseline block and the paired drop) and `inheritance/regression.py`. It lands with D2 before the run.
-- **ADR-0003, ADR-0004 and ADR-0008** carry pointers to this ADR now. ADR-0005, ADR-0006 and ADR-0007 get theirs with D1, D2 and D5's remaining notes, in the next PR. [corrected after independent verification 2026-10-15]
+- **ADR-0003, ADR-0004 and ADR-0008** carry pointers to this ADR now. ADR-0005, ADR-0006 and ADR-0007 get theirs with D1, D2 and D5's remaining notes, in the next PR. [corrected after independent verification 2026-10-15: it said ADR-0003 to ADR-0007 carried pointers.]

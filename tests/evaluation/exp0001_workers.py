@@ -59,3 +59,17 @@ class AlsoWinsOnOddSeeds(WinsOnGames):
             return GenerationResult(text=react_action("act", {"command": "win"}),
                                     finish_reason="stop")
         return super().generate(messages, settings)
+
+
+class WinsOnGamesButFailsOn(WinsOnGames):
+    """As WinsOnGames, but the backend dies on every call of one game."""
+
+    def __init__(self, wins=(), fail_task=None):
+        super().__init__(wins)
+        self.fail_task = fail_task
+
+    def generate(self, messages, settings):
+        if any(f"solve {self.fail_task}." in m.content for m in messages):
+            raise RuntimeError(f"backend died on {self.fail_task}")
+        return super().generate(messages, settings)
+

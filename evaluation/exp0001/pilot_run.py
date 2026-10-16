@@ -185,12 +185,20 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
             smoke: EpisodeResult, t07: Sequence[EpisodeResult], *, elapsed_seconds: float,
             workers: int, count_prompt_tokens: Callable[[str], int] | None = None,
             timing: Mapping | None = None) -> dict:
-    """``timing`` is the run pass's {episodes, seconds} over every session
-    that played part of it; without it, this session's fresh episodes."""
+    """``timing`` is the run pass's {episodes, seconds, sessions} over the
+    sessions that finished their part of it; without it, this session's
+    fresh episodes. The throughput names the worker count the pass was
+    played at (None when its sessions differ), and whether its timing covers
+    every run-pass episode (a session that crashed inside the pass leaves
+    none)."""
     calls = [r.model_calls for r in runs]
     successes = [r for r in runs if r.success]
     fresh = [r for r in runs if not r.resumed]
-    timing = timing or {"episodes": len(fresh), "seconds": elapsed_seconds}
+    if timing is None:
+        sessions = [{"episodes": len(fresh), "seconds": elapsed_seconds,
+                     "workers": workers}] if fresh else []
+        timing = {"episodes": len(fresh), "seconds": elapsed_seconds, "sessions": sessions}
+    played_at = {s["workers"] for s in timing["sessions"]}
     by_game = {r.task_id: r for r in runs}
     determinism = []
     for repeat in repeats:
@@ -224,7 +232,10 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
         "model_calls_per_episode": {**_summary(calls), "at_worst_case": sum(
             c >= max_model_calls_per_episode() for c in calls)},
         "throughput_episodes_per_hour": {
-            "episodes": timing["episodes"], "seconds": timing["seconds"], "workers": workers,
+            "episodes": timing["episodes"], "seconds": timing["seconds"],
+            "workers": played_at.pop() if len(played_at) == 1 else None,
+            "sessions": [dict(s) for s in timing["sessions"]],
+            "complete": timing["episodes"] == len(runs),
             "value": timing["episodes"] / (timing["seconds"] / 3600)
             if timing["episodes"] and timing["seconds"] > 0 else None},
         "arm_b_rendering_smoke_test": {
@@ -301,7 +312,10 @@ def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
                 "calls per episode and throughput are those of the pilot's temperature-0 run "
                 "pass; the temperature-0.7 attempts inform the pair yield, T_reg's eligibility "
                 "and the prompt sizes, not these two means, though the lifetime runs at 0.7",
-                "the throughput at the pilot's worker count holds for the whole run",
+                "the throughput at the worker count the run pass was played at (the measure's "
+                "workers; none when its sessions differ) holds for the whole run; when its "
+                "timing does not cover every run-pass episode (complete: false), it rests on "
+                "the sessions that finished their part",
                 "teacher calls at their maximum: two per T_mine task and seed"],
             "fixed_episodes": {"lifetime": lifetime, "final_evaluation": final},
             "gate_episodes_per_candidate": GATE_EPISODES_PER_CANDIDATE,

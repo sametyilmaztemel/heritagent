@@ -23,7 +23,7 @@ MAX_TOTAL_RETRIES = 10
 CONTEXT_WINDOW = 32768  # ADR-0009 D4: Qwen2.5-7B-Instruct's native length
 MINER_MAX_TOKENS = 2048  # traits.miner.MiningSettings default
 # ADR-0009 D8: a pair's teacher prompt in its full evidence form, then without the
-# admissible-command lists; the cap check charges both calls
+# admissible-command lists; the cap check reserves both calls, the run records the forms sent
 MINER_CALLS_PER_PAIR_MAX = 2
 CAPS = MappingProxyType({"episodes_max": 7000, "model_calls_max": 225_000,
                          "wall_clock_hours_max": 96, "accelerator_nodes_max": 1})

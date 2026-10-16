@@ -387,22 +387,58 @@ def test_a_resumed_pilot_keeps_the_throughput_of_its_run_pass(tmp_path, registry
     ticks = itertools.count(0, 10)
     timing = tmp_path / "pilot-throughput.json"
     seen = []
-    for _ in range(2):  # the whole pilot, then a resume of it
+    for workers in (1, 2):  # the whole pilot, then a resume of it at another worker count
         executor = EpisodeExecutor(
             model=WinsOnGames(games[::2]), env_factory=GameFactory(),
             ledger=RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock()),
             trajectories_dir=tmp_path / "trajectories", run_id="pilot", code_commit="a" * 40,
-            workers=1, sleep_between_retries=False)
+            workers=workers, sleep_between_retries=False)
         try:
             measured = run_pilot(executor, pilot, g0_runtime_config(registry),
                                  clock=lambda: next(ticks), timing_path=timing)
         finally:
             executor.close()
         seen.append(measured["measures"]["throughput_episodes_per_hour"])
-    assert seen[0] == {"episodes": 30, "seconds": 10, "workers": 1, "value": 10800.0}
-    assert seen[1] == seen[0]  # every run-pass episode was resumed the second time
-    assert json.loads(timing.read_text())["sessions"] == [
-        {"episodes": 30, "seconds": 10, "workers": 1}]
+    session = {"episodes": 30, "seconds": 10, "workers": 1}
+    assert seen[0] == {"episodes": 30, "seconds": 10, "workers": 1, "sessions": [session],
+                       "complete": True, "value": 10800.0}
+    # every run-pass episode was resumed the second time: the pass's own timing and
+    # worker count, not the resuming session's
+    assert seen[1] == seen[0]
+    assert json.loads(timing.read_text())["sessions"] == [session]
+
+
+def test_a_pilot_crashed_inside_its_run_pass_reports_a_partial_throughput(
+        tmp_path, registry, splits):  # noqa: F811
+    """A session that crashed inside the run pass leaves no timing: the
+    throughput then rests on the session that finished the pass, at that
+    session's worker count, and says it is partial."""
+    import itertools
+    from tests.evaluation.exp0001_workers import WinsOnGamesButFailsOn
+    pilot = PILOTS[splits["manifest_sha256"]]
+    games = sorted(g["game_id"] for g in pilot["games"])
+    ticks = itertools.count(0, 10)
+    timing = tmp_path / "pilot-throughput.json"
+    played = [g["game_id"] for g in pilot["games"]]  # the run pass's order
+    for model, workers in ((WinsOnGamesButFailsOn(games[::2], played[20]), 1),
+                           (WinsOnGames(games[::2]), 2)):
+        executor = EpisodeExecutor(
+            model=model, env_factory=GameFactory(),
+            ledger=RunLedger(tmp_path / "ledger.jsonl", run_id="pilot", clock=Clock()),
+            trajectories_dir=tmp_path / "trajectories", run_id="pilot", code_commit="a" * 40,
+            workers=workers, sleep_between_retries=False)
+        try:
+            measured = run_pilot(executor, pilot, g0_runtime_config(registry),
+                                 clock=lambda: next(ticks), timing_path=timing)
+        except Exception:  # noqa: BLE001 - the first session's backend dies in the run pass
+            assert workers == 1 and not timing.exists()
+            continue
+        finally:
+            executor.close()
+    throughput = measured["measures"]["throughput_episodes_per_hour"]
+    assert throughput["workers"] == 2 and throughput["complete"] is False
+    assert 0 < throughput["episodes"] < 30 and throughput["sessions"] == [
+        {"episodes": throughput["episodes"], "seconds": 10, "workers": 2}]
 
 
 def test_the_pilot_counts_each_pairs_miner_prompt_in_both_forms(tmp_path, registry, splits):  # noqa: F811
