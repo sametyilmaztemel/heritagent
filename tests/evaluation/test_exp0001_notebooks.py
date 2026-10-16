@@ -89,15 +89,22 @@ def first(cells, needle):
 @pytest.mark.parametrize("name", NAMES)
 def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
     """No rehearsal of this commit and model: the notebook stops before the
-    model download, the server and any episode (the pilot even before the
-    install). A rehearsal that does not cover this machine is repeated here,
-    still before the model download."""
+    install, the model download, the server and any episode. A rehearsal that
+    does not cover this machine is repeated here, still before the model
+    download."""
     cells = code_cells(name)
     required = first(cells, "if not os.path.exists(PASSED):")
     covers = first(cells, '"rehearsal-check"')
     model = first(cells, '"prepare-model"')
-    assert required < covers < model < first(cells, '"serve"')
-    assert first(cells, "def install():") > required if "pilot" in name else True
+    assert first(cells, "def install():") > required < covers < model < first(cells, '"serve"')
+    # before the guard, at most the repository itself is installed (seconds), so
+    # the run notebook can read a resumed run's commit
+    for source in cells[:required]:
+        for line in source.splitlines():
+            if '"install"' in line:
+                assert line.rstrip().endswith('"-e", REPO], check=True)'), line
+    # only the pilot can be resumed by naming its commit
+    assert ("heritagent/pilot/" in cells[required]) == ("pilot" in name)
     assert first(cells, '"verify-data"') < covers  # it needs the data
     assert '"rehearse"' in cells[covers] and "except RuntimeError:" in cells[covers]
 
