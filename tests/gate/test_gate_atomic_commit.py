@@ -10,6 +10,7 @@ from genome.validation.errors import RecordConsistencyError
 from pathlib import Path
 
 from genome.validation.records import CigRecordStore
+from inheritance.gate import EvidenceCoherenceError
 from somatic.store import SomaticStore
 from tests.gate.helpers import PARENT_CIG
 from tests.gate.test_gate_orchestrator import (
@@ -384,9 +385,15 @@ def test_aggregate_records_the_evaluated_artifact(tmp_path):
     evaluated = inputs[0].candidate_envelope["candidate"]
     expected = {"gene_id": evaluated["gene_id"], "version": evaluated["version"],
                 "artifact": evaluated["artifact"]}
-    assert result.aggregate["artifacts"] == {"candidate": expected}
+    base = {"genome_id": orch._base_config.genome_id}  # ADR-0010 B1
+    assert result.aggregate["artifacts"] == {"candidate": expected, "base_genome": base}
     assert cig_store._aggregates[result.aggregate_cig_id]["artifacts"] == {
-        "candidate": expected}
+        "candidate": expected, "base_genome": base}
+    for child in (inputs[0].replay_evaluation.child_record,
+                  inputs[0].ablation_evaluation.child_record, result.stage4_child):
+        m = child["measurements"]
+        assert (m["candidate_version"], m["candidate_artifact"], m["base_genome_id"]) == (
+            evaluated["version"], evaluated["artifact"], base["genome_id"])
     assert result.candidate == evaluated
 
 
@@ -446,9 +453,41 @@ def test_aggregate_artifacts_carry_the_evaluated_version(tmp_path):
     v2["candidate"]["version"] = 2
     v2["candidate"]["artifact"] = registry.put("skill", "a", 2, proposal("a"))
     somatic.add_candidate(v2)
-    outcome = orch.run([dataclasses.replace(inputs[0], candidate_envelope=v2)])
+    # stage 1-2 evidence for version 2 (ADR-0010: version-1 evidence is refused)
+    replay, ablation = (inputs[0].replay_evaluation, inputs[0].ablation_evaluation)
+    rebound = []
+    for evaluation in (replay, ablation):
+        child = copy.deepcopy(evaluation.child_record)
+        child["measurements"].update(candidate_version=2,
+                                     candidate_artifact=v2["candidate"]["artifact"])
+        rebound.append(dataclasses.replace(evaluation, _child_record=child))
+    with pytest.raises(EvidenceCoherenceError, match="candidate_version 1 != the evaluated 2"):
+        orch.run([dataclasses.replace(inputs[0], candidate_envelope=v2)])
+    outcome = orch.run([dataclasses.replace(inputs[0], candidate_envelope=v2,
+                                            replay_evaluation=rebound[0],
+                                            ablation_evaluation=rebound[1])])
     result = outcome.results[0]
     assert result.aggregate["artifacts"]["candidate"]["version"] == 2
     assert result.aggregate["artifacts"]["candidate"]["artifact"] == v2["candidate"]["artifact"]
     assert somatic.state("a", 2) in ("validated", "rejected")
     assert somatic.state("a", 1) == "candidate"
+
+
+def test_commit_refuses_one_copy_of_a_pair_evidence(tmp_path):
+    """The staged store is verified as a whole before any live mutation: a
+    batch that carries only one candidate of a pair leaves a pair evidence
+    without its partner's copy and is refused (ADR-0010 B4)."""
+    world = build_world(tmp_path, candidates=("a", "b"), commit_stores=False)
+    orch, somatic, cig_store, runner, inputs, registry = world
+    results = orch.run(inputs).results
+    pairs = results[0].stage4_child["measurements"]["interaction"]["pair_evidence"]
+    assert len(pairs) == 1 and pairs[0]["canonical_evidence"]["artifacts"] == [
+        {"gene_id": r.gene_id, "version": r.candidate_version,
+         "artifact": r.candidate["artifact"]} for r in sorted(results, key=lambda r: r.gene_id)]
+    live = CigRecordStore()
+    with pytest.raises(RecordConsistencyError, match="names partner"):
+        orch._commit_results(results[:1], somatic_store=somatic, cig_record_store=live)
+    assert live._aggregates == {} and live._children == {}
+    assert {somatic.state(r.gene_id, r.candidate_version) for r in results} == {"candidate"}
+    orch._commit_results(results, somatic_store=somatic, cig_record_store=live)
+    live.require_consistent()

@@ -11,6 +11,12 @@ STAGES = ("replay", "ablation", "generalization_in_scope",
 SEED = 11
 
 
+CANDIDATE_REF = {"gene_id": "look_before_heat_v1", "version": 1,
+                 "artifact": fake_uri("skills", "look_before_heat_v1", 1)}
+BINDING = {"candidate_version": 1, "candidate_artifact": CANDIDATE_REF["artifact"],
+           "base_genome_id": "G-0f1e2d3c"}
+
+
 def child_ids(cig_id="CIG-0042", seed=SEED):
     """The five M0 children of one CIG run: exact <parent>/S<seed>-<stage>
     ids, one per stage."""
@@ -32,7 +38,8 @@ def aggregate_record(cig_id="CIG-0042", children=None):
         },
         "verdict": "promote",
         "thresholds_used": {"version": "exp-0001-v2", "values": {"tau_c": 0.05, "tau_r": 0.03}},
-        "artifacts": {},
+        # the evaluated artifact and base genome (ADR-0010 B1)
+        "artifacts": {"candidate": dict(CANDIDATE_REF), "base_genome": {"genome_id": "G-0f1e2d3c"}},
     }
 
 
@@ -48,12 +55,14 @@ def child_record(cig_id="CIG-0042/S11-replay", stage="replay", seed=11, parent_c
 
 def m0_children(cig_id="CIG-0042", seed=SEED):
     """Bundle-ready M0 children: correct parent, coherent seed, and the
-    mandatory candidate_gene_id binding + stage_pass in every child."""
+    mandatory candidate_gene_id, artifact and base genome binding (ADR-0010)
+    + stage_pass in every child."""
     children = []
     for stage in STAGES:
         child = child_record(cig_id=f"{cig_id}/S{seed}-{stage}", stage=stage,
                              seed=seed, parent_cig_id=cig_id)
         child["measurements"]["candidate_gene_id"] = "look_before_heat_v1"
+        child["measurements"].update(BINDING)
         child["measurements"]["stage_pass"] = True
         children.append(child)
     return children
@@ -340,6 +349,227 @@ def test_verify_parity_for_m0_shape_corruptions():
     store._children["CIG-0042/S11-replay-x"] = child
     store._aggregates["CIG-0042"]["child_records"][0] = "CIG-0042/S11-replay-x"
     assert any("exact M0 form" in i for i in store.verify())
+
+
+# -- ADR-0010 B4: artifact and base genome binding ---------------------------------
+PARTNER_REF = {"gene_id": "check_door_v1", "version": 3,
+               "artifact": fake_uri("skills", "check_door_v1", 3)}
+
+
+def pair_entry(own=CANDIDATE_REF, partner=PARTNER_REF, **canonical_changes):
+    """One stage-4 pair evidence entry as the gate writes it: the canonical
+    record (genes in sorted order, one reference per gene) and its digest."""
+    import copy
+    from trajectory.storage.canonical import canonical_json, sha256_hex
+    refs = sorted([own, partner], key=lambda ref: ref["gene_id"])
+    canonical = {"kind": "heritagent-interaction-pair",
+                 "gene_ids": [ref["gene_id"] for ref in refs],
+                 "artifacts": copy.deepcopy(refs), "delta_pair": 0.0, "harmful": False}
+    canonical.update(canonical_changes)
+    return {"evidence_sha256": sha256_hex(canonical_json(canonical).encode("utf-8")),
+            "canonical_evidence": canonical, "other_gene_id": partner["gene_id"],
+            "delta_pair": 0.0, "harmful": False, "retained": True}
+
+
+def pair_bundle(cig_id="CIG-0042", ref=CANDIDATE_REF, entries=None):
+    """An M0 bundle of candidate ``ref`` whose interaction_regression child
+    carries ``entries`` (default: one pair with the other reference)."""
+    import copy
+    agg = aggregate_record(cig_id)
+    agg["candidate_gene_id"] = ref["gene_id"]
+    agg["artifacts"]["candidate"] = copy.deepcopy(ref)
+    children = m0_children(cig_id)
+    for child in children:
+        child["measurements"].update(candidate_gene_id=ref["gene_id"],
+                                     candidate_version=ref["version"],
+                                     candidate_artifact=ref["artifact"])
+    if entries is None:
+        partner = PARTNER_REF if ref is CANDIDATE_REF else CANDIDATE_REF
+        entries = [pair_entry(ref, partner)]
+    children[-1]["measurements"]["interaction"] = {"pair_evidence": entries}
+    return agg, children
+
+
+def paired_store():
+    """Both copies of one pair evidence, in the two candidates' bundles."""
+    store = CigRecordStore()
+    store.add_bundle(*pair_bundle("CIG-0042", CANDIDATE_REF))
+    store.add_bundle(*pair_bundle("CIG-0043", PARTNER_REF))
+    store.require_consistent()
+    return store
+
+
+def test_bundle_with_both_copies_of_a_pair_evidence_is_consistent():
+    store = CigRecordStore()
+    store.add_bundle(*pair_bundle("CIG-0042", CANDIDATE_REF))
+    # one copy alone: the partner's bundle is not there yet
+    assert any("names partner 'check_door_v1'" in i for i in store.verify())
+    store.add_bundle(*pair_bundle("CIG-0043", PARTNER_REF))
+    store.require_consistent()
+
+
+@pytest.mark.parametrize("change, match", [
+    (lambda a: a["artifacts"].pop("candidate"), "artifacts.candidate None is not"),
+    (lambda a: a["artifacts"]["candidate"].update(version=True), "not a strict int"),
+    (lambda a: a["artifacts"]["candidate"].update(version="1"), "not a strict int"),
+    (lambda a: a["artifacts"]["candidate"].update(artifact="registry://skills/x"),
+     "is not a registry URI"),
+    (lambda a: a["artifacts"]["candidate"].update(artifact=7), "is not a registry URI"),
+    (lambda a: a["artifacts"]["candidate"].update(
+        artifact=fake_uri("skills", "look_before_heat_v1", 2)), "does not name gene"),
+    (lambda a: a["artifacts"]["candidate"].update(
+        artifact=fake_uri("skills", "other_gene", 1)), "does not name gene"),
+    (lambda a: a["artifacts"].update(candidate=dict(PARTNER_REF)),
+     "gene_id 'check_door_v1' != its candidate_gene_id"),
+    (lambda a: a["artifacts"].pop("base_genome"), "base_genome.genome_id None"),
+    (lambda a: a["artifacts"].update(base_genome={"genome_id": "G-99999999"}),
+     "base_genome.genome_id 'G-99999999'"),
+    (lambda a: a.pop("artifacts"), "artifacts.candidate None is not"),
+])
+def test_bundle_needs_complete_coherent_references(change, match):
+    store = CigRecordStore()
+    agg = aggregate_record()
+    change(agg)
+    with pytest.raises(RecordConsistencyError, match=match):
+        store.add_bundle(agg, m0_children())
+    assert store.aggregates == {} and store.children == {}
+
+
+@pytest.mark.parametrize("key, bad", [
+    ("candidate_version", 2), ("candidate_version", True), ("candidate_version", "1"),
+    ("candidate_artifact", fake_uri("skills", "look_before_heat_v1", 1, "b" * 64)),
+    ("base_genome_id", "G-99999999")])
+@pytest.mark.parametrize("stage_index", range(len(STAGES)))
+def test_bundle_rejects_a_child_bound_to_another_artifact_or_genome(key, bad, stage_index):
+    store = CigRecordStore()
+    children = m0_children()
+    children[stage_index]["measurements"][key] = bad
+    with pytest.raises(RecordConsistencyError, match=f"{key} .* \\(ADR-0010\\)"):
+        store.add_bundle(aggregate_record(), children)
+    children[stage_index]["measurements"].pop(key)  # a missing field is a mismatch
+    with pytest.raises(RecordConsistencyError, match=f"{key} None"):
+        store.add_bundle(aggregate_record(), children)
+    assert store.aggregates == {}
+
+
+def _rehashed(entry):
+    from trajectory.storage.canonical import canonical_json, sha256_hex
+    entry["evidence_sha256"] = sha256_hex(
+        canonical_json(entry["canonical_evidence"]).encode("utf-8"))
+    return entry
+
+
+def _self_pair(entry):
+    """A self-consistent pair of the candidate with itself (digest recomputed)."""
+    gene = CANDIDATE_REF["gene_id"]
+    entry["canonical_evidence"].update(gene_ids=[gene, gene],
+                                       artifacts=[dict(CANDIDATE_REF), dict(CANDIDATE_REF)])
+    entry["other_gene_id"] = gene
+    return _rehashed(entry)
+
+
+def _three_genes(entry):
+    """A self-consistent evidence naming three genes (digest recomputed)."""
+    third = {"gene_id": "zz_third_v1", "version": 1,
+             "artifact": fake_uri("skills", "zz_third_v1", 1)}
+    entry["canonical_evidence"].update(
+        gene_ids=[PARTNER_REF["gene_id"], CANDIDATE_REF["gene_id"], third["gene_id"]],
+        artifacts=[dict(PARTNER_REF), dict(CANDIDATE_REF), third])
+    return _rehashed(entry)
+
+
+@pytest.mark.parametrize("corrupt, match", [
+    (lambda e: e.update(evidence_sha256="0" * 64), "!= the digest of its canonical_evidence"),
+    (_self_pair, "are not two distinct genes including"),
+    (_three_genes, "are not two distinct genes including"),
+    (lambda e: _rehashed(e) if e["canonical_evidence"].update(
+        gene_ids=[CANDIDATE_REF["gene_id"]], artifacts=[dict(CANDIDATE_REF)]) is None else None,
+     "are not two distinct genes including"),
+    (lambda e: e["canonical_evidence"].update(delta_pair=0.5),
+     "!= the digest of its canonical_evidence"),
+    # the candidate's own entry names another version (digest recomputed)
+    (lambda e: _rehashed(e) if e["canonical_evidence"]["artifacts"][1].update(
+        version=2, artifact=fake_uri("skills", "look_before_heat_v1", 2)) is None else None,
+     "entry for the candidate"),
+    # the partner's entry is incoherent with its URI
+    (lambda e: _rehashed(e) if e["canonical_evidence"]["artifacts"][0].update(
+        version=4) is None else None, "artifact for 'check_door_v1'"),
+    (lambda e: _rehashed(e) if e["canonical_evidence"]["artifacts"].reverse() is None
+     else None, "where gene_ids order names"),
+    (lambda e: _rehashed(e) if e["canonical_evidence"]["artifacts"].pop() else None,
+     "are not one reference per gene"),
+    (lambda e: _rehashed(e) if e["canonical_evidence"].pop("artifacts") else None,
+     "are not one reference per gene"),
+    (lambda e: _rehashed(e) if e["canonical_evidence"].update(
+        gene_ids=["check_door_v1", "other_gene"]) is None else None,
+     "are not two distinct genes including"),
+    (lambda e: e.update(other_gene_id="other_gene"), "other_gene_id 'other_gene' != the partner"),
+    (lambda e: e.pop("canonical_evidence"), "carries no canonical_evidence object"),
+    (lambda e: e["canonical_evidence"].update(delta_pair=float("nan")),
+     "is not canonical JSON"),
+])
+def test_bundle_rejects_incoherent_pair_evidence(corrupt, match):
+    store = CigRecordStore()
+    agg, children = pair_bundle()
+    corrupt(children[-1]["measurements"]["interaction"]["pair_evidence"][0])
+    with pytest.raises(RecordConsistencyError, match=match):
+        store.add_bundle(agg, children)
+    assert store.aggregates == {}
+
+
+@pytest.mark.parametrize("interaction, match", [
+    ([], "interaction \\[\\] is not an object"),
+    ({"pair_evidence": {}}, "pair_evidence \\{\\} is not a list"),
+    ({"pair_evidence": ["x"]}, "carries no canonical_evidence object"),
+])
+def test_bundle_rejects_malformed_interaction_measurements(interaction, match):
+    store = CigRecordStore()
+    agg, children = pair_bundle()
+    children[-1]["measurements"]["interaction"] = interaction
+    with pytest.raises(RecordConsistencyError, match=match):
+        store.add_bundle(agg, children)
+
+
+def test_verify_parity_for_artifact_binding_corruptions():
+    """Whatever add_bundle rejects under ADR-0010 is also detected by verify()
+    in stored state, and the two copies of a pair evidence are linked."""
+    def corrupted(change):
+        store = paired_store()
+        change(store)
+        issues = store.verify()
+        with pytest.raises(RecordConsistencyError):
+            store.require_consistent()
+        return " | ".join(issues)
+
+    assert "not a strict int" in corrupted(
+        lambda s: s._aggregates["CIG-0042"]["artifacts"]["candidate"].update(version="1"))
+    assert "base_genome.genome_id None" in corrupted(
+        lambda s: s._aggregates["CIG-0042"]["artifacts"].pop("base_genome"))
+    assert "candidate_version 2" in corrupted(
+        lambda s: s._children["CIG-0042/S11-ablation"]["measurements"].update(
+            candidate_version=2))
+    assert "base_genome_id None" in corrupted(
+        lambda s: s._children["CIG-0042/S11-replay"]["measurements"].pop("base_genome_id"))
+    stage4 = "CIG-0042/S11-interaction_regression"
+
+    def entry(store):
+        return store._children[stage4]["measurements"]["interaction"]["pair_evidence"][0]
+
+    assert "!= the digest" in corrupted(lambda s: entry(s).update(delta_pair=1.0) or
+                                        entry(s)["canonical_evidence"].update(delta_pair=1.0))
+    # one copy rewritten self-consistently: its digest no longer matches the
+    # partner's copy, so BOTH copies lose their link
+    issues = corrupted(lambda s: _rehashed(entry(s)) if entry(s)["canonical_evidence"].update(
+        delta_pair=1.0) is None else None)
+    assert "of 'look_before_heat_v1' names partner 'check_door_v1'" in issues
+    assert "of 'check_door_v1' names partner 'look_before_heat_v1'" in issues
+    # one copy dropped
+    assert "of 'check_door_v1' names partner" in corrupted(
+        lambda s: s._children[stage4]["measurements"]["interaction"].update(pair_evidence=[]))
+    # the partner's copy sits in a non-M0 aggregate: no link
+    def non_m0(store):
+        store._aggregates["CIG-0043"]["stages"].pop("replay")
+    assert "of 'look_before_heat_v1' names partner" in corrupted(non_m0)
 
 
 def copy_children(children):

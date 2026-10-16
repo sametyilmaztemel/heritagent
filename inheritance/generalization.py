@@ -384,6 +384,7 @@ class GeneralizationEvaluator:
                        else "generalization_out_of_scope"),
             "measurements": {
                 "candidate_gene_id": self._candidate_gene_id,
+                **self._configs.binding(),  # ADR-0010 (the vacuous child too)
                 "scope": scope,
                 "frozen_applicability": list(frozen_families),
                 "allocation": allocation.allocation_metadata(

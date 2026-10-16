@@ -1,6 +1,6 @@
 # ADR draft — Every CIG child record names the artifact it measured
 
-Date: 2026-10-14 · Status: **PROPOSED** (builder-2 draft at the owner's request, 2026-10-14). Not accepted; the code changes only after the owner accepts it and Codex cross-reviews it (SPEC §32). Origin: takeover note §5.8 (the residual of the stage 1–2 artifact-binding finding).
+Date: 2026-10-14 · Status: **superseded by `research/decisions/ADR-0010-cig-child-artifact-binding.md`** (the owner accepted option A with the Critic's modifications as ADR-0009 D7, 2026-10-15). Kept as the record of the alternatives. Originally: **PROPOSED** (builder-2 draft at the owner's request, 2026-10-14); not accepted; the code was to change only after the owner accepted it and Codex cross-reviewed it (SPEC §32). Origin: takeover note §5.8 (the residual of the stage 1–2 artifact-binding finding).
 
 **Problem.**
 - A gate run promotes or rejects one *artifact*. The somatic store keys candidates by `(gene_id, version)`, and registry artifacts are content-addressed (`registry://skills/<gene_id>@<version>/sha256:<digest>`).

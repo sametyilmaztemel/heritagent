@@ -66,7 +66,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
             rp = replay_pass_for[name]
         replay, ablation = coherent_stage11_children(
             gene_id, parent=parent, replay_pass=rp, ablation_pass=delta >= 0.05,
-            ablation_delta=delta)
+            ablation_delta=delta, envelope=envelope,
+            base_genome_id=g0_config(registry).genome_id)
         # generalization: with/without per scope
         for scope, w_ok in (("in", gen_in_with), ("out", gen_out_with)):
             for i in range(10):
@@ -305,13 +306,13 @@ def test_duplicate_parent_cig_ids_rejected_before_any_episode(tmp_path):
     assert len(runner.calls) == calls_before
 
 
-def _shared_t_reg_inputs(inputs, seed_b):
+def _shared_t_reg_inputs(inputs, seed_b, base_genome_id):
     """Both candidates on candidate a's T_reg; candidate b at ``seed_b``."""
     a, b = inputs
     gid_b = b.candidate_envelope["candidate"]["gene_id"]
     replay, ablation = coherent_stage11_children(
         gid_b, parent=b.parent_cig_id, replay_pass=True, ablation_pass=True,
-        seed=seed_b)
+        seed=seed_b, envelope=b.candidate_envelope, base_genome_id=base_genome_id)
     return [a, GateCandidateInput(
         candidate_envelope=b.candidate_envelope, frozen_rank=b.frozen_rank,
         replay_evaluation=replay, ablation_evaluation=ablation,
@@ -324,7 +325,7 @@ def _shared_t_reg_inputs(inputs, seed_b):
 def test_the_shared_g0_run_is_per_mining_seed(tmp_path, seed_b, runs):
     """ADR-0009 D1: G0 plays T_reg once per mining seed at that seed, and
     every candidate of the seed is paired against that run."""
-    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a", "b"))
+    orch, _, _, runner, inputs, registry = build_world(tmp_path, candidates=("a", "b"))
     seen = []
     play = runner.run_episode
 
@@ -333,7 +334,7 @@ def test_the_shared_g0_run_is_per_mining_seed(tmp_path, seed_b, runs):
         return play(task, config, budgets, condition, settings)
 
     runner.run_episode = recording
-    outcome = orch.run(_shared_t_reg_inputs(inputs, seed_b))
+    outcome = orch.run(_shared_t_reg_inputs(inputs, seed_b, g0_config(registry).genome_id))
     g0_runs = [(tid, seed) for tid, condition, seed in seen
                if tid.startswith("treg-") and condition == "without_trait"]
     assert len(g0_runs) == 40 * runs
@@ -416,6 +417,52 @@ def _replay_with_child(replay, child):
         _delta_count=replay.delta_count, _delta_success=replay.delta_success,
         _expression_ok=replay.expression_ok, _episodes=(),
         _child_record=child, _allocation=replay.allocation)
+
+
+OTHER_ARTIFACT = "registry://skills/a@1/sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize("stage", ["replay", "ablation"])
+@pytest.mark.parametrize("key,value", [
+    ("candidate_version", 2), ("candidate_version", True), ("candidate_version", 1.0),
+    ("candidate_version", "1"), ("candidate_version", None),
+    ("candidate_artifact", OTHER_ARTIFACT), ("candidate_artifact", None),
+    ("base_genome_id", "G-" + "0" * 16), ("base_genome_id", None),
+    ("candidate_version", "delete"), ("candidate_artifact", "delete"),
+    ("base_genome_id", "delete"),
+])
+def test_stage12_children_for_another_artifact_or_genome_fail_before_any_episode(
+        tmp_path, stage, key, value):
+    """ADR-0010 B3: a stage 1-2 child that names another version, artifact or
+    base genome, by type or by value, or lacks the field, refuses the batch
+    before any episode."""
+    import copy
+    import dataclasses
+    from inheritance.gate import EvidenceCoherenceError
+    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    evaluation = getattr(inputs[0], f"{stage}_evaluation")
+    child = copy.deepcopy(evaluation.child_record)
+    if value == "delete":
+        del child["measurements"][key]
+    else:
+        child["measurements"][key] = value
+    changed = dataclasses.replace(
+        inputs[0], **{f"{stage}_evaluation": dataclasses.replace(evaluation,
+                                                                 _child_record=child)})
+    with pytest.raises(EvidenceCoherenceError, match=f"{stage} child {key} .*ADR-0010"):
+        orch.run([changed])
+    assert runner.calls == []
+
+
+def test_a_gate_on_another_base_genome_refuses_the_evidence_before_any_episode(tmp_path):
+    """ADR-0010 B3: the gate's own base genome is the one the children must name."""
+    import dataclasses
+    from inheritance.gate import EvidenceCoherenceError
+    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    orch._base_config = dataclasses.replace(orch._base_config, genome_id="G-" + "0" * 16)
+    with pytest.raises(EvidenceCoherenceError, match="base_genome_id .*ADR-0010"):
+        orch.run(inputs)
+    assert runner.calls == []
 
 
 def test_invalid_stage11_child_rejected_before_any_episode(tmp_path):

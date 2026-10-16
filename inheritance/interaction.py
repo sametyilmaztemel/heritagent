@@ -10,7 +10,8 @@ harmful iff delta_pair < -0.05.
 
 Interaction evidence is SHARED between the two candidates of a pair: a
 deterministic evidence id/hash over the CANONICAL (gene-id sorted) pair
-order, the frozen 10-task allocation with COMPLETE per-task provenance
+order, each gene's evaluated version and artifact in that order (ADR-0010
+B2), the frozen 10-task allocation with COMPLETE per-task provenance
 (task_id, family, bank_id, deterministic payload digest), paired outcomes
 (success, trajectory_id, expressed_gene_ids), exact locked settings
 (temperature/max_tokens/seed/stop), delta_pair and harmful flag. Each
@@ -168,7 +169,7 @@ class InteractionEvaluator:
         """Validate both candidates, build the both-trait overlay, run the
         20 paired episodes (both/neither), compute delta_pair and the
         harmful flag, and return the shared immutable evidence."""
-        both_config, neither_config, gene_ids = self._build_pair_configs(
+        both_config, neither_config, gene_ids, artifacts = self._build_pair_configs(
             envelope_a, envelope_b)
 
         episodes: list[dict] = []
@@ -213,6 +214,7 @@ class InteractionEvaluator:
         canonical_evidence = {
             "kind": "heritagent-interaction-pair",
             "gene_ids": list(gene_ids),
+            "artifacts": artifacts,  # ADR-0010 B2
             "allocation": allocation_meta,
             "paired_outcomes": [{"task_id": e["task_id"],
                                   "condition": e["condition"],
@@ -235,13 +237,15 @@ class InteractionEvaluator:
             _canonical_evidence=copy.deepcopy(canonical_evidence))
 
     def _build_pair_configs(self, envelope_a: dict, envelope_b: dict
-                             ) -> tuple[RuntimeConfig, RuntimeConfig, tuple[str, ...]]:
+                             ) -> tuple[RuntimeConfig, RuntimeConfig, tuple[str, ...], list[dict]]:
         """Both-trait overlay = exact base + skill A + skill B (each
         independently validated through the #11 overlay boundary, each with
         its frozen target regulation); control = exact base config with
         neither. Duplicate gene ids across pair members are rejected before
         episodes. Returned gene ids are in CANONICAL (sorted) order and the
-        both-arm skills are inserted in that same canonical order."""
+        both-arm skills are inserted in that same canonical order. The last
+        element names each gene's evaluated artifact, in that order (ADR-0010
+        B2)."""
         gene_a = envelope_a["candidate"]["gene_id"]
         gene_b = envelope_b["candidate"]["gene_id"]
         if gene_a == gene_b:
@@ -277,4 +281,6 @@ class InteractionEvaluator:
             policies=self._base_config.policies,
             skills=self._base_config.skills,
             regulation=dict(self._base_config.regulation))
-        return both, neither, gene_ids
+        artifacts = [{"gene_id": gene, "version": configs_by_gene[gene].target_version,
+                      "artifact": configs_by_gene[gene].target_artifact} for gene in gene_ids]
+        return both, neither, gene_ids, artifacts

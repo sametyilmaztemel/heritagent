@@ -26,7 +26,7 @@ from evaluation.exp0001.episodes import EpisodeExecutor
 from evaluation.exp0001.gate_runner import LedgerGateRunner
 from evaluation.exp0001.ledger import RunLedger
 from evaluation.exp0001.pilot import build_pilot_manifest
-from evaluation.exp0001.pipeline import Exp0001Run, RunError, cig_id
+from evaluation.exp0001.pipeline import Exp0001Run, RunError, _record_store_issues, cig_id
 from evaluation.exp0001.protocol import CAPS, MINING_SEEDS
 from evaluation.exp0001.provenance import (
     ProvenanceError,
@@ -582,6 +582,21 @@ def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path
             make_run(broken, splits).run()
 
 
+def one_copy_of_a_pair(gate, gene):
+    """A well-formed pair evidence in ``gene``'s stage-4 child only: its
+    partner's child does not carry the second copy (ADR-0010 B4)."""
+    from trajectory.storage.canonical import canonical_json, sha256_hex
+    refs = sorted((a["artifacts"]["candidate"] for a in gate["aggregates"].values()),
+                  key=lambda ref: ref["gene_id"])
+    canonical = {"kind": "heritagent-interaction-pair",
+                 "gene_ids": [ref["gene_id"] for ref in refs], "artifacts": refs}
+    entry = {"evidence_sha256": sha256_hex(canonical_json(canonical).encode("utf-8")),
+             "canonical_evidence": canonical,
+             "other_gene_id": next(r["gene_id"] for r in refs if r["gene_id"] != gene)}
+    child = gate["children"][gate["aggregate_ids"][gene] + "/S11-interaction_regression"]
+    child["measurements"]["interaction"]["pair_evidence"] = [entry]
+
+
 @pytest.mark.parametrize("tamper,message", [
     (lambda g, gene: g["verdicts"].update({"extra_gene": "reject"}), "exactly the frozen"),
     (lambda g, gene: g["aggregates"][g["aggregate_ids"][gene]].update(
@@ -616,9 +631,25 @@ def test_a_resume_recomputes_t_reg_and_the_arms_against_their_artifacts(tmp_path
      "not the pre-planned analysis-only grid"),
     (lambda g, gene: g["sensitivity"][gene]["cells"].pop("tau_c=0.05|tau_r=0.03"),
      "not the pre-planned analysis-only grid"),
+    (lambda g, gene: g["aggregates"].update(  # ADR-0010 B4 on stored state
+        {"CIG-9999": g["aggregates"][g["aggregate_ids"][gene]]}), "is stored as"),
+    (lambda g, gene: g["children"].pop(next(iter(
+        g["aggregates"][g["aggregate_ids"][gene]]["child_records"]))),
+     "a declared record is missing or malformed"),
     (lambda g, gene: (g["verdicts"].update({gene: "reject"}),
-                      g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"})),
-     "in the somatic journal"),
+                      g["aggregates"][g["aggregate_ids"][gene]].update({"verdict": "reject"}),
+                      g["aggregates"][g["aggregate_ids"][gene]]["stages"]["replay"].update(
+                          {"pass": False}),
+                      g["children"][g["aggregate_ids"][gene] + "/S11-replay"][
+                          "measurements"].update({"stage_pass": False})),
+     "in the somatic journal"),  # a coherent record the journal contradicts
+    # the stored records re-verify as a record store (ADR-0010 B4)
+    (lambda g, gene: g["children"][g["aggregate_ids"][gene] + "/S11-replay"][
+        "measurements"].update({"candidate_version": 2}), "candidate_version 2 != aggregate"),
+    (lambda g, gene: g["aggregates"][g["aggregate_ids"][gene]]["artifacts"].update(
+        {"base_genome": {"genome_id": "G-99999999"}}), "base_genome.genome_id 'G-99999999'"),
+    (lambda g, gene: one_copy_of_a_pair(g, gene), "names partner"),
+    (lambda g, gene: g["children"].update({"CIG-9999/S11-replay": {}}), "undeclared child"),
 ])
 def test_an_inconsistent_gate_artifact_fails_closed(tmp_path, clean, splits, tamper, message):
     run_dir = reopened_copy(clean, tmp_path)
@@ -853,6 +884,75 @@ def test_the_gate_prefetch_covers_interaction_pairs_and_matches_sequential(tmp_p
     assert len(pair_keys) == 3 * 20  # one eligible pair per seed, 10 tasks x both/neither
     gate = json.loads((tmp_path / "par" / "seed-11" / "gate.json").read_text())
     assert sorted(gate["verdicts"].values()) == ["promote", "promote", "reject"]
+
+
+MARK_A, MARK_B = " Mark alpha.", " Mark beta."
+PAIRED = PROPOSALS[:1] + [proposal("check alpha", GOOD + MARK_A, [F[3]], 0.6),
+                          proposal("check beta", GOOD + MARK_B, [F[4]], 0.5)] + PROPOSALS[1:]
+
+
+class PairAgent(Agent):
+    """As Agent, except on the interaction games at temperature 0: G0 wins
+    them, and the two marked skills together lose them. So the gate sees one
+    harmful pair and two that are not."""
+
+    def __init__(self, interaction_games):
+        super().__init__()
+        self.interaction_games = tuple(interaction_games)
+
+    def generate(self, messages, settings):
+        text = "\n".join(m.content for m in messages)
+        if settings.temperature == 0 and any(f"solve {game}." in text
+                                             for game in self.interaction_games):
+            self.calls += 1
+            self.settings.append(settings)
+            win = not (MARK_A in text and MARK_B in text)
+            return GenerationResult(text=react_action("act", {"command": "win"}) if win
+                                    else react_final("Giving up."), finish_reason="stop")
+        return super().generate(messages, settings)
+
+
+def test_a_harmful_and_a_harmless_pair_bind_their_artifacts_end_to_end(tmp_path, splits):
+    """ADR-0010 with real pair evidence (the Critic's merge condition): three
+    eligible candidates per seed give one harmful pair and two harmless ones;
+    every stored record verifies as a record store, a resume passes, and a
+    tampered copy of the harmful pair's evidence stops the resumed run."""
+    from evaluation.exp0001.allocations import interaction_allocation
+    games = [t.task_id for t in interaction_allocation(splits).tasks]
+    run_dir = tmp_path / "run"
+    report = make_run(run_dir, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run()
+    assert report["status"] == "complete"
+    for seed in MINING_SEEDS:
+        gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
+        assert sorted(gate["verdicts"].values()) == ["promote", "promote", "reject", "reject"]
+        eliminated = {g: by for g, by in gate["eliminated_by_interaction"].items() if by}
+        assert len(eliminated) == 1 and gate["verdicts"][next(iter(eliminated))] == "reject"
+        pairs = {}
+        for child in gate["children"].values():
+            if child["stage"] == "interaction_regression":
+                for pair in child["measurements"]["interaction"]["pair_evidence"]:
+                    pairs.setdefault(pair["evidence_sha256"], []).append(pair)
+                    gene_ids = pair["canonical_evidence"]["gene_ids"]
+                    assert [a["gene_id"] for a in pair["canonical_evidence"]["artifacts"]] \
+                        == gene_ids
+        assert len(pairs) == 3 and all(len(copies) == 2 for copies in pairs.values())
+        assert sorted(copies[0]["harmful"] for copies in pairs.values()) == [False, False, True]
+        assert _record_store_issues(gate["aggregates"], gate["children"]) == []
+    honest = reopened_copy((run_dir,), tmp_path / "honest")
+    assert make_run(honest, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run() \
+        == report
+
+    def harm_less(gate):
+        for child in gate["children"].values():
+            for pair in child["measurements"].get("interaction", {}).get("pair_evidence", []):
+                if pair["harmful"]:
+                    pair["canonical_evidence"]["delta_pair"] = 0.0
+                    return
+
+    tampered = reopened_copy((run_dir,), tmp_path / "tampered")
+    edit(tampered / "seed-11" / "gate.json", harm_less)
+    with pytest.raises(RunError, match="gate.json's CIG records do not verify"):
+        make_run(tampered, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run()
 
 
 def test_a_recorded_gate_episode_the_gate_never_requests_fails_closed_on_resume(

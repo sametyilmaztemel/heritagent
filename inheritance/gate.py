@@ -489,7 +489,7 @@ class CigGateOrchestrator:
             version = evaluated["version"]
             stage4 = self._build_stage4_child(
                 gid, parent, seed, reg_results[gid], overhead_results[gid],
-                pair_evidence, eliminated)
+                pair_evidence, eliminated, evaluated=evaluated)
             aggregate = self._build_aggregate(
                 inp, gid, parent, gen_results.get(gid), stage4,
                 evaluated=evaluated)
@@ -645,6 +645,12 @@ class CigGateOrchestrator:
         return grid
 
     # -- internals ------------------------------------------------------------------
+    def _binding(self, evaluated: dict) -> dict:
+        """The child fields of ADR-0010 B1 for an evaluated candidate."""
+        return {"candidate_version": evaluated["version"],
+                "candidate_artifact": evaluated["artifact"],
+                "base_genome_id": self._base_config.genome_id}
+
     def _validated_of(self, envelope: dict) -> dict:
         from inheritance.overlay import _validate_candidate
         return _validate_candidate(envelope, self._registry)
@@ -699,8 +705,11 @@ class CigGateOrchestrator:
         stage names, pass agreement, EXACT locked eval settings
         (temperature 0.0, gate max_tokens, resolved mining seed, the ReAct
         protocol stop of ADR-0003 A2), the pre-registered ablation
-        bootstrap (ADR-0005), and unique child ids."""
-        gene_id = self._validated_of(inp.candidate_envelope)["candidate"]["gene_id"]
+        bootstrap (ADR-0005), the evaluated version, artifact and base
+        genome (ADR-0010 B3), and unique child ids."""
+        evaluated = self._validated_of(inp.candidate_envelope)["candidate"]
+        gene_id = evaluated["gene_id"]
+        binding = self._binding(evaluated)
         parent, seed = self._parent_seed_for(inp)
         issues: list[str] = []
         seen_ids: set[str] = set()
@@ -721,6 +730,12 @@ class CigGateOrchestrator:
             if m.get("candidate_gene_id") != gene_id:
                 issues.append(f"{stage} child candidate_gene_id "
                                f"{m.get('candidate_gene_id')!r} != {gene_id!r}")
+            # ADR-0010 B3: the artifact and base genome the child measured
+            for key, expected in binding.items():
+                got = m.get(key)
+                if type(got) is not type(expected) or got != expected:
+                    issues.append(f"{stage} child {key} {got!r} != the evaluated "
+                                  f"{expected!r} (ADR-0010)")
             if child["parent_cig_id"] != parent:
                 issues.append(f"{stage} child parent_cig_id "
                                f"{child['parent_cig_id']!r} != {parent!r}")
@@ -795,7 +810,7 @@ class CigGateOrchestrator:
     def _build_stage4_child(self, gene_id: str, parent: str, seed: int,
                              reg_eval: RegressionEvaluation, overhead: dict,
                              pair_evidence: dict,
-                             eliminated: dict[str, str]) -> dict:
+                             eliminated: dict[str, str], *, evaluated: dict) -> dict:
         pairs_for_gene = []
         for key in sorted(pair_evidence):
             evidence = pair_evidence[key]
@@ -826,6 +841,7 @@ class CigGateOrchestrator:
             "stage": "interaction_regression",
             "measurements": {
                 "candidate_gene_id": gene_id,
+                **self._binding(evaluated),  # ADR-0010
                 "regression": {
                     "allocation": reg_eval.allocation,
                     "episodes": reg_eval.episodes,
@@ -919,7 +935,7 @@ class CigGateOrchestrator:
                 "gene_id": evaluated["gene_id"],
                 "version": evaluated["version"],
                 "artifact": evaluated["artifact"],
-            }},
+            }, "base_genome": {"genome_id": self._base_config.genome_id}},  # ADR-0010 B1
         }
         load_cig(aggregate)
         return aggregate
@@ -928,9 +944,10 @@ class CigGateOrchestrator:
     def _commit_results(self, results: list[CandidateGateResult], *,
                          somatic_store, cig_record_store: CigRecordStore) -> None:
         """Prevalidated BATCH commit: every bundle is prevalidated against a
-        staged clone of the CURRENT live CigRecordStore and every somatic
-        candidate (at the version derived from the evaluated envelope) is
-        checked BEFORE any live mutation, so a prevalidation failure leaves
+        staged clone of the CURRENT live CigRecordStore, the staged store is
+        verified as a whole (ADR-0010 B4), and every somatic candidate (at
+        the version derived from the evaluated envelope) is checked BEFORE
+        any live mutation, so a prevalidation failure leaves
         both live stores untouched. Only then are the live stores mutated,
         per candidate: somatic terminal decision first, then the CIG bundle
         is exposed on the live store.
@@ -945,6 +962,9 @@ class CigGateOrchestrator:
         for result in results:
             staged_cig.add_bundle(result.aggregate,
                                    self._bundle_children(result))
+        # the store-wide check, with every bundle of the batch staged: the two
+        # copies of each pair evidence span two bundles (ADR-0010 B4)
+        staged_cig.require_consistent()
         planned: list[tuple[CandidateGateResult, int]] = []
         for result in results:
             version = result.candidate_version
