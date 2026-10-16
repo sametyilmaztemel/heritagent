@@ -192,7 +192,7 @@ budget:
   episodes_est: 6000
   breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"
   banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"
-  note: "~180-200k local-model calls (Qwen3.8-27B since ADR-0011); single GPU node"
+  note: "~180-200k local-7B calls; single GPU node, few days"
 
 record:
   required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]

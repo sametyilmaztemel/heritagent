@@ -90,7 +90,8 @@ def teacher_messages(rendered_prompt: str) -> list[ModelMessage]:
 
 
 def render_teacher_prompt(*, evidence_text: str, family_universe, max_proposals: int) -> str:
-    """The teacher's single system message for one pair."""
+    """The teacher prompt for one pair, sent as one user message (``teacher_messages``;
+    ADR-0011 D4)."""
     return (prompt_template_text()
             .replace("<<MAX_PROPOSALS>>", str(max_proposals))
             .replace("<<FAMILIES>>", ", ".join(family_universe))

@@ -32,7 +32,7 @@ EXP-0001 was designed on Qwen2.5-7B-Instruct (September 2024), chosen for SkillR
   - The pilot manifest and its `pilot_sha256` (it names no model).
   - Every token number now counts Qwen3.8's tokens, a different unit from Qwen2.5's [M].
   - Neutral sampling (top_p 1, top_k 0, presence and repetition penalties off). Qwen recommends a presence penalty of 1.5 for its non-thinking mode [V, model card]. The protocol keeps one sampling rule for every model call, and the pilot measures parse failures and retries.
-- **D6. Expectations and the pilot.** No ALFWorld result for Qwen3.8-27B was found [U]. Qwen3.6-27B, its predecessor at the same size, scores 61.7 % with no skills on ALFWorld (HDSO, 140 valid_seen tasks, 30 steps, sampled, three seeds) [V by a skeptic]. EXP-0001's design expected G0 near 30 % (design §8). A new calibration pilot runs on Qwen3.8-27B before anything else. If it measures G0 above 60 % at temperature 0, or its temperature-0 repeats differ, builder-2 reports and the owner decides how to go on (owner, 2026-10-16: "Bana sor").
+- **D6. Expectations and the pilot.** No ALFWorld result for Qwen3.8-27B was found [U]. Qwen3.6-27B, its predecessor at the same size, scores 61.7 % with no skills on ALFWorld (HDSO: 140 episodes per seed, 30 steps, sampled, three seeds [V by a skeptic]; on what the paper calls the SkillOS evaluation set, which the research takes to be valid_seen [M]). EXP-0001's protocol assumed G0 near 30 % (ADR-0007 E1, ADR-0009; status M, for Qwen2.5-7B). A new calibration pilot runs on Qwen3.8-27B before anything else. If it measures G0 above 60 % at temperature 0, or its temperature-0 repeats differ, builder-2 reports and the owner decides how to go on (owner, 2026-10-16: "Bana sor"). The pilot manifest's pre-registered expectation that repeated temperature-0 trajectories are identical rested on batch-invariant kernels: under D2 the measure is reported, a difference is not a pilot failure, and it goes to the owner here. [corrected after independent verification 2026-10-16: the 30 % assumption is ADR-0007 E1's and ADR-0009's, not design §8's; the benchmark's split is an inference; the pilot manifest's repeat expectation is named.]
 - **D7. Compute.** Decoding reads about 3.6 times the weights per token that Qwen2.5-7B reads, so episodes take roughly 3–4 times as long at the same number of calls [M]. A stronger model may need fewer calls per episode [M]. The KV cache holds about 16 sequences of 16k tokens alongside the weights; vLLM queues the excess [M]. The compute-cap decision follows the new pilot's projection, as before (takeover note §5.12).
 - **D8. Comparability.** ADR-0002's reason (a), the same base model as SkillRL, no longer holds. Arm B stays a frozen-weights reconstruction of SkillRL-style skill persistence, not a numeric replication. The publication states the model and this ADR's reasons: the owner's requirement for a current family, and the determinism trade-off of D2.
 
@@ -51,10 +51,11 @@ The calibration pilot on Qwen3.8-27B (127 episodes, pilot manifest unchanged), a
 
 ## Compatibility impact
 - **Locked, edited on acceptance:**
-  - the manifest's `model.name` and determinism lines;
+  - the manifest's model block (`model.name`, `chat_template_kwargs`, the `context_window` comment) and `determinism_policy.backend`;
   - ADR-0002 and ADR-0008 D4 (pointers to this ADR);
   - ADR-0009 D4's reason;
-  - the design's model line in §2, with a note that §8's G0 expectation was written for Qwen2.5-7B.
+  - the design's model line in §2, with a note that the G0 expectation (ADR-0007 E1, ADR-0009) was written for Qwen2.5-7B.
+  - [corrected after independent verification 2026-10-16: the list now names every manifest line the header's "model block" covers; the budget note is unchanged.]
 - **Engineering:**
   - `DEFAULT_MODEL`;
   - `server_command` (`--language-model-only`, `--default-chat-template-kwargs`, no batch-invariant environment);
