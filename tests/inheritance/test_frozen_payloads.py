@@ -7,7 +7,11 @@ import pytest
 
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.runner import EvaluationTask, deep_freeze
-from tests.inheritance.test_regression_overhead import ScriptedRegRunner, make_evaluator
+from tests.inheritance.test_regression_overhead import (
+    ScriptedRegRunner,
+    make_baseline,
+    make_evaluator,
+)
 
 PAYLOAD = {"goal": "heat the plate",
            "objects": [{"name": "plate", "state": {"hot": False}}],
@@ -30,7 +34,9 @@ def test_regression_runs_tasks_with_nested_payloads(tmp_path, registry, base_con
         TRegTask(task_id=f"treg-{i}", family="heat_and_place",
                  baseline_trajectory_id=f"T-{i:04d}aaaa", payload=PAYLOAD)
         for i in range(40)))
-    result = make_evaluator(tmp_path, registry, base_config, envelope, runner).evaluate(allocation)
+    baseline = make_baseline(base_config, runner, allocation)  # payloads reach the G0 run too
+    result = make_evaluator(tmp_path, registry, base_config, envelope,
+                            runner).evaluate(allocation, baseline)
     assert result.successes_with == 40
     seen = runner.payloads[0]
     assert seen["objects"][0]["state"]["hot"] is False

@@ -1,13 +1,18 @@
 """Stage 4A — T_reg regression evaluator + stage 4B — expression overhead
 measurement (issue #12; merged ADR-0002).
 
-Regression: T_reg is the frozen 40-task subset of T_mine that G0 already
-solved. Every task carries immutable baseline provenance (original
-successful G0 trajectory id, baseline_success == True). The baseline is NOT
-rerun — the prereg design re-runs T_reg with ``genome ∪ trait`` and uses the
-already-observed G0 success as baseline evidence. Locked threshold:
-``regression_drop = 1 - success_with <= 0.03`` (tau_r; with 40 binary tasks
-this means at least 39/40 remain successful).
+Regression: T_reg is the frozen 40-task subset of T_mine that G0 solved in
+a lifetime episode. Every task carries immutable provenance (the original
+successful G0 trajectory id, baseline_success == True). Since ADR-0009 D1
+(owner, 2026-10-15) the stage is paired: G0 without the trait plays every
+T_reg task once per mining seed at the gate's locked settings, shared by
+every candidate of that seed (``run_regression_baseline``), and each
+candidate runs T_reg
+with ``genome ∪ trait`` at the same settings. Locked threshold:
+``regression_drop = (success_without - success_with) / 40 <= 0.03`` (tau_r;
+with 40 binary tasks a net loss of at most one task; a net gain passes).
+The lifetime success at temperature 0.7 selects T_reg (ADR-0007 E3); it is
+not the comparison the stage decides on.
 
 Overhead: expression overhead is measured on the ACTUAL model-visible
 projected single-skill block using the same runtime rendering path, counted
@@ -40,7 +45,8 @@ from inheritance.runner import (
 
 REGRESSION_TASK_COUNT = 40
 TAU_R = 0.03
-REGRESSION_THRESHOLD_TEXT = "regression_drop = 1 - success_with <= 0.03 (tau_r)"
+REGRESSION_THRESHOLD_TEXT = ("regression_drop = (success_without - success_with) / 40 <= 0.03 "
+                             "(tau_r), paired against one shared G0 run (ADR-0009 D1)")
 TAU_K_TOKENS = 512
 OVERHEAD_THRESHOLD_TEXT = "expression_tokens <= 512 (tau_k)"
 
@@ -52,6 +58,13 @@ def drop_within(successes: int, total: int, tau: float) -> bool:
     0.050000000000000044, which would make the tau_r = 0.05 sensitivity cell
     reject 2/40 and collapse it onto the tau_r = 0.03 cell."""
     return Fraction(total - successes, total) <= Fraction(repr(tau))
+
+
+def paired_drop_within(successes_with: int, successes_without: int, total: int,
+                       tau: float) -> bool:
+    """Exact ``(successes_without - successes_with) / total <= tau`` (ADR-0009
+    D1): the trait's net loss against G0 at the same settings."""
+    return Fraction(successes_without - successes_with, total) <= Fraction(repr(tau))
 
 
 class TokenCounter(Protocol):
@@ -150,8 +163,53 @@ class RegressionAllocation:
             "baseline_trajectory_ids": [t.baseline_trajectory_id
                                          for t in self.tasks],
             "baseline_success": True,
+            # the selection's lifetime trajectories are never re-run; the
+            # stage compares against one shared G0 run (ADR-0009 D1)
             "baseline_rerun": False,
+            "paired_g0_run": True,
         }
+
+
+@dataclass(frozen=True)
+class RegressionBaseline:
+    """G0 without the trait on every T_reg task at the gate's locked
+    settings, once per mining seed in a gate run and shared by every
+    candidate of that seed (ADR-0009 D1)."""
+
+    episodes: tuple[dict, ...]
+    locked_settings: dict
+
+    @property
+    def task_ids(self) -> tuple[str, ...]:
+        return tuple(e["task_id"] for e in self.episodes)
+
+    @property
+    def successes(self) -> int:
+        return sum(1 for e in self.episodes if e["success"])
+
+    def record(self) -> dict:
+        return {"condition": "without_trait", "shared_across_candidates": True,
+                "episodes": copy.deepcopy(list(self.episodes)),
+                "successes_without": self.successes,
+                "eval_generation_settings": copy.deepcopy(self.locked_settings)}
+
+
+def run_regression_baseline(*, base_config: RuntimeConfig, runner: GateEpisodeRunner,
+                            budgets: Budgets, mining_seed: int,
+                            allocation: RegressionAllocation) -> RegressionBaseline:
+    settings = evaluation_settings(max_tokens=budgets.max_tokens_per_request, seed=mining_seed)
+    episodes = []
+    for task in allocation.tasks:
+        outcome = runner.run_episode(
+            EvaluationTask(task_id=task.task_id, family=task.family, payload=dict(task.payload)),
+            base_config, budgets, "without_trait", settings)
+        validate_outcome(outcome, task.task_id, "without_trait", settings=settings)
+        episodes.append({"task_id": task.task_id, "family": task.family,
+                         "success": outcome.success, "trajectory_id": outcome.trajectory_id})
+    return RegressionBaseline(
+        episodes=tuple(episodes),
+        locked_settings={"temperature": settings.temperature, "max_tokens": settings.max_tokens,
+                         "seed": settings.seed, "stop": list(settings.stop)})
 
 
 @dataclass(frozen=True)
@@ -165,6 +223,8 @@ class RegressionEvaluation:
     _episodes: tuple[dict, ...]
     _allocation: dict
     _locked_settings: dict
+    _successes_without: int = 0
+    _baseline: dict = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -181,13 +241,23 @@ class RegressionEvaluation:
         return self._successes_with
 
     @property
+    def successes_without(self) -> int:
+        """G0's successes on T_reg in the shared paired run."""
+        return self._successes_without
+
+    @property
+    def baseline(self) -> dict:
+        """The shared G0 run's record (ADR-0009 D1)."""
+        return copy.deepcopy(self._baseline)
+
+    @property
     def task_count(self) -> int:
         """Number of T_reg tasks run (the denominator of the drop)."""
         return self._task_count
 
     @property
     def regression_drop(self) -> float:
-        """Nearest float to the exact drop; decisions use drop_within()."""
+        """Nearest float to the exact paired drop; decisions use paired_drop_within()."""
         return self._regression_drop
 
     @property
@@ -200,8 +270,8 @@ class RegressionEvaluation:
 
 
 class RegressionEvaluator:
-    """Runs T_reg with the trait overlay (genome ∪ trait semantics); the
-    baseline is the frozen G0 provenance, never rerun."""
+    """Runs T_reg with the trait overlay (genome ∪ trait semantics) and
+    compares it with the shared G0 run at the same settings (ADR-0009 D1)."""
 
     def __init__(self, *, candidate_envelope: dict, registry,
                  base_config: RuntimeConfig, runner: GateEpisodeRunner,
@@ -224,7 +294,14 @@ class RegressionEvaluator:
                          "seed": self._settings.seed,
                          "stop": list(self._settings.stop)}
 
-    def evaluate(self, allocation: RegressionAllocation) -> RegressionEvaluation:
+    def evaluate(self, allocation: RegressionAllocation,
+                 baseline: RegressionBaseline) -> RegressionEvaluation:
+        if baseline.task_ids != tuple(t.task_id for t in allocation.tasks):
+            raise RunnerContractError("the shared G0 run covers other T_reg tasks than the "
+                                      "allocation (ADR-0009 D1)")
+        if baseline.locked_settings != self._locked:
+            raise RunnerContractError(f"the shared G0 run used settings {baseline.locked_settings}, "
+                                      f"the stage locks {self._locked}")
         episodes: list[dict] = []
         successes_with = 0
         for task in allocation.tasks:
@@ -243,15 +320,16 @@ class RegressionEvaluator:
                 "baseline_trajectory_id": task.baseline_trajectory_id,
                 "trajectory_id": outcome.trajectory_id,
             })
-        successes = successes_with
+        successes_without = baseline.successes
         total = len(allocation.tasks)
-        drop = (total - successes) / total
-        passed = drop_within(successes, total, TAU_R)
+        drop = (successes_without - successes_with) / total
+        passed = paired_drop_within(successes_with, successes_without, total, TAU_R)
         return RegressionEvaluation(
-            _passed=passed, _successes_with=successes, _task_count=total,
+            _passed=passed, _successes_with=successes_with, _task_count=total,
             _regression_drop=drop, _episodes=tuple(copy.deepcopy(episodes)),
             _allocation=copy.deepcopy(allocation.allocation_metadata()),
-            _locked_settings=copy.deepcopy(self._locked))
+            _locked_settings=copy.deepcopy(self._locked),
+            _successes_without=successes_without, _baseline=baseline.record())
 
 
 @dataclass(frozen=True)

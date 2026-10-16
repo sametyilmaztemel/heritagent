@@ -24,7 +24,9 @@ retunes a threshold. The locked rules (EXP-0001-design section 5, manifest
 - D5 incomplete data fails closed: no primary verdict unless every
   (arm, seed, task) cell holds exactly one recorded outcome.
 - D6 bloat and adaptation cost are descriptive only: no CI, no test.
-- D7 arm A (unchanged G0) runs once; its outcomes serve every seed.
+- D7 arm A (unchanged G0) runs once; its outcomes serve every seed. ADR-0009
+  D2 extends this to every arm: each distinct genome is evaluated once, and
+  every arm and seed whose genome it is reads the same cells.
 
 The output states rule outcomes only. It never calls a result validated
 (SPEC section 32) and makes no causal or inheritance claim (SPEC section 34).
@@ -63,6 +65,7 @@ FINAL_RULE = MappingProxyType({
     "regression_rate": "t_reg-failure-rate",
     "incomplete_data": "fail-closed-no-primary-verdict",
     "arm_a": "run-once-reused-across-seeds",
+    "identical_genomes": "one-run-cells-shared",  # ADR-0009 D2
     "secondary": "descriptive-only",
     "t_reg": "one-set-shared-across-seeds",
 })
@@ -70,6 +73,15 @@ FINAL_RULE = MappingProxyType({
 CLAIM_STATUS = ("pre-registered rule outcome only; not a validated result "
                 "(SPEC section 32) and not a causal claim (SPEC section 34)")
 BOOTSTRAP_METHOD = "percentile-paired-cluster-bootstrap-exact"
+# ADR-0006 D1: the tasks are the clusters and the seeds are pooled, not resampled; what this
+# means for the hypotheses is proposed for the owner in
+# research/proposals/ADR-0006-notes-proposal.md, N1
+UNCERTAINTY = ("task clusters only, conditional on the mining seeds {seeds}; seed-to-seed "
+               "variability is not resampled")
+# ADR-0006 D4, scoped by ADR-0009 D5 in D5's words; the in-sample reading is proposed for the
+# owner in research/proposals/ADR-0006-notes-proposal.md, N4
+REGRESSION_CLAUSE_SCOPE = ("measured on T_reg, the suite the gate's stage 4A used to decide "
+                           "which traits arm C keeps (ADR-0009 D5)")
 
 
 class FinalStatisticsError(ValueError):
@@ -284,6 +296,7 @@ def _pooled_contrast(cells: list[tuple[str, int]]) -> dict:
         "bootstrap": {"method": "percentile", "confidence": confidence, "seed": seed,
                       "resamples": n_resamples, "cluster_order": FINAL_CLUSTER_ORDER,
                       "implementation": BOOTSTRAP_METHOD},
+        "uncertainty": UNCERTAINTY.format(seeds=list(MINING_SEEDS)),
         "cluster_task_ids": task_ids,
         "cluster_numerators": numerators,
         "cluster_denominator": denominator,
@@ -390,7 +403,7 @@ def analyze_final_evaluation(data: FinalEvaluationInput) -> dict:
         "success_clause": {"rule": "C-B >= +5pp and 95% CI lower bound > 0",
                            "met": success_clause},
         "regression_clause": {"rule": "reg(C)-reg(B) < 0 and 95% CI upper bound < 0",
-                              "met": regression_clause},
+                              "scope": REGRESSION_CLAUSE_SCOPE, "met": regression_clause},
         "seed_clause": {"rule": "C-B > 0 in >= 2 of 3 mining seeds", "met": seed_clause},
         "rule_met": success_clause and regression_clause and seed_clause,
     }

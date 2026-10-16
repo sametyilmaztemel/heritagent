@@ -12,8 +12,11 @@ Orchestration order (handoff §14) for a frozen candidate set:
    ``load_cig`` validation + exact ``<parent>/S<seed>-<stage>`` child ids
    + full coherence, failing closed before any stage-3/4 runner call;
 3. stage-3 generalization for ALL candidates;
-4. regression + overhead for ALL candidates (the token counter contract
-   is validated fail-closed before first use);
+4. one shared G0 run on T_reg per mining seed at the gate's locked settings,
+   then
+   regression (paired against it, ADR-0009 D1) + overhead for ALL
+   candidates (the token counter contract is validated fail-closed before
+   first use);
 5. preliminary eligible set;
 6. every unordered interaction pair in that set evaluated exactly once,
    gene ids in canonical order, candidate target regulations preserved;
@@ -61,8 +64,10 @@ from inheritance.ablation import (
     BOOTSTRAP_CLUSTER_ORDER,
     BOOTSTRAP_N_RESAMPLES,
     BOOTSTRAP_SEED,
+    TAU_C,
     AblationEvaluation,
 )
+from inheritance.bootstrap import CONFIDENCE, paired_cluster_bootstrap, stage_passes
 from inheritance.generalization import (
     GeneralizationEvaluation,
     GeneralizationEvaluator,
@@ -75,11 +80,13 @@ from inheritance.overlay import (
     evaluation_settings,
 )
 from inheritance.regression import (
+    REGRESSION_THRESHOLD_TEXT,
     RegressionEvaluation,
     RegressionEvaluator,
     TokenCounter,
-    drop_within,
     measure_expression_overhead,
+    paired_drop_within,
+    run_regression_baseline,
     validate_token_counter,
 )
 from inheritance.replay import ReplayEvaluation
@@ -116,19 +123,26 @@ class EvidenceCoherenceError(ValueError):
     closed; replay/ablation are never rerun)."""
 
 
-def _ablation_bootstrap_issues(measurements: dict, evaluated: dict) -> list[str]:
-    """ADR-0005: an ablation verdict is evidence only under the
-    pre-registered bootstrap (seed 0, 10,000 resamples, the deltas in
-    task_id order), in the child record and in the evaluation whose lower
-    bound the sensitivity recomputation reads. The aggregate's
-    thresholds_used claims these values, so the declared values are
-    checked, not assumed; the bound itself is not recomputed (review of
-    #63)."""
+BOOTSTRAP_METHOD = "percentile-paired-cluster-bootstrap"
+
+
+def ablation_evidence_issues(measurements: dict, evaluated: dict | None = None) -> list[str]:
+    """ADR-0005, hardened by ADR-0009 D5: an ablation verdict is evidence
+    only under the pre-registered bootstrap (the percentile paired cluster
+    bootstrap at confidence 0.95; seed 0 for ``random.Random``, one
+    ``randrange(n)`` per resampled cluster; 10,000 resamples; the deltas in
+    task_id order). The declared values are checked in the child record and
+    in the evaluation, and the bound is recomputed from the record's deltas:
+    its lower and upper bound, its point estimate and the stage verdict must
+    be exactly the record's. ``evaluated`` is the evaluation's own block (the
+    one the sensitivity recomputation reads); a resumed run passes None."""
     issues: list[str] = []
     locked = {"seed": BOOTSTRAP_SEED, "n_resamples": BOOTSTRAP_N_RESAMPLES,
-              "cluster_order": BOOTSTRAP_CLUSTER_ORDER}
-    for where, block in (("child bootstrap", measurements.get("bootstrap")),
-                         ("evaluation bootstrap", evaluated)):
+              "cluster_order": BOOTSTRAP_CLUSTER_ORDER, "method": BOOTSTRAP_METHOD}
+    blocks = [("child bootstrap", measurements.get("bootstrap"))]
+    if evaluated is not None:
+        blocks.append(("evaluation bootstrap", evaluated))
+    for where, block in blocks:
         if not isinstance(block, dict):
             issues.append(f"ablation {where} is missing")
             continue
@@ -138,11 +152,48 @@ def _ablation_bootstrap_issues(measurements: dict, evaluated: dict) -> list[str]
             if type(got) is not type(value) or got != value:
                 issues.append(f"ablation {where}.{key} {got!r} != pre-registered "
                               f"{value!r} (ADR-0005)")
+        confidence = block.get("confidence")
+        if type(confidence) is not float or confidence != CONFIDENCE:
+            issues.append(f"ablation {where}.confidence {confidence!r} != pre-registered "
+                          f"{CONFIDENCE!r} (ADR-0009 D5)")
     ids = measurements.get("paired_delta_task_ids")
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) \
             or any(a >= b for a, b in zip(ids, ids[1:])):
         issues.append(f"ablation child paired_delta_task_ids {ids!r} are not "
                       f"distinct strings in task_id order (ADR-0005)")
+        return issues
+    allocated = (measurements.get("allocation") or {}).get("task_ids")
+    if not isinstance(allocated, list) or sorted(allocated) != ids:
+        issues.append("ablation child paired_delta_task_ids are not the allocation's tasks "
+                      "(ADR-0009 D5)")
+    deltas = measurements.get("paired_deltas")
+    if not isinstance(deltas, list) or len(deltas) != len(ids):
+        issues.append(f"ablation child has {len(deltas) if isinstance(deltas, list) else deltas!r}"
+                      f" paired deltas for {len(ids)} tasks (ADR-0009 D5)")
+        return issues
+    try:
+        bootstrap = paired_cluster_bootstrap(deltas, seed=BOOTSTRAP_SEED,
+                                             n_resamples=BOOTSTRAP_N_RESAMPLES,
+                                             confidence=CONFIDENCE)
+    except ValueError as exc:
+        return issues + [f"ablation child paired deltas do not recompute: {exc}"]
+    block = measurements.get("bootstrap") if isinstance(measurements.get("bootstrap"), dict) \
+        else {}
+    recomputed = {"lower_bound": bootstrap.lower_bound, "upper_bound": bootstrap.upper_bound}
+    for where, source in [("child bootstrap", block)] + (
+            [("evaluation bootstrap", evaluated)] if isinstance(evaluated, dict) else []):
+        for key, value in recomputed.items():
+            if source.get(key) != value:
+                issues.append(f"ablation {where}.{key} {source.get(key)!r} != recomputed "
+                              f"{value!r} (ADR-0009 D5)")
+    if measurements.get("point_estimate_delta_success") != bootstrap.point_estimate:
+        issues.append(f"ablation point estimate "
+                      f"{measurements.get('point_estimate_delta_success')!r} != recomputed "
+                      f"{bootstrap.point_estimate!r} (ADR-0009 D5)")
+    expected = stage_passes(bootstrap.point_estimate, bootstrap.lower_bound, tau_c=TAU_C)
+    if measurements.get("stage_pass") is not expected:
+        issues.append(f"ablation stage_pass {measurements.get('stage_pass')!r} != the locked "
+                      f"rule on the recomputed bound ({expected}) (ADR-0009 D5)")
     return issues
 
 
@@ -350,9 +401,25 @@ class CigGateOrchestrator:
                 target_regulation=self._target_regulation_by_gene.get(gid))
             gen_results[gid] = evaluator.evaluate(inp.generalization_allocation)
 
-        # step 4: regression + overhead for ALL candidates
+        # step 4: one shared G0 run on T_reg (ADR-0009 D1), then regression
+        # paired against it + overhead for ALL candidates
         reg_results: dict[str, RegressionEvaluation] = {}
         overhead_results: dict[str, dict] = {}
+        # one G0 run per distinct (mining seed, T_reg), before any candidate,
+        # at the seed each candidate is measured at (EXP-0001 has one seed
+        # and one T_reg per gate run, ADR-0006 D8, so one run of 40 episodes)
+        baselines: dict[tuple, object] = {}
+
+        def baseline_key(inp, seed):
+            return seed, tuple(t.task_id for t in inp.regression_allocation.tasks)
+
+        for inp, (_, seed) in zip(inputs, identities):
+            key = baseline_key(inp, seed)
+            if key not in baselines:
+                baselines[key] = run_regression_baseline(
+                    base_config=self._base_config, runner=self._runner,
+                    budgets=self._budgets, mining_seed=seed,
+                    allocation=inp.regression_allocation)
         for inp, (parent, seed) in zip(inputs, identities):
             gid = inp.candidate_envelope["candidate"]["gene_id"]
             reg_evaluator = RegressionEvaluator(
@@ -361,7 +428,8 @@ class CigGateOrchestrator:
                 budgets=self._budgets, parent_cig_id=parent,
                 mining_seed=seed,
                 target_regulation=self._target_regulation_by_gene.get(gid))
-            reg_results[gid] = reg_evaluator.evaluate(inp.regression_allocation)
+            reg_results[gid] = reg_evaluator.evaluate(
+                inp.regression_allocation, baselines[baseline_key(inp, seed)])
             target = [s for s in self._configs_by_gene(inp).with_trait.skills
                        if s.gene_id == gid][0]
             oh = measure_expression_overhead(target, self._token_counter)
@@ -500,6 +568,7 @@ class CigGateOrchestrator:
             gen_out[gid] = run.gen_results[gid].out_scope_passed
             overhead_ok[gid] = run.overhead_results[gid]["passed"]
             reg_counts[gid] = (run.reg_results[gid].successes_with,
+                               run.reg_results[gid].successes_without,
                                run.reg_results[gid].task_count)
         grid = {"gene_id": gene_id, "tau_c_grid": list(SENSITIVITY_TAU_C_GRID),
                  "tau_r_grid": list(SENSITIVITY_TAU_R_GRID),
@@ -517,7 +586,7 @@ class CigGateOrchestrator:
                               and ablation_lb[gene_id] > 0)
                             for tau in SENSITIVITY_TAU_C_GRID}
         grid["regression"] = {f"tau_r={tau}":
-                               drop_within(*reg_counts[gene_id], tau)
+                               paired_drop_within(*reg_counts[gene_id], tau)
                                for tau in SENSITIVITY_TAU_R_GRID}
         grid["interaction_note"] = (
             "interaction pair evidence exists only for pairs collected in "
@@ -537,7 +606,7 @@ class CigGateOrchestrator:
                         and overhead_ok[gid]
                         and ablation_delta[gid] >= tau_c
                         and ablation_lb[gid] > 0
-                        and drop_within(*reg_counts[gid], tau_r)))
+                        and paired_drop_within(*reg_counts[gid], tau_r)))
                 # identifiability = REQUIRED pair evidence exists: every
                 # unordered pair WITHIN the hypothetical eligible set must
                 # have been collected in the primary run. A single (or
@@ -673,7 +742,7 @@ class CigGateOrchestrator:
                                f"child measurements.stage_pass "
                                f"{stage_pass!r} (strict bool on both sides)")
             if stage == "ablation":
-                issues.extend(_ablation_bootstrap_issues(m, evaluation.bootstrap))
+                issues.extend(ablation_evidence_issues(m, evaluation.bootstrap))
             settings = m.get("eval_generation_settings")
             if not isinstance(settings, dict):
                 issues.append(f"{stage} child lacks eval_generation_settings "
@@ -761,8 +830,11 @@ class CigGateOrchestrator:
                     "allocation": reg_eval.allocation,
                     "episodes": reg_eval.episodes,
                     "successes_with": reg_eval.successes_with,
+                    "successes_without": reg_eval.successes_without,
                     "task_count": reg_eval.task_count,
                     "regression_drop": reg_eval.regression_drop,
+                    "rule": REGRESSION_THRESHOLD_TEXT,
+                    "paired_g0_run": reg_eval.baseline,
                     "tau_r": 0.03,
                     "regression_pass": regression_pass,
                     # exact generation settings every T_reg episode ran with
@@ -821,8 +893,8 @@ class CigGateOrchestrator:
             "interaction_regression": {
                 "measurements_ref": "children",
                 "pass": stage4["measurements"]["stage_pass"],
-                "threshold": "regression <= 0.03, overhead <= 512 tokens, "
-                              "not eliminated"},
+                "threshold": "paired regression drop <= 0.03 (ADR-0009 D1), overhead <= "
+                              "512 tokens, not eliminated"},
         }
         child_ids = [inp.replay_evaluation.child_record["cig_id"],
                       inp.ablation_evaluation.child_record["cig_id"],
