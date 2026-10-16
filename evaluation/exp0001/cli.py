@@ -359,16 +359,17 @@ def _sigint_deferred():
         signal.signal(signal.SIGINT, previous)
 
 
-def _final_snapshot(mirror: RunMirror | None, local: Path) -> bool:
+def _final_snapshot(mirror: RunMirror | None, local: Path, *, marker: bool = True) -> bool:
     """The last snapshot of a session; False (with a marker file and a loud
     message) when it fails, so nobody releases the machine that holds the
     only copy of the newest records. It is not interrupted, and anything
     that stops it short of a whole snapshot counts as a failure; only another
-    machine taking over the mirror is raised (ADR-0008 D5)."""
+    machine taking over the mirror is raised (ADR-0008 D5). A rehearsal's
+    records are disposable: ``marker=False`` leaves none."""
     if mirror is None:
         return True
     with _sigint_deferred():  # the snapshot and its marker, as one step
-        marker, error = local / UNMIRRORED, None
+        path, error = local / UNMIRRORED, None
         try:
             seq = mirror.snapshot()
         except MirrorError:
@@ -376,10 +377,13 @@ def _final_snapshot(mirror: RunMirror | None, local: Path) -> bool:
         except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - nothing was mirrored
             seq, error = None, repr(exc)
         if seq is not None:
-            marker.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
             return True
-        _write_json(marker, {"failures": mirror.failures,
-                             "last_error": error or mirror.last_error, "at": _now()})
+        if not marker:
+            _say(f"the rehearsal's last snapshot failed ({error or mirror.last_error})")
+            return False
+        _write_json(path, {"failures": mirror.failures,
+                           "last_error": error or mirror.last_error, "at": _now()})
     _say(f"UNMIRRORED: the last snapshot failed ({error or mirror.last_error}); the newest "
          f"records of {local} exist only on this machine. Mount Google Drive again and run "
          f"`snapshot` before the runtime is released.")
@@ -400,15 +404,17 @@ STOPPED = "stopped: every recorded episode is kept; run the same command again t
 
 
 @contextlib.contextmanager
-def _run_dir_lock(local: Path):
+def _run_dir_lock(local: Path, *, marker: bool = True):
     """The run directory's one-writer lock, held from before the mirror is
     taken over until after the last snapshot. A second command on the same
     directory (one started while a command whose kernel restarted still
-    stops) fails here, before it touches the mirror or the ledger."""
+    stops) fails here, before it touches the mirror or the ledger. A
+    rehearsal (``marker=False``) leaves no unmirrored marker on SIGTERM: its
+    records are disposable, and a marker would keep the notebook's runtime."""
     from evaluation.exp0001.pipeline import lock_run_dir
     local.mkdir(parents=True, exist_ok=True)
     lock = lock_run_dir(local)
-    restore = _marker_on_sigterm(local)
+    restore = _marker_on_sigterm(local) if marker else (lambda: None)
     try:
         yield lock
     finally:
@@ -467,9 +473,11 @@ def cmd_pilot(args) -> int:
 
 
 def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = PILOT_RUN_ID,
-           report_name: str = "pilot-report.json", report_fields: Mapping | None = None) -> int:
+           report_name: str = "pilot-report.json", report_fields: Mapping | None = None,
+           disposable: bool = False) -> int:
     """The pilot from its checks to its last snapshot; ``rehearse`` runs the
-    same against its stand-in server (its own run id and report)."""
+    same against its stand-in server (its own run id and report, and
+    ``disposable``: no unmirrored marker)."""
     from runtime.expression import compile_runtime_config
     from runtime.seed_g0 import build_g0_seed_genome
     from genome.validation.registry import TraitRegistry
@@ -488,7 +496,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
         return 0
     adapter = adapter()
     counter = counter()
-    with _run_dir_lock(out):  # one writer, before the mirror is taken over
+    with _run_dir_lock(out, marker=not disposable):  # one writer, before the mirror is taken over
         # a resumed pilot plays on with the code, model and weights it started with, or not
         # at all
         identity = {"run_id": run_id, "commit": commit, "model_id": prepared["model_id"],
@@ -532,7 +540,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
         except KeyboardInterrupt:
             stopped = True
         finally:
-            mirrored = _final_snapshot(mirror, out)
+            mirrored = _final_snapshot(mirror, out, marker=not disposable)
     if stopped:
         return _stopped(mirrored)
     _out(json.dumps({"measures": report["measures"], "projection": report["projection"]},
@@ -566,6 +574,11 @@ def _empty_dir(path: Path | None, what: str) -> None:
 
 def _ledger_lines(path: Path) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
+
+
+def _rehearsal_stopped() -> int:
+    _say("stopped: the rehearsal did not finish; run it again with a new directory")
+    return 130
 
 
 def cmd_rehearse(args) -> int:
@@ -622,8 +635,9 @@ def cmd_rehearse(args) -> int:
     prepared = {"model_id": args.model, "revision": revision, "path": None,
                 "weights": {"sha256": None, "note": "a rehearsal loads no weights"}}
     checks: dict[str, bool] = {}
-    with rehearsal.StandInServer(args.model, policy,
-                                 count_prompt=counter.count_chat_tokens) as server:
+    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
+    with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
+                                 check_schema=check_schema) as server:
         session = Namespace(repo=repo, data_root=args.data_root, out_dir=out,
                             mirror_dir=mirror_dir, workers=args.workers, server_url=server.url,
                             server_info=None, progress_every=args.progress_every)
@@ -638,13 +652,15 @@ def cmd_rehearse(args) -> int:
                           report_name=rehearsal.REHEARSAL_REPORT, report_fields={
                               "schema": rehearsal.REHEARSAL_REPORT_SCHEMA,
                               "note": "a rehearsal against a stand-in model server: it checks "
-                                      "the code path and measures nothing about any model"})
+                                      "the code path and measures nothing about any model"},
+                          disposable=True)
 
         preflight = _preflight(adapter())
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []}
         server.outage_seed = attempt_sampling_seed(PILOT_ATTEMPT_SEED, games[len(games) // 2], 1)
         try:
-            run()
+            if run() == 130:  # stopped (the stop button, or the kernel): no second pass
+                return _rehearsal_stopped()
             checks["the outage stopped the first pass"] = False
         except BackendUnavailableError as exc:
             checks["the outage stopped the first pass"] = server.url in str(exc)
@@ -654,11 +670,19 @@ def cmd_rehearse(args) -> int:
         checks["the first pass recorded part of the pilot"] = 0 < len(first)
         checks["the first pass left no unmirrored marker"] = not (out / UNMIRRORED).exists()
         if mirror_dir is not None:
+            latest = latest_snapshot(mirror_dir)
+            # one snapshot at the first record and one at the end: the ledger hook snapshots
+            checks["the mirror was snapshotted during the first pass"] = \
+                latest is not None and latest["seq"] >= 2
             shutil.rmtree(out)  # the rehearsal's own directory: the next pass restores it
         _out(f"[rehearsal] first pass stopped by the outage after {len(first)} episodes; "
              + ("restoring from the mirror" if mirror_dir is not None else "resuming in place"))
+        before = (server.requests, server.refused)
         code = run()
+        if code == 130:
+            return _rehearsal_stopped()
         checks["the second pass finished"] = code == 0
+        second_requests = server.requests - before[0] - (server.refused - before[1])
     report = _json(out / rehearsal.REHEARSAL_REPORT)
     lines = _ledger_lines(out / "ledger.jsonl")
     registry = TraitRegistry(out / "registry")
@@ -670,8 +694,10 @@ def cmd_rehearse(args) -> int:
     m = report["measures"]
     checks.update({
         "every pilot episode recorded once": sorted(recorded) == keys,
-        "the first pass's episodes were not played again": first <= set(recorded)
-        and len(recorded) == len(set(recorded)),
+        # every request of the second pass belongs to an episode the first did not record
+        "the second pass played only what the first did not record": second_requests == sum(
+            r["model_calls"] for r in lines if r.get("type") == "episode"
+            and r["key"] not in first),
         "the outage's attempt was charged": ledger["aborted_attempts"] >= 1,
         "the restore is on record": mirror_dir is None or "restore" in ledger["notes"],
         "the temperature-0 successes": m["g0_success_rate_p0"]["numerator"]
@@ -697,7 +723,9 @@ def cmd_rehearse(args) -> int:
                                                        "revision": revision,
                                                        "tokenizer": counter.identity},
                "workers": args.workers, "expected": expected, "checks": checks,
-               "stand_in_requests": server.requests, "finished_at": _now()}
+               "stand_in_requests": server.requests,
+               "teacher_schema_compiled_with_xgrammar": server.schemas_compiled > 0,
+               "finished_at": _now()}
     _out(json.dumps(summary, indent=2))
     if failed:
         raise CliError(f"the rehearsal failed: {failed}")

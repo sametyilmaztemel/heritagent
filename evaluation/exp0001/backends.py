@@ -116,6 +116,10 @@ class TokenizerCounter:
     def identity(self) -> str:
         return self._identity
 
+    @property
+    def tokenizer(self):
+        return self._tokenizer
+
     def count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text, add_special_tokens=False))
 

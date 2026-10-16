@@ -8,9 +8,12 @@ processes, the ledger and trajectories, the model's own tokenizer (fetched
 without the weights), the Drive mirror and a restore from it, and the
 report. Only the model server is a stand-in (``StandInServer``): an HTTP
 server in this process that answers ``/version``, ``/v1/models`` and
-``/v1/chat/completions`` as ``vllm serve`` does, counts each prompt with
-the model's chat template, and plays ALFWorld's handcoded expert on the
-episodes it is set to win.
+``/v1/chat/completions`` as ``vllm serve`` does. It renders and counts each
+request with the model's own chat template (a template that refuses the
+request is a 400, as on the server), compiles a response-format schema with
+xgrammar and the model's tokenizer when xgrammar is installed, refuses a
+request that breaks the pilot's protocol (``protocol_issues``), and plays
+ALFWorld's handcoded expert on the episodes it is set to win.
 
 A rehearsal measures nothing about any model. Its ledger is its own run
 (``REHEARSAL_RUN_ID``), its report is not a pilot report, and the command
@@ -31,7 +34,9 @@ from collections.abc import Callable, Mapping, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from evaluation.exp0001.protocol import CONTEXT_WINDOW, LIFETIME_ATTEMPTS_PER_TASK, \
-    attempt_sampling_seed
+    MAX_TOKENS_PER_REQUEST, MINER_MAX_TOKENS, MINING_TEMPERATURE, attempt_sampling_seed
+from runtime.model_adapters.openai_server import NEUTRAL_SAMPLING
+from runtime.policies.planner_react import STOP_SEQUENCES
 from runtime.tool_adapters.alfworld import ADMISSIBLE_HEADER
 
 REHEARSAL_RUN_ID = "EXP-0001-pilot-rehearsal"
@@ -127,6 +132,57 @@ def expected_counts(plans: Sequence[Mapping]) -> dict:
             "t07_solved_in_any_attempt": solved}
 
 
+def protocol_issues(payload: Mapping) -> list[str]:
+    """What in a chat request breaks the pilot's protocol: one choice, the
+    neutral sampling values, and per call kind its temperature, seed, stop
+    and token budget (a ReAct call: temperature 0 without a seed or the
+    mining temperature with one, the stop sequence, at most 512 tokens; a
+    teacher call: the mining temperature with a seed, 2,048 tokens). The
+    server would serve such a request; the stand-in refuses it, so the
+    rehearsal fails instead of the pilot measuring the wrong thing."""
+    issues = []
+    if payload.get("n") != 1:
+        issues.append(f"n is {payload.get('n')!r}, not 1")
+    sampling = {key: payload.get(key) for key in NEUTRAL_SAMPLING}
+    if sampling != dict(NEUTRAL_SAMPLING):
+        issues.append(f"sampling {sampling} is not the neutral {dict(NEUTRAL_SAMPLING)}")
+    seed, temperature = payload.get("seed"), payload.get("temperature")
+    if payload.get("response_format"):  # the teacher
+        if temperature != MINING_TEMPERATURE or not isinstance(seed, int) or \
+                payload.get("max_tokens") != MINER_MAX_TOKENS:
+            issues.append(f"a teacher call at temperature {temperature!r}, seed {seed!r}, "
+                          f"max_tokens {payload.get('max_tokens')!r}")
+    else:  # a ReAct step
+        if (seed is None and temperature != 0.0) or \
+                (seed is not None and temperature != MINING_TEMPERATURE):
+            issues.append(f"a ReAct call at temperature {temperature!r} with seed {seed!r}")
+        if payload.get("stop") != list(STOP_SEQUENCES):
+            issues.append(f"stop {payload.get('stop')!r} is not {list(STOP_SEQUENCES)!r}")
+        if not isinstance(payload.get("max_tokens"), int) or \
+                not 0 < payload["max_tokens"] <= MAX_TOKENS_PER_REQUEST:
+            issues.append(f"max_tokens {payload.get('max_tokens')!r} is outside 1.."
+                          f"{MAX_TOKENS_PER_REQUEST}")
+    return issues
+
+
+def xgrammar_check(tokenizer) -> Callable[[dict], None] | None:
+    """A compile of a response-format schema with xgrammar and the model's
+    own tokenizer, as the server's grammar backend does at request time;
+    None when xgrammar is not installed (the notebooks install it)."""
+    if tokenizer is None:
+        return None
+    try:
+        import xgrammar
+    except ImportError:
+        return None
+    compiler = xgrammar.GrammarCompiler(xgrammar.TokenizerInfo.from_huggingface(tokenizer))
+
+    def check(schema: dict) -> None:
+        compiler.compile_json_schema(json.dumps(schema))
+
+    return check
+
+
 def _react(thought: str, command: str) -> str:
     return (f"Thought: {thought}\nAction: act\n"
             f"Action Input: {json.dumps({'command': command}, sort_keys=True)}")
@@ -178,11 +234,17 @@ class StandInServer:
 
     def __init__(self, model_id: str, policy: StandInPolicy, *,
                  count_prompt: Callable[[list[dict]], int],
-                 context_window: int = CONTEXT_WINDOW):
+                 context_window: int = CONTEXT_WINDOW,
+                 check_protocol: bool = True,
+                 check_schema: Callable[[dict], None] | None = None):
         self.model_id = model_id
         self.outage_seed = None
         self.requests = 0
-        self.failed = 0
+        self.failed = 0  # the outage's 503s
+        self.refused = 0  # every other non-200 answer
+        self.schemas_compiled = 0
+        self._check_protocol = check_protocol
+        self._check_schema = check_schema
         self._policy = policy
         self._count = count_prompt
         self._window = context_window
@@ -208,17 +270,41 @@ class StandInServer:
         return {"object": "list", "data": [{"id": self.model_id, "object": "model",
                                             "max_model_len": self._window}]}
 
+    def _refuse(self, message: str) -> tuple[int, dict]:
+        with self._lock:
+            self.refused += 1
+        return 400, {"object": "error", "message": message}
+
     def _complete(self, payload: dict) -> tuple[int, dict]:
         with self._lock:
             self.requests += 1
             if self.outage_seed is not None and payload.get("seed") == self.outage_seed:
                 self.failed += 1
                 return 503, {"object": "error", "message": "the stand-in is down"}
-            prompt = self._count(payload["messages"])  # tokenizers are not shared across threads
+        issues = protocol_issues(payload) if self._check_protocol else []
+        if issues:
+            return self._refuse(f"the stand-in refuses a request that breaks the pilot's "
+                                f"protocol: {'; '.join(issues)}")
+        with self._lock:  # tokenizers and grammar compilers are not shared across threads
+            try:
+                prompt = self._count(payload["messages"])
+            except Exception as exc:  # noqa: BLE001 - the server answers 400 to a template error
+                prompt = None
+                error = f"the chat template refused the request: {exc}"
+            if prompt is None:
+                pass
+            elif payload.get("response_format") and self._check_schema is not None:
+                try:
+                    self._check_schema(payload["response_format"]["json_schema"]["schema"])
+                except Exception as exc:  # noqa: BLE001 - the server answers 400
+                    return self._refuse(f"the grammar backend refused the schema: {exc}")
+                self.schemas_compiled += 1
+        if prompt is None:
+            return self._refuse(error)
         if prompt + payload["max_tokens"] > self._window:
-            return 400, {"object": "error", "message": (
+            return self._refuse(
                 f"This model's maximum context length is {self._window} tokens. However, you "
-                f"requested {prompt + payload['max_tokens']} tokens.")}
+                f"requested {prompt + payload['max_tokens']} tokens.")
         if payload.get("response_format"):
             text = json.dumps({"proposals": []})  # the teacher's schema allows none
         else:

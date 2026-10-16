@@ -116,6 +116,7 @@ def test_the_stand_in_answers_as_the_server_does():
 # -- the command ----------------------------------------------------------------------------
 class CharCounter:
     identity = "chars/4"
+    tokenizer = None
 
     def count_chat_tokens(self, messages):
         return chars(messages)
@@ -249,3 +250,55 @@ def test_a_pilot_directory_resumes_only_with_its_own_code_and_model(tmp_path, st
     with pytest.raises(cli.CliError, match="Qwen2.5-7B-Instruct"):
         pilot()
     assert not (out / "UNMIRRORED.json").exists()
+
+
+def test_a_stopped_rehearsal_stops_and_leaves_no_marker(tmp_path, stubbed, monkeypatch, capsys):
+    """The stop button (or a dead kernel) during the first pass ends the
+    rehearsal with 130: no second pass, no checks, and no unmirrored marker,
+    which would keep the notebook's runtime."""
+    passes = []
+
+    def stopped(*args, **kwargs):
+        passes.append(1)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_pilot", stopped)
+    assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 130
+    assert passes == [1] and "did not finish" in capsys.readouterr().err
+    assert not (tmp_path / "out" / "UNMIRRORED.json").exists()
+    assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
+
+
+def test_a_rehearsals_lock_installs_no_sigterm_marker(tmp_path):
+    import signal
+    before = signal.getsignal(signal.SIGTERM)
+    with cli._run_dir_lock(tmp_path / "d", marker=False):
+        assert signal.getsignal(signal.SIGTERM) is before
+    with cli._run_dir_lock(tmp_path / "e"):
+        assert signal.getsignal(signal.SIGTERM) is not before
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def react_payload(**overrides):
+    from runtime.model_adapters.openai_server import NEUTRAL_SAMPLING
+    return {"n": 1, **NEUTRAL_SAMPLING, "temperature": 0.0, "max_tokens": 512,
+            "stop": ["\nObservation:"], **overrides}
+
+
+@pytest.mark.parametrize("overrides, issue", [
+    ({}, None),
+    ({"seed": 7, "temperature": 0.7}, None),
+    ({"temperature": 0.7}, "temperature 0.7 with seed None"),
+    ({"seed": 7, "temperature": 0.0}, "temperature 0.0 with seed 7"),
+    ({"stop": []}, "stop []"),
+    ({"max_tokens": 1024}, "max_tokens 1024"),
+    ({"n": 2}, "n is 2"),
+    ({"top_p": 0.8}, "neutral"),
+    ({"response_format": {"type": "json_schema"}, "temperature": 0.7, "seed": 11,
+      "max_tokens": 2048, "stop": None}, None),
+    ({"response_format": {"type": "json_schema"}, "temperature": 0.0, "seed": None,
+      "max_tokens": 2048}, "a teacher call at temperature 0.0"),
+])
+def test_the_stand_in_names_what_breaks_the_protocol(overrides, issue):
+    found = rehearsal.protocol_issues(react_payload(**overrides))
+    assert found == [] if issue is None else any(issue in f for f in found), found
