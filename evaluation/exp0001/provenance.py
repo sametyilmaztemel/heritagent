@@ -51,9 +51,11 @@ def canonical_sha256(obj) -> str:
 
 
 def sha256_files(directory: Path, patterns=("*.safetensors", "*.bin", "*.json", "*.model",
-                                            "*.txt")) -> dict:
+                                            "*.txt", "*.jinja")) -> dict:
     """Weights hash of a model directory: SHA-256 of every matching file,
-    and one digest over the sorted (relative path, file digest) list."""
+    and one digest over the sorted (relative path, file digest) list. The
+    chat template counts (``chat_template.jinja``: Qwen3.8 keeps it apart
+    from ``tokenizer_config.json``)."""
     directory = Path(directory)
     if not directory.is_dir():
         raise ProvenanceError(f"model directory not found: {directory}")

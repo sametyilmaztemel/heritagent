@@ -104,13 +104,17 @@ def alfworld_env_factory(data_root: Path, split_manifest: Mapping, *,
 
 
 class TokenizerCounter:
-    """``TokenCounter`` over a tokenizer's ``encode`` (special tokens off)."""
+    """``TokenCounter`` over a tokenizer's ``encode`` (special tokens off).
+    Chat requests are rendered with the model's chat template and
+    ``template_kwargs``, the arguments every server request carries
+    (EXP-0001: thinking off, ADR-0011 D3)."""
 
-    def __init__(self, tokenizer, identity: str):
+    def __init__(self, tokenizer, identity: str, template_kwargs: Mapping | None = None):
         if not isinstance(identity, str) or not identity.strip():
             raise BackendError("a token counter needs a stable identity")
         self._tokenizer = tokenizer
         self._identity = identity
+        self._template_kwargs = dict(template_kwargs or {})
 
     @property
     def identity(self) -> str:
@@ -123,18 +127,20 @@ class TokenizerCounter:
     def count_tokens(self, text: str) -> int:
         return len(self._tokenizer.encode(text, add_special_tokens=False))
 
-    def count_system_prompt_tokens(self, text: str) -> int:
-        """The prompt tokens of a request whose only message is this system
-        message, rendered with the model's chat template as the server
-        renders it (the generation prompt included)."""
-        return self.count_chat_tokens([{"role": "system", "content": text}])
+    def count_teacher_prompt_tokens(self, text: str) -> int:
+        """The prompt tokens of the miner's teacher call on this rendered
+        prompt, in the call's own message shape (``teacher_messages``)."""
+        from traits.miner.miner import teacher_messages
+        return self.count_chat_tokens([{"role": m.role, "content": m.content}
+                                       for m in teacher_messages(text)])
 
     def count_chat_tokens(self, messages) -> int:
         """The prompt tokens of a chat request's messages (role and content),
         rendered with the model's chat template as the server renders them
-        (the generation prompt included)."""
+        (the generation prompt and the template arguments included)."""
         ids = self._tokenizer.apply_chat_template([dict(m) for m in messages],
-                                                  add_generation_prompt=True, tokenize=True)
+                                                  add_generation_prompt=True, tokenize=True,
+                                                  **self._template_kwargs)
         if isinstance(ids, Mapping):  # a BatchEncoding
             ids = ids["input_ids"]
         return len(ids)
@@ -142,11 +148,15 @@ class TokenizerCounter:
 
 def hf_token_counter(model_id: str, revision: str, path: Path | None = None) -> TokenizerCounter:
     """The model's tokenizer; ``path`` is the local snapshot of exactly that
-    revision (the one the server loads), else the hub is asked for it."""
+    revision (the one the server loads), else the hub is asked for it (the
+    tokenizer's files only). Chat requests are counted with the protocol's
+    template arguments."""
     from transformers import AutoTokenizer  # installed with vLLM
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
     tokenizer = (AutoTokenizer.from_pretrained(str(path)) if path is not None
                  else AutoTokenizer.from_pretrained(model_id, revision=revision))
-    return TokenizerCounter(tokenizer, f"hf-tokenizer:{model_id}@{revision}")
+    return TokenizerCounter(tokenizer, f"hf-tokenizer:{model_id}@{revision}",
+                            template_kwargs=CHAT_TEMPLATE_KWARGS)
 
 
 def pinned_vllm_model(model_id: str, revision: str, **kwargs) -> VLLMAdapter:

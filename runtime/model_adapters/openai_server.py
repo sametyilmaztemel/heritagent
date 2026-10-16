@@ -7,7 +7,9 @@ URL and the model identity, so it pickles into worker processes. It uses
 the standard library's HTTP client only.
 
 - ``generate``: POST ``/v1/chat/completions`` with the messages and the
-  explicit settings (temperature, max_tokens, seed, stop), ``n`` = 1.
+  explicit settings (temperature, max_tokens, seed, stop), ``n`` = 1, and
+  the adapter's ``chat_template_kwargs`` (EXP-0001: thinking off, ADR-0011
+  D3).
 - ``structured_generate``: the same with a ``json_schema`` response
   format. The server is sent the schema without the keywords its grammar
   backends do not implement (``uniqueItems``: vLLM 0.29.0's xgrammar and
@@ -21,8 +23,8 @@ Every request also sends the neutral sampling values (top_p 1, top_k 0,
 min_p 0, repetition_penalty 1, no presence or frequency penalty). The
 server otherwise fills unset fields from the model's
 ``generation_config.json`` (vLLM's default ``--generation-config auto``;
-Qwen2.5-7B-Instruct's sets repetition_penalty 1.05, top_p 0.8, top_k 20),
-which the offline ``SamplingParams`` path never applies.
+Qwen3.8-27B's sets temperature 1.0, top_p 0.95, top_k 20), which the
+offline ``SamplingParams`` path never applies.
 
 Token counts come from the server's ``usage`` block, counted by the
 server's own tokenizer. A transport failure (connection refused, a 5xx, a
@@ -37,7 +39,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from jsonschema import Draft202012Validator
 
@@ -87,12 +89,14 @@ class VLLMServerAdapter(ModelAdapter):
     def __init__(self, base_url: str, model: str, revision: str, *,
                  backend_version: str | None = None, timeout_seconds: float = 600.0,
                  transport_retries: int = 6, backoff_seconds: float = 2.0,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep,
+                 chat_template_kwargs: Mapping | None = None):
         if not isinstance(revision, str) or not revision.strip():
             raise ValueError("the served model revision must be pinned")
         self._url = base_url.rstrip("/")
         self._model = model
         self._revision = revision
+        self._template_kwargs = dict(chat_template_kwargs or {})
         self._backend_version = backend_version
         self._timeout = timeout_seconds
         self._retries = transport_retries
@@ -161,6 +165,8 @@ class VLLMServerAdapter(ModelAdapter):
             payload["seed"] = settings.seed
         if settings.stop:
             payload["stop"] = list(settings.stop)
+        if self._template_kwargs:
+            payload["chat_template_kwargs"] = dict(self._template_kwargs)
         return payload
 
     def _complete(self, payload: dict) -> GenerationResult:
@@ -227,4 +233,5 @@ class VLLMServerAdapter(ModelAdapter):
                              backend=SERVER_BACKEND, backend_version=self._backend_version,
                              capabilities={"generate": True, "structured": True,
                                            "constrained_tool_call": True,
-                                           "server": self._url})
+                                           "server": self._url,
+                                           "chat_template_kwargs": dict(self._template_kwargs)})

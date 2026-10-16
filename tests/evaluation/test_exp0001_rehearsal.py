@@ -148,7 +148,7 @@ class CharCounter:
     def count_chat_tokens(self, messages):
         return chars(messages)
 
-    def count_system_prompt_tokens(self, text):
+    def count_teacher_prompt_tokens(self, text):
         return len(text) // 4
 
 
@@ -376,3 +376,35 @@ def react_payload(**overrides):
 def test_the_stand_in_names_what_breaks_the_protocol(overrides, issue):
     found = rehearsal.protocol_issues(react_payload(**overrides))
     assert found == [] if issue is None else any(issue in f for f in found), found
+def test_the_stand_in_refuses_what_the_server_would():
+    """A request without the protocol's chat-template arguments, or one the
+    model's chat template refuses (Qwen3.8's needs a user message), is a 400
+    from the stand-in, as from the server: the rehearsal fails on it."""
+    from runtime.model_adapters.openai_server import ServerRequestError
+
+    def needs_a_user(messages):
+        if not any(m["role"] == "user" for m in messages):
+            raise ValueError("No user query found in messages.")
+        return chars(messages)
+
+    policy = rehearsal.StandInPolicy({})
+    settings = GenerationSettings(temperature=0.0, max_tokens=8, seed=None,
+                                  stop=("\nObservation:",))
+    with rehearsal.StandInServer(MODEL, policy, count_prompt=needs_a_user,
+                                 template_kwargs={"enable_thinking": False}) as server:
+        bare = VLLMServerAdapter(server.url, MODEL, "b" * 40, transport_retries=0)
+        with pytest.raises(ServerRequestError, match="chat_template_kwargs"):
+            bare.generate([ModelMessage("user", "x")], settings)
+        adapter = VLLMServerAdapter(server.url, MODEL, "b" * 40, transport_retries=0,
+                                    chat_template_kwargs={"enable_thinking": False})
+        with pytest.raises(ServerRequestError, match="No user query"):
+            adapter.generate([ModelMessage("system", "x")], settings)
+        assert adapter.generate([ModelMessage("user", "x")], settings).text
+        # preflight sends G0's shape (system and user) and the teacher's (one user message)
+        assert cli._preflight(adapter)["teacher_reply"] == {"proposals": []}
+
+
+def test_the_teacher_prompt_goes_as_one_user_message():
+    from traits.miner.miner import TEACHER_ROLE, teacher_messages
+    assert TEACHER_ROLE == "user"
+    assert [(m.role, m.content) for m in teacher_messages("prompt")] == [("user", "prompt")]

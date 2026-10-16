@@ -59,7 +59,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
   - The pilot manifest's selection is unchanged; its measures and execution plan change. The new `pilot_sha256` is `4fc2b6fe…aa52`, pinned in `protocol.py` and the manifest's `run_protocol`.
   - The pilot still tunes nothing.
 - **D4 The context window is 32,768 tokens, and an overflow is a failure (owner, as recommended).**
-  - The window is Qwen2.5-7B-Instruct's native length. It is recorded in the protocol, the run-start record and the manifest's model block.
+  - The window is Qwen2.5-7B-Instruct's native length. It is recorded in the protocol, the run-start record and the manifest's model block. (ADR-0011 D5, 2026-10-16: the window stays 32,768 on Qwen3.8-27B, whose native length is 262,144; its reason is now the pre-registered protocol.)
   - The server is started with it, and the pilot and the run refuse a server that reports another.
   - A model call fits when its prompt tokens plus its `max_tokens` are at most 32,768: that is the server's rule, so a ReAct call (512 tokens) fits with a prompt of up to 32,256 tokens. A call that does not fit ends the episode with status `budget_exhausted` (budget `context_window`): a failure, identical in every arm. The prompt is never truncated and the call never retried. The rejected call generated nothing and is not counted among the episode's model calls. [corrected after independent verification 2026-10-15: the request budget's share of the window, and the count, were not stated.]
 - **D5 Wording and scope notes (owner, as recommended).**

@@ -20,7 +20,9 @@ T_REG_SEED = 0  # E3
 CANDIDATE_CAP = 10  # manifest genome.candidate_set.cap (K)
 MAX_TOKENS_PER_REQUEST = 512
 MAX_TOTAL_RETRIES = 10
-CONTEXT_WINDOW = 32768  # ADR-0009 D4: Qwen2.5-7B-Instruct's native length
+CONTEXT_WINDOW = 32768  # ADR-0009 D4, kept by ADR-0011 D5 (Qwen3.8-27B's native length is 262,144)
+# ADR-0011 D3: thinking off in every request, the server's default and the token counter
+CHAT_TEMPLATE_KWARGS = MappingProxyType({"enable_thinking": False})
 MINER_MAX_TOKENS = 2048  # traits.miner.MiningSettings default
 # ADR-0009 D8: a pair's teacher prompt in its full evidence form, then without the
 # admissible-command lists; the cap check reserves both calls, the run records the forms sent
@@ -52,6 +54,7 @@ PROTOCOL = MappingProxyType({
     "budgets": {"max_steps": EPISODE_MAX_STEPS, "max_total_retries": MAX_TOTAL_RETRIES,
                 "max_tokens_per_request": MAX_TOKENS_PER_REQUEST},
     "context_window": CONTEXT_WINDOW,
+    "chat_template_kwargs": CHAT_TEMPLATE_KWARGS,
     "context_overflow": "a model call whose prompt tokens plus its max_tokens exceed the "
                         "context window ends the episode with status budget_exhausted "
                         "(budget context_window), a failure in every arm; the prompt is never "

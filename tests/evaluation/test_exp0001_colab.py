@@ -7,6 +7,7 @@ import json
 import pickle
 import subprocess
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -234,6 +235,46 @@ def test_a_generation_sends_explicit_and_neutral_settings():
             body["n"]) == ("Qwen/Qwen2.5-7B-Instruct", 0.0, 512, 11, ["\nObservation:"], 1)
     assert {k: body[k] for k in NEUTRAL_SAMPLING} == NEUTRAL_SAMPLING
     assert body["repetition_penalty"] == 1.0 and body["top_k"] == 0  # never the model's defaults
+
+
+def test_every_request_switches_thinking_off_and_the_server_serves_text_only(monkeypatch):
+    """ADR-0011 D1-D3: the run's adapter sends the protocol's chat-template
+    arguments with every request; the server is text-only, thinking off by
+    default, and runs without batch-invariant kernels (vLLM has none for
+    Qwen3.8's Gated-DeltaNet layers)."""
+    from evaluation.exp0001 import serving
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS, PROTOCOL
+    server = Server([completion("Thought: ok\nFinal Answer: x")])
+    try:
+        VLLMServerAdapter(server.url, "Qwen/Qwen3.8-27B", "a" * 40,
+                          chat_template_kwargs=CHAT_TEMPLATE_KWARGS).generate(MESSAGES, SETTINGS)
+    finally:
+        server.close()
+    assert server.requests[0][2]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert PROTOCOL["chat_template_kwargs"] == {"enable_thinking": False}
+    command = serving.server_command({"path": "/snapshot", "model_id": "Qwen/Qwen3.8-27B"})
+    assert "--language-model-only" in command
+    kwargs = command[command.index("--default-chat-template-kwargs") + 1]
+    assert json.loads(kwargs) == {"enable_thinking": False}
+    assert serving.server_environment() == {"VLLM_BATCH_INVARIANT": "0"}
+    assert serving.DEFAULT_MODEL == "Qwen/Qwen3.8-27B"
+    built = []
+
+    class Recorder:
+        def __init__(self, *args, **kwargs):
+            built.append(kwargs)
+
+        def require_served(self):
+            pass
+
+        def served_context_window(self):
+            return 32768
+
+    monkeypatch.setattr(cli, "VLLMServerAdapter", Recorder)
+    monkeypatch.setattr(cli, "_server_version", lambda url: "0.29.0")
+    cli._adapter(types.SimpleNamespace(server_url="http://x"), {"model_id": "m",
+                                                                "revision": "a" * 40})
+    assert built[0]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_structured_output_and_tool_calls_are_constrained_and_validated():
@@ -485,16 +526,18 @@ def test_a_system_prompt_is_counted_with_the_chat_template():
         def encode(self, text, add_special_tokens=False):
             return text.split()
 
-        def apply_chat_template(self, messages, add_generation_prompt, tokenize):
-            assert messages == [{"role": "system", "content": "a b c"}]
+        def apply_chat_template(self, messages, add_generation_prompt, tokenize, **kwargs):
+            # the teacher's own message shape (ADR-0011 D4), thinking off (D3)
+            assert messages == [{"role": "user", "content": "a b c"}]
             assert add_generation_prompt is True and tokenize is True
+            assert kwargs == {"enable_thinking": False}
             ids = [1, 2, 3, 4, 5, 6, 7]
             return {"input_ids": ids} if self.batch else ids
 
     for batch in (False, True):
-        counter = TokenizerCounter(Tokenizer(batch), "t")
+        counter = TokenizerCounter(Tokenizer(batch), "t", template_kwargs={"enable_thinking": False})
         assert counter.count_tokens("a b c") == 3
-        assert counter.count_system_prompt_tokens("a b c") == 7
+        assert counter.count_teacher_prompt_tokens("a b c") == 7
 
 
 def test_the_projection_counts_the_protocols_episodes():
@@ -842,7 +885,7 @@ def test_serve_reuses_its_own_earlier_server_and_refuses_any_other(tmp_path, mon
         info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
                                     "port": port, "pid": os.getpid()}))
         assert args.func(args) == 0 and "reusing it" in capsys.readouterr().out
-        other = cli.parser().parse_args(argv + ["--no-batch-invariant"])
+        other = cli.parser().parse_args(argv + ["--gpu-memory-utilization", "0.8"])
         with pytest.raises(cli.CliError, match=f"other settings still runs.*kill {os.getpid()}"):
             other.func(other)  # other settings
         info.write_text(json.dumps({"command": command, "environment": cli.server_environment(),
@@ -940,7 +983,7 @@ def stub_command(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "verify_data", lambda *a: {})
     monkeypatch.setattr(cli, "_adapter", lambda args, prepared: object())
     monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(
-        identity="t", count_system_prompt_tokens=len))
+        identity="t", count_teacher_prompt_tokens=len))
     monkeypatch.setattr(cli, "_run_start", lambda *a: {})
     monkeypatch.setattr(cli, "_environment", lambda verified: {})
     monkeypatch.setattr(cli, "_session_info", lambda *a: {})

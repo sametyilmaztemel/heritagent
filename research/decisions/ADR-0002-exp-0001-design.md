@@ -66,3 +66,7 @@ Stage-4 pass iff regression passes AND expression overhead passes AND the
 candidate is not eliminated by interaction. Primary protocol stays locked:
 tau_c=0.05, n_resamples=10000, confidence=95%; threshold sensitivity is
 analysis-only recomputation over existing stage evidence.
+
+## ADR-0011 — the model and the determinism policy (2026-10-16, owner)
+
+EXP-0001 runs on Qwen3.8-27B (ADR-0011 D1), at the owner's request for a current model family. Reason (a) above, the same base model as SkillRL, no longer holds (ADR-0011 D8). The determinism policy keeps one execution per (task instance, condition), but the server runs without batch-invariant kernels, so a temperature-0 reply may depend on what else is in the batch: never averaged, measured by the pilot, disclosed (ADR-0011 D2).
