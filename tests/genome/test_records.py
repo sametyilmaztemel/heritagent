@@ -482,6 +482,9 @@ def _three_genes(entry):
     (lambda e: e.update(evidence_sha256="0" * 64), "!= the digest of its canonical_evidence"),
     (_self_pair, "are not two distinct genes including"),
     (_three_genes, "are not two distinct genes including"),
+    (lambda e: _rehashed(e) if e["canonical_evidence"].update(
+        gene_ids=[CANDIDATE_REF["gene_id"]], artifacts=[dict(CANDIDATE_REF)]) is None else None,
+     "are not two distinct genes including"),
     (lambda e: e["canonical_evidence"].update(delta_pair=0.5),
      "!= the digest of its canonical_evidence"),
     # the candidate's own entry names another version (digest recomputed)
