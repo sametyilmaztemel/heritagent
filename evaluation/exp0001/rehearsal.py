@@ -101,7 +101,9 @@ def game_plan(env_factory, data_root: str, game_id: str, max_steps: int) -> dict
     try:
         task = env.start()
     finally:
-        env.close()
+        close = getattr(env, "close", None)
+        if callable(close):
+            close()
     commands, won = expert_commands(f"{data_root}/train/{game_id}/game.tw-pddl",
                                     max_steps=max_steps)
     return {"game_id": game_id, "task": task, "commands": commands, "won": won}

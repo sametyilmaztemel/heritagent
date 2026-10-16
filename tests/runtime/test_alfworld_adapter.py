@@ -273,3 +273,81 @@ def test_a_game_without_a_boolean_won_fails_closed(value):
     with pytest.raises(AlfworldAdapterError, match="won"):
         env.call("act", {"command": "put egg 1 in/on fridge 1"})
     assert env.record() == before
+
+
+# -- TextWorld 1.7.0 on Python 3.13 (PEP 667) ---------------------------------------------
+TEXTGEN_SOURCE = '''
+def shout(text):
+    return text.upper()
+
+
+class TerminalSymbol:
+    def __init__(self, value):
+        self.value = value
+
+
+class EvalSymbol:
+    def __init__(self, expression, context=None):
+        self.expression = expression
+        self.context = context or {}
+
+    def derive(self, context=None):  # TextWorld 1.7.0's, verbatim
+        context = context or self.context
+        locals().update(context["variables"])
+        value = eval(self.expression)
+        return [TerminalSymbol(value)]
+'''
+
+
+class _Thing:
+    def __init__(self, name, indefinite="a", id=""):
+        self.name, self.indefinite, self.id = name, indefinite, id
+
+
+def _textgen():
+    import types
+    module = types.ModuleType("textgen_stand_in")
+    exec(compile(TEXTGEN_SOURCE, "textgen_stand_in", "exec"), module.__dict__)
+    return module
+
+
+# the grammar's expressions in ALFWorld 0.4.2 (alfred.twl2 and the games' own), and the
+# names the original resolved besides them: a module global, its own locals, and `value`,
+# which it never saw (still unbound when eval refreshed the locals dict)
+EXPRESSIONS = ["r.name", "o.indefinite + ' ' + o.name", "r.name or r.id", "{'k': r}['k'].name",
+               "shout(o.name)", "self.expression", "len(context['variables'])", "value"]
+VARIABLES = {"r": _Thing("", id="drawer 1"), "o": _Thing("apple 1", "an"), "value": "hidden"}
+
+
+def _derive(module, expression, variables):
+    try:
+        return module.EvalSymbol(expression).derive({"variables": variables})[0].value
+    except NameError:
+        return NameError
+
+
+def test_the_textworld_eval_fix_gives_the_names_the_original_gave():
+    import sys
+    from runtime.tool_adapters.alfworld import patch_textworld_eval
+    patched = _textgen()
+    patch_textworld_eval(patched, "1.7.0")
+    expected = ["", "an apple 1", "drawer 1", "", "APPLE 1", "self.expression", 3, NameError]
+    assert [_derive(patched, e, VARIABLES) for e in EXPRESSIONS] == expected
+    original = _textgen()
+    if sys.version_info < (3, 13):  # the original still works here: the same answers
+        assert [_derive(original, e, VARIABLES) for e in EXPRESSIONS] == expected
+    else:  # PEP 667: its locals().update no longer reaches eval (the Colab failure)
+        assert _derive(original, "r.name", VARIABLES) is NameError
+
+
+def test_the_textworld_eval_fix_refuses_another_version_and_applies_once():
+    from runtime.tool_adapters.alfworld import AlfworldAdapterError, patch_textworld_eval
+    module = _textgen()
+    unpatched = module.EvalSymbol.derive
+    with pytest.raises(AlfworldAdapterError, match="1.8.0"):
+        patch_textworld_eval(module, "1.8.0")
+    assert module.EvalSymbol.derive is unpatched
+    patch_textworld_eval(module, "1.7.0")
+    fixed = module.EvalSymbol.derive
+    patch_textworld_eval(module, "1.7.0")
+    assert module.EvalSymbol.derive is fixed is not unpatched

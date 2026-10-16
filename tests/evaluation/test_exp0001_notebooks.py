@@ -19,7 +19,9 @@ import pytest
 from evaluation.exp0001 import cli
 
 NOTEBOOKS = Path(__file__).resolve().parents[2] / "notebooks"
-NAMES = ["EXP-0001-pilot.ipynb", "EXP-0001-run.ipynb"]
+NAMES = ["EXP-0001-pilot.ipynb", "EXP-0001-run.ipynb"]  # the A100 notebooks
+REHEARSAL = "EXP-0001-rehearsal.ipynb"  # the CPU notebook that comes first
+ALL = NAMES + [REHEARSAL]
 # the optional flags' two branches: every other name reads as "1"
 BRANCHES = [{}, {"BATCH_INVARIANT": False, "STOP_AFTER_HOURS": None, "revision": None}]
 
@@ -49,7 +51,7 @@ def argv(call, branch):
     return captured
 
 
-@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("name", ALL)
 def test_every_command_of_the_notebook_parses(name):
     commands = set()
     for source in code_cells(name):
@@ -57,21 +59,70 @@ def test_every_command_of_the_notebook_parses(name):
             for branch in BRANCHES:
                 args = cli.parser().parse_args(argv(call, branch))  # an unknown flag exits
                 commands.add(args.command)
-    expected = {"gpu-check", "prepare-model", "serve", "preflight", "mirror-check",
-                "fetch-data", "verify-data"} | ({"pilot"} if "pilot" in name else {"run", "status"})
+    data = {"mirror-check", "fetch-data", "verify-data", "rehearse"}
+    expected = data if name == REHEARSAL else \
+        data | {"gpu-check", "prepare-model", "serve", "preflight", "rehearsal-check"} | \
+        ({"pilot"} if "pilot" in name else {"run", "status"})
     assert commands == expected
 
 
-@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("name", ALL)
 def test_no_cell_uses_a_shell_escape_and_the_error_handler_comes_first(name):
     cells = code_cells(name)
     for source in cells:
         assert not [line for line in source.splitlines() if line.lstrip().startswith(("!", "%"))]
     handler = next(i for i, source in enumerate(cells) if "set_custom_exc" in source)
     first_command = next(i for i, source in enumerate(cells) if cli_calls(source))
-    gpu = next(i for i, source in enumerate(cells) if "nvidia-smi" in source)
-    assert handler < gpu < first_command
+    gpus = [i for i, source in enumerate(cells) if "nvidia-smi" in source]
+    if name == REHEARSAL:  # a CPU runtime: no GPU is asked for
+        assert not gpus and handler < first_command
+        assert "cuda.is_available" not in "".join(cells)
+    else:
+        assert handler < gpus[0] < first_command
     assert "runtime.unassign()" in cells[handler]
+
+
+def first(cells, needle):
+    return next(i for i, source in enumerate(cells) if needle in source)
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
+    """No rehearsal of this commit and model: the notebook stops before the
+    model download, the server and any episode (the pilot even before the
+    install). A rehearsal that does not cover this machine is repeated here,
+    still before the model download."""
+    cells = code_cells(name)
+    required = first(cells, "if not os.path.exists(PASSED):")
+    covers = first(cells, '"rehearsal-check"')
+    model = first(cells, '"prepare-model"')
+    assert required < covers < model < first(cells, '"serve"')
+    assert first(cells, "def install():") > required if "pilot" in name else True
+    assert first(cells, '"verify-data"') < covers  # it needs the data
+    assert '"rehearse"' in cells[covers] and "except RuntimeError:" in cells[covers]
+
+
+def test_the_rehearsal_writes_the_records_the_a100_notebooks_read():
+    marker = "passed-{COMMIT}-{MODEL.replace('/', '--')}.json"
+    revision = "model-revision-{MODEL.replace('/', '--')}.txt"
+    for name in ALL:
+        text = "".join(code_cells(name))
+        assert marker in text and revision in text, name
+    rehearsal = "".join(code_cells(REHEARSAL))
+    assert "rehearsal-passed.json" in rehearsal and "shutil.copy(" in rehearsal
+    pilot = "".join(code_cells(NAMES[0]))
+    # a pilot of another commit or model never resumes this one's directory
+    assert 'PILOT_DRIVE = f"{DRIVE_ROOT}/pilot/{COMMIT[:12]}-{MODEL.replace(\'/\', \'--\')}"' \
+        in pilot
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_notebooks_name_one_model_setting(name):
+    from evaluation.exp0001.serving import DEFAULT_MODEL
+    settings = code_cells(name)[0]
+    assert f'MODEL = "{DEFAULT_MODEL}"' in settings
+    calls = "".join(code_cells(name)[1:])
+    assert f'"{DEFAULT_MODEL}"' not in calls  # every later cell reads MODEL
 
 
 def notebook_cli_helper():
@@ -86,8 +137,8 @@ def notebook_cli_helper():
 
 def test_the_helper_raises_on_a_failing_command_and_passes_a_succeeding_one(capsys):
     helper = notebook_cli_helper()
-    installs = [next(s for s in code_cells(name) if "def cli(" in s) for name in NAMES]
-    assert installs[0] == installs[1]  # one install cell, the same in both notebooks
+    installs = [next(s for s in code_cells(name) if "def cli(" in s) for name in ALL]
+    assert installs[0] == installs[1] == installs[2]  # one install cell in every notebook
     helper("--help")  # exit 0
     assert "usage" in capsys.readouterr().out  # the command's output reaches the cell
     with pytest.raises(RuntimeError, match="no-such-command"):
@@ -237,7 +288,7 @@ def test_release_waits_for_a_command_that_still_stops(tmp_path, monkeypatch, cap
             process.wait()
 
 
-@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("name", ALL)
 def test_the_last_cell_releases_through_release(name):
     """The session's end takes the same path as the error handler: an
     unmirrored run keeps the runtime, and Drive is flushed first."""
@@ -249,7 +300,7 @@ def test_the_last_cell_releases_through_release(name):
 def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
     from evaluation.exp0001.serving import SOFTWARE_PACKAGES
     pyproject = (NOTEBOOKS.parent / "pyproject.toml").read_text(encoding="utf-8")
-    for name in NAMES:
+    for name in ALL:
         text = (NOTEBOOKS / name).read_text(encoding="utf-8")
         assert "vllm==0.29.0+cu129" in text and "alfworld-download\"]" not in text
         assert "fetch-data" in text and "verify-data" in text

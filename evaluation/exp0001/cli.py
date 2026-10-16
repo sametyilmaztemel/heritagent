@@ -20,6 +20,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   workers, ledger, tokenizer, mirror and report against a
                   stand-in server, with an outage and a restore on the way
                   (run it on a CPU runtime before the A100 is paid for)
+  rehearsal-check whether a passed rehearsal covers this machine (commit,
+                  model, Python, pinned software)
   run             EXP-0001: write (or check) the run-start record, restore the
                   run directory from its mirror if it is missing, run or
                   resume, snapshot to the mirror
@@ -326,6 +328,7 @@ def _preflight(adapter: VLLMServerAdapter) -> dict:
 
 EXIT_UNMIRRORED = 3
 UNMIRRORED = "UNMIRRORED.json"  # left in a run directory whose last snapshot failed
+PILOT_START = "pilot-start.json"  # the code and model a pilot directory belongs to
 
 
 def _say(message: str) -> None:
@@ -483,9 +486,21 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
     if report_path.exists():
         _out(report_path.read_text(encoding="utf-8"))
         return 0
+    # a resumed pilot plays on with the code, model and weights it started with, or not at all
+    identity = {"run_id": run_id, "commit": commit, "model_id": prepared["model_id"],
+                "revision": prepared["revision"],
+                "weights_sha256": prepared["weights"]["sha256"]}
+    started = out / PILOT_START
+    if (out / "ledger.jsonl").exists() and \
+            (not started.exists() or _json(started) != identity):
+        raise CliError(f"{out} holds a pilot of {_json(started) if started.exists() else 'unknown'}"
+                       f" code and model, not {identity}; give this pilot a new directory "
+                       f"(and a new mirror)")
     adapter = adapter()
     counter = counter()
     with _run_dir_lock(out):  # one writer, before the mirror is taken over
+        if not started.exists():
+            _write_json(started, identity)
         mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
         ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=CAPS,
                            session_info=_session_info(gpu, adapter, args.workers,
@@ -586,11 +601,14 @@ def cmd_rehearse(args) -> int:
     factory = AlfworldEnvFactory(args.data_root, splits, extra_games={
         ("train", g["game_id"]): g["content_sha256"] for g in pilot["games"]})
     max_steps = protocol_budgets().max_steps
-    with ProcessPoolExecutor(max_workers=min(args.workers, len(games)),
-                             mp_context=multiprocessing.get_context("spawn")) as pool:
-        plans = list(pool.map(rehearsal.game_plan, [factory] * len(games),
-                              [str(args.data_root)] * len(games), games,
-                              [max_steps] * len(games)))
+    jobs = ([factory] * len(games), [str(args.data_root)] * len(games), games,
+            [max_steps] * len(games))
+    if args.workers == 1:  # in this process, as the pilot's episodes then are
+        plans = list(map(rehearsal.game_plan, *jobs))
+    else:
+        with ProcessPoolExecutor(max_workers=min(args.workers, len(games)),
+                                 mp_context=multiprocessing.get_context("spawn")) as pool:
+            plans = list(pool.map(rehearsal.game_plan, *jobs))
     tasks = [plan["task"] for plan in plans]
     for plan in plans:  # a task text two games share cannot tell them apart: never won
         plan["won"] = plan["won"] and tasks.count(plan["task"]) == 1
@@ -683,6 +701,32 @@ def cmd_rehearse(args) -> int:
         raise CliError(f"the rehearsal failed: {failed}")
     _write_json(out / rehearsal.REHEARSAL_PASSED, summary)
     _out(f"[rehearsal] PASSED; record {out / rehearsal.REHEARSAL_PASSED}")
+    return 0
+
+
+def cmd_rehearsal_check(args) -> int:
+    """Whether a passed rehearsal covers this machine: the same clean commit,
+    model and revision, Python and pinned software. The notebooks rehearse
+    again before the model download when it does not."""
+    from evaluation.exp0001 import rehearsal
+    passed = _json(args.passed)
+    if passed.get("schema") != rehearsal.REHEARSAL_PASSED_SCHEMA or passed.get("passed") is not True:
+        raise CliError(f"{args.passed} is not a passed rehearsal")
+    commit, dirty = git_state(Path(args.repo))
+    if dirty:
+        raise CliError(f"the checkout at {args.repo} has changes; a rehearsal covers a clean commit")
+    now = {"commit": commit, "model_id": args.model, "python": sys.version.split()[0],
+           "software": software_stack()}
+    then = {"commit": passed["code"]["commit"], "model_id": passed["model"]["model_id"],
+            "python": passed["python"], "software": passed["software"]}
+    if args.revision is not None:
+        now["revision"], then["revision"] = args.revision, passed["model"]["revision"]
+    differ = {key: {"rehearsed": then[key], "here": now[key]} for key in now
+              if then[key] != now[key]}
+    if differ:
+        raise CliError(f"the rehearsal does not cover this machine: {json.dumps(differ)}")
+    _out(f"the rehearsal of {commit} with {args.model}@{passed['model']['revision']} passed on "
+         f"this Python and software ({passed['finished_at']})")
     return 0
 
 
@@ -894,6 +938,13 @@ def parser() -> argparse.ArgumentParser:
                    help="a new, empty directory (on Colab, on Google Drive): the rehearsal "
                         "restores the pilot from it once")
     p.set_defaults(func=cmd_rehearse)
+
+    p = sub.add_parser("rehearsal-check")
+    p.add_argument("--passed", type=Path, required=True, help="a rehearsal-passed.json")
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--revision", default=None, help="the revision the run will pin, if known")
+    p.set_defaults(func=cmd_rehearsal_check)
 
     p = sub.add_parser("status")
     p.add_argument("--run-dir", type=Path, required=True)
