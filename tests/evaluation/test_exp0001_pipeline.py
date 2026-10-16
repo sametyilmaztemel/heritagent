@@ -47,6 +47,7 @@ from tests.evaluation.test_alfworld_splits import (
     make_split,
     write_game,
 )
+from tests.evaluation.exp0001_workers import ClosingGameFactory
 from tests.evaluation.test_exp0001_lifetime import Clock, Game
 from tests.runtime.conftest import react_action, react_final
 
@@ -155,13 +156,19 @@ class CountingGame(Game):
         CountingGame.closed += 1
 
 
-def make_run(run_dir, splits, *, agent=None, teacher=None, caps=None, counter=None, record=None):
+def make_run(run_dir, splits, *, agent=None, teacher=None, caps=None, counter=None, record=None,
+             workers=1, on_ledger_append=None, lock=None):
+    # worker processes pickle the game factory: a module-level class then
+    env_factory = (ClosingGameFactory() if workers > 1 else
+                   (lambda split, game_id: ClosingEnvironment(CountingGame(game_id), game_id)))
     return Exp0001Run(
         run_dir=run_dir, run_start=record or run_start(run_dir.parent, splits, caps),
         split_manifest=splits, model=agent or Agent(), teacher=teacher or Teacher(),
-        env_factory=lambda split, game_id: ClosingEnvironment(CountingGame(game_id), game_id),
+        env_factory=env_factory,
         token_counter=counter or Words(), ledger_clock=Clock(), episode_clock=Clock(),
-        sleep=lambda _: None, expected_split_sha256=splits["manifest_sha256"])
+        sleep=lambda _: None, expected_split_sha256=splits["manifest_sha256"],
+        workers=workers, sleep_between_retries=False, on_ledger_append=on_ledger_append,
+        lock=lock)
 
 
 def ledger_keys(run_dir):
@@ -351,6 +358,21 @@ def test_one_writer_per_run_directory(tmp_path, splits):
         make_run(tmp_path / "run", splits)
     first.close()
     make_run(tmp_path / "run", splits).close()
+
+
+def test_a_caller_held_lock_outlives_the_run(tmp_path, splits):
+    """The cli holds the directory through its last snapshot, after run():
+    closing the run never releases the caller's lock."""
+    from evaluation.exp0001.pipeline import lock_run_dir
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    held = lock_run_dir(run_dir)
+    run = make_run(run_dir, splits, lock=held)
+    run.close()
+    with pytest.raises(RunError, match="in use"):
+        lock_run_dir(run_dir)
+    held.close()
+    lock_run_dir(run_dir).close()
 
 
 def test_a_long_skill_name_does_not_break_trajectory_files(tmp_path, splits):
@@ -745,3 +767,83 @@ def test_a_crash_between_the_frozen_set_and_its_charge_is_charged_once(tmp_path,
     pairs = len(json.loads((run_dir / "seed-11" / "candidates.json").read_text())["mining_records"])
     assert teacher.calls == 0 and report["aborted_attempts"] == 0
     assert report["model_calls"] == 540 + 10 + pairs  # the reservation became the charge
+
+
+# -- parallel episodes (ADR-0008) ------------------------------------------------------
+GOOD_TOO = GOOD + " Then look again."  # a second good skill: both are eligible, one pair
+THREE = PROPOSALS[:1] + [proposal("check twice", GOOD_TOO, [F[3]], 0.6)] + PROPOSALS[1:]
+
+
+def test_a_parallel_run_gives_the_sequential_report(tmp_path, clean, splits):
+    run_dir = tmp_path / "run"
+    report = make_run(run_dir, splits, workers=2).run()
+    assert report == clean[1]
+    assert sorted(ledger_keys(run_dir)) == sorted(ledger_keys(clean[0]))
+    sessions = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()
+                if json.loads(line)["type"] == "session"]
+    assert [s["info"]["workers"] for s in sessions] == [2]
+
+
+def test_the_gate_prefetch_covers_interaction_pairs_and_matches_sequential(tmp_path, splits,
+                                                                          monkeypatch):
+    sequential = make_run(tmp_path / "seq", splits, teacher=Teacher(THREE)).run()
+    one_at_a_time = []  # what the real gate pass finds: every episode already recorded
+    original = EpisodeExecutor.run
+
+    def run(self, spec):
+        result = original(self, spec)
+        one_at_a_time.append(result.resumed)
+        return result
+
+    monkeypatch.setattr(EpisodeExecutor, "run", run)
+    parallel = make_run(tmp_path / "par", splits, teacher=Teacher(THREE), workers=2).run()
+    assert parallel == sequential and sequential["status"] == "complete"
+    assert len(one_at_a_time) == 3 * (3 * 130 + 20) and all(one_at_a_time)
+    keys = ledger_keys(tmp_path / "par")
+    assert sorted(keys) == sorted(ledger_keys(tmp_path / "seq"))
+    pair_keys = [k for k in keys if "/both/" in k or "/neither/" in k]
+    assert len(pair_keys) == 3 * 20  # one eligible pair per seed, 10 tasks x both/neither
+    gate = json.loads((tmp_path / "par" / "seed-11" / "gate.json").read_text())
+    assert sorted(gate["verdicts"].values()) == ["promote", "promote", "reject"]
+
+
+def test_a_recorded_gate_episode_the_gate_never_requests_fails_closed_on_resume(
+        tmp_path, splits, monkeypatch):
+    """A speculative gate episode (a defect a dry pass could cause) stops the
+    run, and the check reads the ledger, so the resumed run stops too."""
+    import dataclasses
+    original = Exp0001Run._prefetch
+    leaked = []
+
+    def leaky(self, dry_pass, collect):
+        if not leaked:
+            collected = []
+            try:
+                dry_pass((collected, collect))
+            except Exception:  # noqa: BLE001
+                pass
+            spec = collected[0]
+            leaked.append(dataclasses.replace(spec, key=spec.key.rsplit("/", 1)[0] + "/spec-0"))
+            self.executor.run_many(leaked)
+        original(self, dry_pass, collect)
+
+    run_dir = tmp_path / "run"
+    with monkeypatch.context() as patch:
+        patch.setattr(Exp0001Run, "_prefetch", leaky)
+        with pytest.raises(RunError, match="not requested by the gate"):
+            make_run(run_dir, splits, workers=2).run()
+    assert leaked[0].key.startswith("gate/11/") and leaked[0].key in ledger_keys(run_dir)
+    with pytest.raises(RunError, match="not requested by the gate"):
+        make_run(run_dir, splits, workers=2).run()
+
+
+def test_the_miner_stamps_the_ledger_after_every_teacher_call(clean):
+    run_dir, _, _, teacher, _ = clean
+    lines = [json.loads(line) for line in (run_dir / "ledger.jsonl").read_text().splitlines()]
+    assert sum(r["type"] == "heartbeat" for r in lines) == teacher.calls > 0
+
+
+def test_a_resume_on_another_serving_build_fails_closed(tmp_path, splits):
+    other_build = {**SCRIPTED, "backend_version": "0.29.0+cu130", "tokenizer": Words.identity}
+    with pytest.raises(ProvenanceError, match="model adapter"):
+        make_run(tmp_path / "run", splits, record=run_start(tmp_path, splits, model=other_build))

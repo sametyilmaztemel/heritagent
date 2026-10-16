@@ -56,6 +56,7 @@ experiment:
         episodes_max: 7000           # hard cap; normal expectation ~6000
         model_calls_max: 225000      # hard cap; normal expectation ~180-200k
         wall_clock_hours_max: 96
+        wall_clock_basis: active-run-time   # ADR-0008 D2 (owner, 2026-10-14: active run time only; the span rule is builder-2's): the sum of the ledger sessions' spans; time between sessions is not counted
         mining_seeds: [11, 23, 41]
         on_cap_exceeded: stop-mark-incomplete-record-reason   # never silently enlarge; larger cap => new prereg amendment BEFORE new data collection
         throughput_note: "hardware throughput differences never justify changing scientific thresholds"
@@ -130,6 +131,7 @@ run_protocol:                         # ADR-0007 (E1-E8 owner decisions, 2026-10
   arm_genomes: {origin: assimilation, provenance: [source_trajectory, aggregate_cig_record], skill_order: frozen-rank}   # E7
   run_order: [lifetimes-all-seeds, t_reg, per-seed-miner-gate-arms, final-evaluation]   # E8
   final_evaluation: {temperature: 0.0, sampling_seed: none, arm_a: once}   # E8
+  execution: {accelerator: one-A100-80GB-only, episodes: parallel-worker-processes-one-vllm-server, cap_check: counts-attempts-in-flight, gate_parallelism: dependency-free-stretches, persistence: local-run-dir-plus-mirror-snapshots, data: alfworld-release-0.2.2-sha256-pinned}   # ADR-0008: the owner decided the accelerator, parallel episodes and the cap basis (2026-10-14); cap_check, gate_parallelism, persistence and data are builder-2's engineering under D3-D6, accepted by the owner on 2026-10-15
 
 arms:
   A-no-inheritance:   {g1_genome: "G0"}

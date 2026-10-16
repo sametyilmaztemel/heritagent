@@ -19,7 +19,19 @@ a crash before its report leaves a report rebuilt from the ledger, without
 the stage or partial statistics. A hard cap, or a protocol rule that fails
 closed, stops the run as incomplete with its reason; an incomplete run gets
 no primary verdict (ADR-0006 D5). Nothing here labels a result as
-validated (SPEC section 32)."""
+validated (SPEC section 32).
+
+With ``workers`` > 1 independent episodes run in parallel (ADR-0008): the
+lifetimes of all seeds at once, the final evaluation at once, and the
+gate in three stretches whose episodes do not depend on each other's
+outcomes (replay and ablation of every candidate; generalization and
+regression of every candidate; the interaction pairs of the eligible
+set). A dry pass of the real gate code collects each stretch's episodes,
+they run in parallel, and the real pass then finds them recorded; a
+recorded gate episode the real pass does not request fails the run closed,
+in this session and in every later one.
+The episodes and decisions are the sequential run's; the order in which
+the episodes run is not."""
 
 from __future__ import annotations
 
@@ -39,14 +51,14 @@ from evaluation.exp0001.allocations import (
 )
 from evaluation.exp0001.arms import arm_genomes
 from evaluation.exp0001.episodes import EpisodeExecutor, EpisodeSpec, protocol_budgets
-from evaluation.exp0001.gate_runner import LedgerGateRunner
+from evaluation.exp0001.gate_runner import LedgerGateRunner, PrefetchGateRunner, PrefetchStop
 from evaluation.exp0001.ledger import CapExceeded, RunLedger
 from evaluation.exp0001.lifetime import (
     LifetimeError,
     derive_t_reg,
     eligible_count,
     mining_batch,
-    run_lifetime,
+    run_lifetimes,
     t_mine_tasks,
     t_reg_record,
 )
@@ -80,6 +92,7 @@ from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.replay import ReplayEvaluator
 from runtime.expression import compile_runtime_config
+from runtime.model_adapters.base import ModelAdapter
 from runtime.seed_g0 import build_g0_seed_genome
 from somatic.store import SomaticStore
 from trajectory.storage.canonical import canonical_json, sha256_hex
@@ -127,8 +140,24 @@ class Exp0001Run:
                  ledger_clock: Callable[[], float] = time.time,
                  episode_clock: Callable[[], float] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
-                 expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256):
+                 expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
+                 workers: int = 1, sleep_between_retries: bool = True,
+                 session_info: Mapping | None = None,
+                 on_ledger_append: Callable[[dict], None] | None = None,
+                 pause_when: Callable[[], bool] | None = None,
+                 lock=None):
+        """``workers`` > 1 runs episodes in that many worker processes
+        (the model and the environment factory must pickle; ADR-0008).
+        ``session_info`` goes into the ledger's session record;
+        ``on_ledger_append`` is the run mirror's hook; when ``pause_when``
+        holds before a new admission the run stops with RunPaused, still
+        running, after recording every episode in flight. ``lock`` is the
+        caller's ``lock_run_dir`` handle on ``run_dir``, which the caller
+        holds longer than the run (the cli: through the last snapshot);
+        without it the run takes and releases its own."""
         self.dir = Path(run_dir)
+        self._lock, self._owns_lock = lock, lock is None
+        self.executor = None
         verify_run_start_record(run_start)
         # the split manifest must verify, be the pre-registered one, and be
         # the one the record names
@@ -137,8 +166,9 @@ class Exp0001Run:
             raise ProvenanceError("the run-start record names another split manifest")
         for name, adapter in (("model", model), ("teacher", teacher)):
             metadata = adapter.metadata()
+            # the backend version too: one serving build for the whole run (ADR-0008 D4)
             actual = {"model_id": metadata.model_id, "revision": metadata.revision,
-                      "backend": metadata.backend}
+                      "backend": metadata.backend, "backend_version": metadata.backend_version}
             recorded = {k: run_start[name][k] for k in actual}
             if actual != recorded:
                 raise ProvenanceError(f"the {name} adapter is {actual}, the run-start record "
@@ -147,16 +177,21 @@ class Exp0001Run:
             raise ProvenanceError(f"the token counter is {token_counter.identity!r}, the run-start "
                                   f"record names {run_start['model']['tokenizer']!r}")
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._lock = _lock_run_dir(self.dir)
+        if self._lock is None:
+            self._lock = lock_run_dir(self.dir)
         try:
             self._open(run_start, split_manifest, model, teacher, env_factory, token_counter,
-                       ledger_clock, episode_clock, sleep)
+                       ledger_clock, episode_clock, sleep,
+                       dict(workers=workers, sleep_between_retries=sleep_between_retries,
+                            pause_when=pause_when),
+                       session_info, on_ledger_append)
         except BaseException:
             self.close()  # a half-built run never keeps the directory locked
             raise
 
     def _open(self, run_start, split_manifest, model, teacher, env_factory, token_counter,
-              ledger_clock, episode_clock, sleep) -> None:
+              ledger_clock, episode_clock, sleep, parallel, session_info,
+              on_ledger_append) -> None:
         self.registry = TraitRegistry(self.dir / "registry")
         self.g0 = build_g0_seed_genome(self.registry)
         if run_start["g0"]["genome_id"] != self.g0["genome_id"]:
@@ -170,19 +205,25 @@ class Exp0001Run:
         self.budgets = protocol_budgets()
         # the caps in force are the recorded ones: never enlarged silently
         self.ledger = RunLedger(self.dir / "ledger.jsonl", run_id=run_start["run_id"],
-                                clock=ledger_clock, caps=run_start["protocol"]["caps"])
+                                clock=ledger_clock, caps=run_start["protocol"]["caps"],
+                                session_info={**dict(session_info or {}),
+                                              "workers": parallel["workers"]},
+                                on_append=on_ledger_append)
         self.executor = EpisodeExecutor(
             model=model, env_factory=env_factory, ledger=self.ledger,
             trajectories_dir=self.dir / "trajectories", run_id=run_start["run_id"],
             code_commit=run_start["code"]["commit"], budgets=self.budgets,
-            clock=episode_clock, sleep=sleep)
+            clock=episode_clock, sleep=sleep, **parallel)
         self.t_mine = t_mine_tasks(split_manifest)
         self._final_cells: dict | None = None
 
     def close(self) -> None:
-        """Release the run directory."""
+        """Stop the worker processes and release the run directory."""
+        if self.executor is not None:
+            self.executor.close()
         if self._lock is not None:
-            self._lock.close()
+            if self._owns_lock:
+                self._lock.close()
             self._lock = None
 
     # -- stages -------------------------------------------------------------
@@ -197,7 +238,7 @@ class Exp0001Run:
             if not self.ledger.admit_calls(key, len(batch.pairs)):
                 # charged only after the set was frozen: the set was removed by hand
                 raise RunError(f"{key} was charged but its frozen candidate set is missing")
-            miner = TraitMiner(self.teacher, self.registry,
+            miner = TraitMiner(_Heartbeat(self.teacher, self.ledger.heartbeat), self.registry,
                                settings=MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
                                                        max_tokens=MINER_MAX_TOKENS,
                                                        max_proposals=CANDIDATE_CAP),
@@ -291,35 +332,67 @@ class Exp0001Run:
         ablation, interaction = ablation_allocation(self.splits), interaction_allocation(self.splits)
         self._somatic(seed, candidates).close()  # the persistent journal holds the candidates
 
-        inputs = []
-        for rank, envelope, replay_plan, generalization_plan in plans:
-            gene = envelope["candidate"]["gene_id"]
-            common = dict(candidate_envelope=envelope, registry=self.registry,
-                          base_config=self.g0_config, budgets=self.budgets,
-                          parent_cig_id=cig_id(seed, rank), mining_seed=seed)
-            replay = ReplayEvaluator(
-                runner=LedgerGateRunner(self.executor, f"gate/{seed}/{gene}/replay", self.budgets),
-                **common).evaluate(replay_plan)
-            ablated = AblationEvaluator(
-                runner=LedgerGateRunner(self.executor, f"gate/{seed}/{gene}/ablation",
-                                        self.budgets),
-                **common).evaluate(ablation)
-            inputs.append(GateCandidateInput(
-                candidate_envelope=envelope, frozen_rank=rank, replay_evaluation=replay,
-                ablation_evaluation=ablated, generalization_allocation=generalization_plan,
-                regression_allocation=t_reg, parent_cig_id=cig_id(seed, rank), mining_seed=seed))
-        # the gate commits into an in-memory mirror of the journal; its
-        # artifact is frozen before the persistent journal takes the decisions
-        mirror = SomaticStore.create(None, self.registry)
-        for envelope in candidates:
-            mirror.add_candidate(envelope)
-        records = CigRecordStore()
-        outcome = CigGateOrchestrator(
-            registry=self.registry, base_config=self.g0_config,
-            runner=LedgerGateRunner(self.executor, f"gate/{seed}/stage3-4", self.budgets),
-            budgets=self.budgets, parent_cig_id=cig_id(seed, None), mining_seed=seed,
-            token_counter=self.token_counter, interaction_allocation=interaction,
-            somatic_store=mirror, cig_record_store=records).run(inputs)
+        requested: list[str] = []  # every key the real pass asks for
+
+        def runner(scope: str, dry=None):
+            if dry is None:
+                return LedgerGateRunner(self.executor, scope, self.budgets, requested=requested)
+            return PrefetchGateRunner(self.executor, scope, self.budgets, collected=dry[0],
+                                      collect=dry[1])
+
+        def stages12(dry=None) -> list[GateCandidateInput]:
+            inputs = []
+            for rank, envelope, replay_plan, generalization_plan in plans:
+                gene = envelope["candidate"]["gene_id"]
+                common = dict(candidate_envelope=envelope, registry=self.registry,
+                              base_config=self.g0_config, budgets=self.budgets,
+                              parent_cig_id=cig_id(seed, rank), mining_seed=seed)
+                replay = ReplayEvaluator(runner=runner(f"gate/{seed}/{gene}/replay", dry),
+                                         **common).evaluate(replay_plan)
+                ablated = AblationEvaluator(runner=runner(f"gate/{seed}/{gene}/ablation", dry),
+                                            **common).evaluate(ablation)
+                inputs.append(GateCandidateInput(
+                    candidate_envelope=envelope, frozen_rank=rank, replay_evaluation=replay,
+                    ablation_evaluation=ablated, generalization_allocation=generalization_plan,
+                    regression_allocation=t_reg, parent_cig_id=cig_id(seed, rank),
+                    mining_seed=seed))
+            return inputs
+
+        def orchestrate(inputs, dry=None):
+            # the gate commits into an in-memory mirror of the journal; its
+            # artifact is frozen before the persistent journal takes the decisions
+            mirror = SomaticStore.create(None, self.registry)
+            for envelope in candidates:
+                mirror.add_candidate(envelope)
+            records = CigRecordStore()
+            outcome = CigGateOrchestrator(
+                registry=self.registry, base_config=self.g0_config,
+                runner=runner(f"gate/{seed}/stage3-4", dry),
+                budgets=self.budgets, parent_cig_id=cig_id(seed, None), mining_seed=seed,
+                token_counter=self.token_counter, interaction_allocation=interaction,
+                somatic_store=mirror, cig_record_store=records).run(inputs)
+            return outcome, records
+
+        parallel = self.executor.workers > 1
+        if parallel:  # stretch 1: replay and ablation of every candidate
+            self._prefetch(stages12, lambda condition: True)
+        inputs = stages12()
+        if parallel:
+            # stretch 2: generalization and regression of every candidate (the
+            # pass ends at the first unrecorded interaction episode)
+            self._prefetch(lambda dry: orchestrate(inputs, dry),
+                           lambda condition: condition in ("with_trait", "without_trait"))
+            # stretch 3: the interaction pairs of the now-recorded eligible set
+            self._prefetch(lambda dry: orchestrate(inputs, dry),
+                           lambda condition: condition in ("both", "neither"))
+        outcome, records = orchestrate(inputs)
+        # every recorded gate episode of this seed must be one the gate asked
+        # for; checked against the ledger, so a resumed run fails closed too
+        unrequested = sorted(set(self.ledger.done_keys(f"gate/{seed}/")) - set(requested))
+        if unrequested:
+            raise RunError(f"seed {seed}: {len(unrequested)} recorded gate episodes were not "
+                           f"requested by the gate (first {unrequested[0]!r}); the run left the "
+                           f"protocol and needs a human")
         if not outcome.committed:
             raise RunError(f"seed {seed}: the gate did not commit its decisions")
         records.require_consistent()
@@ -330,6 +403,21 @@ class Exp0001Run:
             "eliminated_by_interaction": {r.gene_id: r.eliminated_by for r in outcome.results},
             "aggregates": records.aggregates, "children": records.children})
 
+    def _prefetch(self, dry_pass, collect) -> None:
+        """One parallel stretch of the gate: the dry pass runs no episode,
+        and ends at PrefetchStop; the episodes it collected run in parallel."""
+        collected: list[EpisodeSpec] = []
+        try:
+            dry_pass((collected, collect))
+        except PrefetchStop:
+            pass  # the end of the stretch
+        except Exception:  # noqa: BLE001
+            # a placeholder led the dry pass into an error after it had
+            # collected; the real pass meets any real error on its own
+            pass
+        if collected:
+            self.executor.run_many(collected)
+
     def _arms(self, seed: int, candidates, gate: Mapping) -> dict:
         genomes = arm_genomes(self.g0, candidates, gate["verdicts"], gate["aggregate_ids"],
                               self.registry, seed)
@@ -338,17 +426,6 @@ class Exp0001Run:
                            {"schema": ARMS_SCHEMA, "mining_seed": seed, **genomes})
         return {"B": done["B"], "C": done["C"]}
 
-    def _evaluate(self, arm: str, label: str, genome: dict, tasks, task_set: str,
-                  cells: dict) -> None:
-        config = compile_runtime_config(genome, self.registry)
-        settings = evaluation_settings(max_tokens=MAX_TOKENS_PER_REQUEST, seed=None)
-        for task in tasks:
-            result = self.executor.run(EpisodeSpec(
-                key=f"final/{arm}/{label}/{task_set}/{task.task_id}", task_id=task.task_id,
-                family=task.family, split=task.payload["split"], config=config, settings=settings,
-                tags={"stage": "final", "arm": arm, "run": label, "task_set": task_set}))
-            cells[task.task_id] = result
-
     def _final(self, genomes: Mapping[tuple[str, int | None], dict], t_reg) -> dict:
         t_eval = pool_tasks(self.splits, "t_eval")
         transfer = pool_tasks(self.splits, "ablation")  # ADR-0007 E4
@@ -356,12 +433,33 @@ class Exp0001Run:
                                         "content_sha256": t.payload["content_sha256"]}, "t_mine")
                        for t in t_reg.tasks]
         self._final_cells = {key: {"t_eval": {}, "t_reg": {}, "transfer": {}} for key in genomes}
+        settings = evaluation_settings(max_tokens=MAX_TOKENS_PER_REQUEST, seed=None)
+        planned = []  # (cells, task_id, spec) in the sequential run's order
         for (arm, seed), genome in genomes.items():
             label = SHARED if seed is None else str(seed)
-            cells = self._final_cells[(arm, seed)]
-            self._evaluate(arm, label, genome, t_eval, "t_eval", cells["t_eval"])
-            self._evaluate(arm, label, genome, t_reg_tasks, "t_reg", cells["t_reg"])
-            self._evaluate(arm, label, genome, transfer, "transfer", cells["transfer"])
+            config = compile_runtime_config(genome, self.registry)
+            for task_set, tasks in (("t_eval", t_eval), ("t_reg", t_reg_tasks),
+                                    ("transfer", transfer)):
+                for task in tasks:
+                    planned.append((self._final_cells[(arm, seed)][task_set], task.task_id,
+                                    EpisodeSpec(
+                        key=f"final/{arm}/{label}/{task_set}/{task.task_id}",
+                        task_id=task.task_id, family=task.family, split=task.payload["split"],
+                        config=config, settings=settings,
+                        tags={"stage": "final", "arm": arm, "run": label,
+                              "task_set": task_set})))
+        try:
+            results = self.executor.run_many([spec for _, _, spec in planned])
+        except BaseException:
+            # a stop inside the final evaluation: the recorded episodes still
+            # feed the incomplete report's partial statistics
+            for cells, task_id, spec in planned:
+                recorded = self.executor.recorded(spec)
+                if recorded is not None:
+                    cells[task_id] = recorded
+            raise
+        for (cells, task_id, _), result in zip(planned, results):
+            cells[task_id] = result
         return {
             "statistics": analyze_final_evaluation(self._final_input(t_reg, complete=True)),
             "genome_sizes": summarize_genome_sizes({
@@ -416,8 +514,7 @@ class Exp0001Run:
             return report
         stage, t_reg = "lifetime", None
         try:
-            lifetimes = {seed: run_lifetime(self.executor, self.t_mine, self.g0_config, seed)
-                         for seed in MINING_SEEDS}
+            lifetimes = run_lifetimes(self.executor, self.t_mine, self.g0_config, MINING_SEEDS)
             stage = "t_reg"
             # re-derived every time from the ledger; a frozen t_reg.json with
             # other content fails closed
@@ -452,9 +549,39 @@ class Exp0001Run:
         return report
 
 
-def _lock_run_dir(run_dir: Path):
+class _Heartbeat(ModelAdapter):
+    """The miner's teacher, stamping the ledger's clock after every call, so a
+    long mining stage keeps the session's active time and the mirror current."""
+
+    def __init__(self, adapter: ModelAdapter, beat: Callable[[], None]):
+        self._adapter, self._beat = adapter, beat
+
+    def _then_beat(self, call, *args):
+        try:
+            return call(*args)
+        finally:
+            self._beat()
+
+    def generate(self, messages, settings):
+        return self._then_beat(self._adapter.generate, messages, settings)
+
+    def structured_generate(self, messages, settings, schema):
+        return self._then_beat(self._adapter.structured_generate, messages, settings, schema)
+
+    def tool_call(self, messages, settings, tools):
+        return self._then_beat(self._adapter.tool_call, messages, settings, tools)
+
+    def estimate_tokens(self, text):
+        return self._adapter.estimate_tokens(text)
+
+    def metadata(self):
+        return self._adapter.metadata()
+
+
+def lock_run_dir(run_dir: Path):
     """An exclusive advisory lock on the run directory for one writer; a
-    second process (or object) on the same directory fails closed."""
+    second process (or object) on the same directory fails closed. Close the
+    returned handle to release it."""
     import fcntl
     handle = open(run_dir / ".lock", "a+")
     try:

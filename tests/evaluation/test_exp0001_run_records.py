@@ -5,7 +5,13 @@ import json
 
 import pytest
 
-from evaluation.exp0001.ledger import CapExceeded, LedgerError, RunLedger
+from evaluation.exp0001.ledger import (
+    CapExceeded,
+    LedgerError,
+    RunLedger,
+    append_note,
+    repair_torn_tail,
+)
 from evaluation.exp0001.protocol import (
     CAPS,
     PROTOCOL,
@@ -65,6 +71,17 @@ def test_the_record_names_everything_a_result_must_carry(registry):  # noqa: F81
     assert record["final_statistics"]["t_reg"] == "one-set-shared-across-seeds"
     assert record["protocol"]["lifetime_attempts_per_task"] == 3
     assert record["protocol"]["caps"]["model_calls_max"] == 225_000
+    assert record["environment"] is None  # the CLI names it; see the next test
+
+
+def test_the_record_names_the_software_and_the_data_it_ran_on(registry):  # noqa: F811
+    environment = {"software": {"vllm": "0.29.0+cu129", "transformers": "5.19.0"},
+                   "data": {"alfworld_release": "0.2.2", "archives": {"a.zip": "e" * 64},
+                            "games_verified": 338}}
+    record = make_record(registry, environment=environment)
+    verify_run_start_record(record)
+    assert record["environment"] == environment
+    assert record["record_sha256"] != make_record(registry)["record_sha256"]
 
 
 @pytest.mark.parametrize("override,message", [
@@ -246,7 +263,7 @@ def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
     assert set(record) == {"schema", "experiment", "run_id", "started_at", "code", "model",
                            "teacher", "weights", "splits", "pilot", "miner", "g0", "candidate_set",
                            "gate", "final_statistics", "generation", "protocol",
-                           "required_at_run_time", "record_sha256"}
+                           "required_at_run_time", "environment", "record_sha256"}
     assert record["pilot"]["pilot_sha256"] == load("EXP-0001-pilot.json")["pilot_sha256"]
     assert len(record["miner"]["prompt_sha256"]) == 64 == len(record["miner"]["output_schema_sha256"])
     assert record["candidate_set"] == {"cap": 10, "ranking": ["miner-estimated-generality",
@@ -330,16 +347,145 @@ def test_frozen_teacher_calls_without_a_charge_finish_the_aborted_attempt(tmp_pa
     assert (again.aborted_attempts, again.model_calls) == (0, 38)
 
 
-def test_a_reopened_ledger_keeps_its_caps_and_its_start(tmp_path):
+def test_a_reopened_ledger_keeps_its_caps_and_counts_active_run_time_only(tmp_path):
+    """ADR-0008 (owner decision): the wall-clock cap counts the sessions'
+    spans, not the time between them."""
     path, clock = tmp_path / "ledger.jsonl", Clock()
-    RunLedger(path, run_id="r", clock=clock)
+    first = RunLedger(path, run_id="r", clock=clock)
     with pytest.raises(LedgerError, match="other caps"):
         RunLedger(path, run_id="r", clock=clock, caps={**CAPS, "episodes_max": 10 ** 6})
-    clock.now += 96 * 3600  # exactly the cap: not exceeded
-    assert RunLedger(path, run_id="r", clock=clock).admit("e0")
-    clock.now += 1  # past it, after a restart: the first start still counts
-    with pytest.raises(CapExceeded, match="wall_clock_hours_max"):
-        RunLedger(path, run_id="r", clock=clock).admit("e1")
+    first.admit("e0")
+    clock.now += 50 * 3600
+    first.record("e0", model_calls=1, outcome={})  # session 1: 50 active hours
+    clock.now += 1000 * 3600  # the notebook was disconnected: not run time
+    second = RunLedger(path, run_id="r", clock=clock)
+    assert second.active_hours() == pytest.approx(50)
+    clock.now += 46 * 3600  # 96 active hours: exactly the cap, not exceeded
+    assert not second.admission_blocked("e1") and second.admit("e1")
+    clock.now += 1
+    assert second.admission_blocked("e2") and second.state == "running"  # asking changes nothing
+    with pytest.raises(CapExceeded, match=r"wall_clock_hours_max 96 exceeded \(96.00 active"):
+        second.admit("e2")
+    reader = RunLedger(path, run_id="r", clock=clock, readonly=True)
+    assert [s["index"] for s in reader.sessions] == [1, 2] and reader.state == "incomplete"
+    assert reader.active_hours() == pytest.approx(96 + 1 / 3600)
+
+
+def test_a_crashed_session_counts_up_to_its_last_record(tmp_path):
+    path, clock = tmp_path / "ledger.jsonl", Clock()
+    ledger = RunLedger(path, run_id="r", clock=clock)
+    ledger.admit("e0")
+    clock.now += 3600
+    ledger.record("e0", model_calls=1, outcome={})
+    clock.now += 7200  # the process dies two hours after its last record
+    assert RunLedger(path, run_id="r", clock=clock, readonly=True).active_hours() == \
+        pytest.approx(1)
+
+
+def test_a_session_records_its_info_and_a_reader_writes_nothing(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    gpu = {"name": "NVIDIA A100-SXM4-80GB", "memory_mib": 81920}
+    RunLedger(path, run_id="r", clock=Clock(), session_info={"accelerator": gpu})
+    size = path.stat().st_size
+    reader = RunLedger(path, run_id="r", clock=Clock(), readonly=True)
+    assert path.stat().st_size == size
+    assert reader.sessions[0]["info"] == {"accelerator": gpu}
+    with pytest.raises(LedgerError, match="no session|read-only"):
+        reader.admit("e0")
+    with pytest.raises(LedgerError, match="does not exist"):
+        RunLedger(tmp_path / "missing.jsonl", run_id="r", clock=Clock(), readonly=True)
+    RunLedger(path, run_id="r", clock=Clock()).complete()
+    size = path.stat().st_size
+    RunLedger(path, run_id="r", clock=Clock())  # a finished run opens no session
+    assert path.stat().st_size == size
+
+
+def test_the_caps_count_every_attempt_in_flight(tmp_path):
+    """ADR-0008: parallel episodes never pass a cap that the same episodes
+    run one at a time would respect."""
+    worst = max_model_calls_per_episode()
+    ledger = RunLedger(tmp_path / "a.jsonl", run_id="r", clock=Clock(),
+                       caps={**CAPS, "episodes_max": 3})
+    assert ledger.admit("e0") and ledger.admit("e1") and ledger.in_flight == 2
+    assert not ledger.admission_blocked("e2") and ledger.admit("e2")
+    assert ledger.admission_blocked("e3")  # 0 recorded + 3 in flight + 1 > 3
+    ledger.record("e0", model_calls=1, outcome={})
+    assert ledger.admission_blocked("e3")  # 1 recorded + 2 in flight + 1 > 3
+    ledger.abort("e1")  # e1 raised: charged its worst case, no longer in flight
+    assert ledger.in_flight == 1 and ledger.model_calls == 1 + worst
+    assert not ledger.admission_blocked("e3") and ledger.admit("e3")
+    with pytest.raises(CapExceeded, match="episodes_max 3"):
+        ledger.admit("e4")
+
+    ledger = RunLedger(tmp_path / "b.jsonl", run_id="r", clock=Clock(),
+                       caps={**CAPS, "model_calls_max": 2 * worst + 5})
+    ledger.admit("e0")
+    ledger.admit("e1")
+    assert ledger.admission_blocked("e2")  # 2 reservations in flight + the next worst case
+    ledger.record("e0", model_calls=5, outcome={})
+    assert not ledger.admission_blocked("e2")  # 5 used + 1 in flight + the next: exactly the cap
+    assert ledger.admission_blocked("e0") is False  # a recorded key is resumed, never blocked
+    ledger.admit("e2")
+    with pytest.raises(CapExceeded, match=r"used 5, reserved in flight 120"):
+        ledger.admit_calls("mining/11", 1)
+
+
+def test_a_torn_tail_is_cut_off_on_purpose_and_kept_on_record(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock())
+    ledger.admit("e0")
+    ledger.record("e0", model_calls=3, outcome={})
+    ledger.admit("e1")
+    torn = b'{"type":"episode","key":"e1"'  # the crash interrupted e1's record
+    path.write_bytes(path.read_bytes() + torn)
+    with pytest.raises(LedgerError, match="torn write"):
+        RunLedger(path, run_id="r", clock=Clock())
+    note = repair_torn_tail(path)
+    assert note["removed_bytes"] == len(torn)
+    assert (tmp_path / note["saved_as"]).read_bytes() == torn
+    assert repair_torn_tail(path) is None  # nothing left to repair
+    again = RunLedger(path, run_id="r", clock=Clock())
+    assert [n["type"] for n in again.notes] == ["repair"]
+    worst = max_model_calls_per_episode()
+    assert (again.episodes, again.aborted_attempts, again.model_calls) == (1, 1, 3 + worst)
+    header_only = tmp_path / "torn-header.jsonl"
+    header_only.write_bytes(b'{"type":"hea')
+    with pytest.raises(LedgerError, match="header itself is torn"):
+        repair_torn_tail(header_only)
+
+
+def test_notes_change_no_count_and_only_notes_are_appended(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock())
+    ledger.admit("e0")
+    ledger.record("e0", model_calls=3, outcome={})
+    append_note(path, {"type": "restore", "snapshot_seq": 7})
+    again = RunLedger(path, run_id="r", clock=Clock())
+    assert (again.episodes, again.model_calls, again.notes[0]["snapshot_seq"]) == (1, 3, 7)
+    with pytest.raises(LedgerError, match="a note is one of"):
+        append_note(path, {"type": "episode", "key": "e9", "model_calls": 0})
+
+
+@pytest.mark.parametrize("line,message", [
+    (b'{"type":"attempt","key":"e9","reserved":60}\n', "no valid clock"),
+    (b'{"type":"attempt","key":"e9","reserved":60,"clock":"now"}\n', "no valid clock"),
+    (b'{"type":"session","index":5,"clock":1.0}\n', "out of order"),
+])
+def test_records_without_a_clock_or_session_order_fail_closed(tmp_path, line, message):
+    path = tmp_path / "ledger.jsonl"
+    RunLedger(path, run_id="r", clock=Clock())
+    path.write_bytes(path.read_bytes() + line)
+    with pytest.raises(LedgerError, match=message):
+        RunLedger(path, run_id="r", clock=Clock())
+
+
+def test_a_record_outside_a_session_fails_closed(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    RunLedger(path, run_id="r", clock=Clock())
+    header = path.read_bytes().splitlines()[0]
+    path.write_bytes(header + b'\n{"type":"attempt","key":"e0","reserved":60,"clock":1.0}\n')
+    with pytest.raises(LedgerError, match="outside a session"):
+        RunLedger(path, run_id="r", clock=Clock())
 
 
 def test_nothing_follows_a_terminal_record(tmp_path):
@@ -369,3 +515,48 @@ def test_bad_attempt_records_fail_closed(tmp_path, line, message):
     path.write_bytes(path.read_bytes() + line)
     with pytest.raises(LedgerError, match=message):
         RunLedger(path, run_id="r", clock=Clock())
+
+
+def test_notes_may_follow_a_terminal_record(tmp_path):
+    """A finished run restored from its mirror gets a restore note after its
+    terminal record; it must still load (review of #69)."""
+    for finish in ("complete", "abandon"):
+        path = tmp_path / f"{finish}.jsonl"
+        ledger = RunLedger(path, run_id="r", clock=Clock())
+        ledger.admit("e0")
+        ledger.record("e0", model_calls=2, outcome={})
+        ledger.complete() if finish == "complete" else ledger.abandon("t_reg: short")
+        append_note(path, {"type": "restore", "snapshot_seq": 3})
+        path.write_bytes(path.read_bytes() + b'{"type":"repa')
+        assert repair_torn_tail(path)["type"] == "repair"
+        for readonly in (True, False):
+            again = RunLedger(path, run_id="r", clock=Clock(), readonly=readonly)
+            assert again.state == ("complete" if finish == "complete" else "incomplete")
+            assert [n["type"] for n in again.notes] == ["restore", "repair"]
+            assert again.episodes == 1
+
+
+def test_a_heartbeat_keeps_the_session_span_current(tmp_path):
+    path, clock = tmp_path / "ledger.jsonl", Clock()
+    ledger = RunLedger(path, run_id="r", clock=clock)
+    ledger.admit_calls("mining/11", 40)
+    for _ in range(3):
+        clock.now += 600
+        ledger.heartbeat()  # one per teacher call
+    reader = RunLedger(path, run_id="r", clock=clock, readonly=True)
+    assert reader.active_hours() == pytest.approx(0.5) and reader.model_calls == 40
+
+
+def test_a_deferred_admission_writes_nothing(tmp_path):
+    from evaluation.exp0001.ledger import AdmissionDeferred
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock(), caps={**CAPS, "episodes_max": 1})
+    ledger.admit("e0")
+    size = path.stat().st_size
+    with pytest.raises(AdmissionDeferred, match="episodes_max 1"):
+        ledger.admit("e1", defer=True)
+    assert path.stat().st_size == size and ledger.state == "running" and ledger.in_flight == 1
+    ledger.record("e0", model_calls=1, outcome={})
+    with pytest.raises(CapExceeded):
+        ledger.admit("e1")  # nothing in flight: the stop is written
+    assert ledger.done_keys("e") == ("e0",)

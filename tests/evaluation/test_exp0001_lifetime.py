@@ -410,7 +410,8 @@ def test_a_mining_retry_and_an_episode_cap_see_the_aborted_charge(tmp_path):
     caps = {**CAPS, "episodes_max": 1}
     path = tmp_path / "episodes.jsonl"
     ledger = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=caps)
-    assert ledger.admit("e0")  # raises
+    assert ledger.admit("e0")  # raises: the executor aborts the attempt
+    ledger.abort("e0")
     assert ledger.admit("e1")
     ledger.record("e1", model_calls=3, outcome={})
     with pytest.raises(CapExceeded, match="episodes_max"):

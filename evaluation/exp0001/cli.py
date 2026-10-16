@@ -1,0 +1,777 @@
+"""Command line for EXP-0001 on one GPU node (issue #13 Phase B; ADR-0008).
+The Colab notebooks call these commands; each one can also be run by hand.
+
+  gpu-check       the A100 80 GB check (fails closed on any other GPU)
+  fetch-data      download ALFWorld release 0.2.2's data (sha256-checked), the
+                  data the frozen manifests were built from
+  verify-data     hash every game of the split and pilot manifests
+  mirror-check    write, replace, read and time small files in the mirror
+                  directory (on Colab, Google Drive)
+  run-commit      the code commit a run started at, from its mirror (empty for
+                  a new run)
+  prepare-model   download and hash one pinned model revision -> prepared.json
+  serve           start ``vllm serve`` on it and wait until it answers
+  preflight       two calls outside any ledger that check the serving stack:
+                  a ReAct-format reply with the stop sequence, and the
+                  miner's structured output under its JSON schema (the
+                  teacher first runs only after the 540 lifetime episodes)
+  pilot           the calibration pilot -> pilot-report.json
+  run             EXP-0001: write (or check) the run-start record, restore the
+                  run directory from its mirror if it is missing, run or
+                  resume, snapshot to the mirror
+  status          a read-only summary of a run (or pilot) directory
+  snapshot        take a snapshot of a run (or pilot) directory now, for example
+                  after Drive is mounted again (exit code 3 if it fails)
+  repair-ledger   cut off a torn last ledger line, keeping it on record
+
+Exit codes: 0 done; 2 an error the message explains (a run directory
+another command still holds, say); 130 stopped (the stop button, or the
+notebook kernel that started the command restarted or died: environment
+variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
+3 when a ``run`` or ``pilot`` that finished, paused or was stopped, or a
+``snapshot``, failed its last snapshot; an unexpected exception exits through
+Python's traceback (1). A failed last snapshot leaves ``UNMIRRORED.json`` in
+the run directory, also after an error: the newest records exist only on
+this machine, and the notebooks keep the runtime. So does a SIGTERM while
+the command holds its directory (the stop button's second press). The one
+exception is another machine taking over the mirror: it holds the run now,
+and the command stops with exit 2 and no marker. The last snapshot is not
+cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
+directory's one-writer lock from before they touch the mirror until after
+their last snapshot.
+
+``run`` and ``pilot`` take ``--workers`` for parallel episodes against the
+one server (ADR-0008). Every run directory lives outside the repository
+checkout, which must be clean: the run-start record names its commit."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import subprocess
+import sys
+import time
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+
+from evaluation.exp0001.backends import (
+    AlfworldEnvFactory,
+    BackendError,
+    gpu_inventory,
+    hf_token_counter,
+    require_a100_80gb,
+)
+from evaluation.exp0001.episodes import EpisodeExecutor, RunPaused, protocol_budgets
+from evaluation.exp0001.data import fetch_data, verify_data
+from evaluation.exp0001.ledger import LedgerError, RunLedger, repair_torn_tail
+from evaluation.exp0001.mirror import (
+    MirrorError,
+    RunMirror,
+    check_mirror_dir,
+    latest_snapshot,
+    restore,
+    snapshot_file,
+)
+from evaluation.exp0001.pilot_run import (
+    PILOT_REPORT_SCHEMA,
+    PILOT_RUN_ID,
+    project_exp0001,
+    run_pilot,
+)
+from evaluation.exp0001.protocol import CAPS
+from evaluation.exp0001.provenance import (
+    ProvenanceError,
+    build_run_start_record,
+    freeze_json,
+    verify_pre_run_artifacts,
+)
+from evaluation.exp0001.serving import (
+    DEFAULT_MAX_MODEL_LEN,
+    DEFAULT_MODEL,
+    DEFAULT_PORT,
+    load_prepared,
+    port_answers,
+    prepare_model,
+    process_alive,
+    server_command,
+    server_environment,
+    software_stack,
+    start_server,
+    wait_until_ready,
+)
+from runtime.model_adapters.openai_server import VLLMServerAdapter
+
+MANIFESTS = Path("experiments") / "manifests"
+SPLITS_FILE, PILOT_FILE = "EXP-0001-splits.json", "EXP-0001-pilot.json"
+
+
+class CliError(RuntimeError):
+    """A precondition of a command does not hold."""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _json(path: Path) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, document) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def git_state(repo: Path) -> tuple[str, bool]:
+    """The checkout's commit and whether it differs from it (untracked files
+    count; build outputs are ignored by .gitignore)."""
+    def git(*args) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    return git("rev-parse", "HEAD"), bool(git("status", "--porcelain"))
+
+
+def _manifests(repo: Path) -> tuple[dict, dict]:
+    splits, pilot = _json(repo / MANIFESTS / SPLITS_FILE), _json(repo / MANIFESTS / PILOT_FILE)
+    verify_pre_run_artifacts(splits, pilot)  # the pre-registered ones, verified
+    return splits, pilot
+
+
+def _server_version(url: str) -> str | None:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/version", timeout=30) as response:
+            return json.loads(response.read().decode("utf-8")).get("version")
+    except Exception:  # noqa: BLE001 - recorded as unknown
+        return None
+
+
+def _adapter(args, prepared: dict) -> VLLMServerAdapter:
+    adapter = VLLMServerAdapter(args.server_url, prepared["model_id"], prepared["revision"],
+                                backend_version=_server_version(args.server_url))
+    adapter.require_served()
+    return adapter
+
+
+class Progress:
+    """The ledger hook of a notebook run: the mirror's snapshot, and a line
+    every ``every`` finished episodes so a long cell shows it is alive."""
+
+    def __init__(self, mirror: RunMirror | None, every: int, clock=time.monotonic):
+        self._mirror, self._every, self._clock = mirror, every, clock
+        self._episodes, self._started = 0, clock()
+
+    def __call__(self, record: dict) -> None:
+        if self._mirror is not None:
+            self._mirror.on_append(record)
+        if record.get("type") == "episode":
+            self._episodes += 1
+            if self._every and self._episodes % self._every == 0:
+                minutes = (self._clock() - self._started) / 60
+                _out(f"[progress] {self._episodes} episodes in this session "
+                          f"({minutes:.1f} min); last {record['key']}")
+        elif record.get("type") in ("complete", "incomplete"):
+            _out(f"[progress] the run is {record['type']}: {record.get('reason')}")
+
+
+def _out(line: str) -> None:
+    """A line on stdout that never raises: a command whose notebook kernel
+    died writes into a pipe nobody reads (BrokenPipeError)."""
+    try:
+        print(line, flush=True)
+    except OSError:
+        pass
+
+
+def _session_info(gpu: dict, adapter: VLLMServerAdapter, workers: int,
+                  server_info: Path | None) -> dict:
+    metadata = adapter.metadata()
+    settings = _json(server_info) if server_info and Path(server_info).exists() else None
+    return {"accelerator": gpu, "server": metadata.capabilities.get("server"),
+            "vllm": metadata.backend_version, "software": software_stack(),
+            "server_settings": settings, "workers": workers, "opened_at": _now()}
+
+
+def _environment(verified: Mapping) -> dict:
+    """The software stack and the data the run or pilot uses (ADR-0008 D4, D6)."""
+    return {"software": software_stack(),
+            "data": {"alfworld_release": verified["release"], "archives": verified["archives"],
+                     "games_verified": verified["games"]}}
+
+
+# -- commands -----------------------------------------------------------------------
+def cmd_gpu_check(args) -> int:
+    print(json.dumps(require_a100_80gb(gpu_inventory())))
+    return 0
+
+
+def cmd_fetch_data(args) -> int:
+    root = fetch_data(args.target)
+    print(f"ALFWorld data at {root}")
+    return 0
+
+
+def cmd_verify_data(args) -> int:
+    splits, pilot = _manifests(Path(args.repo))
+    print(json.dumps(verify_data(args.data_root, splits, pilot)))
+    return 0
+
+
+def cmd_mirror_check(args) -> int:
+    print(json.dumps(check_mirror_dir(args.mirror_dir)))
+    return 0
+
+
+def cmd_run_commit(args) -> int:
+    data = snapshot_file(args.mirror_dir, "run-start.json") if Path(args.mirror_dir).exists() \
+        else None
+    print("" if data is None else json.loads(data.decode("utf-8"))["code"]["commit"])
+    return 0
+
+
+def cmd_prepare_model(args) -> int:
+    prepared = prepare_model(args.model, revision=args.revision, cache_dir=args.cache_dir)
+    _write_json(args.out, prepared)
+    print(f"{prepared['model_id']}@{prepared['revision']} weights sha256 "
+          f"{prepared['weights']['sha256']} -> {args.out}")
+    return 0
+
+
+def cmd_serve(args) -> int:
+    prepared = load_prepared(args.prepared)
+    command = server_command(prepared, port=args.port, max_model_len=args.max_model_len,
+                             gpu_memory_utilization=args.gpu_memory_utilization)
+    environment = server_environment(batch_invariant=not args.no_batch_invariant)
+    url = f"http://127.0.0.1:{args.port}"
+    earlier = _json(args.info) if Path(args.info).exists() else {}
+    if process_alive(earlier.get("pid")):
+        if (earlier.get("command"), earlier.get("environment"), earlier.get("port")) == \
+                (command, environment, args.port):
+            # this command's own server from an earlier attempt (an interrupted serve, say):
+            # wait for it if it is still loading, then reuse it
+            wait_until_ready(url, prepared["model_id"], process=_Pid(earlier["pid"]),
+                             log_path=args.log, timeout_seconds=args.timeout)
+            print(f"the model server (pid {earlier['pid']}) from an earlier attempt serves "
+                  f"{prepared['model_id']} with these settings on port {args.port}; reusing it")
+            return 0
+        raise CliError(f"an earlier model server (pid {earlier['pid']}) with other settings still "
+                       f"runs, perhaps still loading, and holds the GPU. Kill it (kill "
+                       f"{earlier['pid']}), or use Runtime > Disconnect and delete runtime; "
+                       f"restarting the kernel does not stop it.")
+    if port_answers(args.port):
+        raise CliError(f"a server already answers on port {args.port}, and it is not one this "
+                       f"command started (find it with: pgrep -f 'vllm serve'). Kill it, or use "
+                       f"Runtime > Disconnect and delete runtime; restarting the kernel does not "
+                       f"stop it.")
+    process = start_server(command, args.log, environment=environment)
+    # written before the wait, so a serve interrupted while the model loads finds it
+    _write_json(args.info, {"command": command, "environment": environment, "pid": process.pid,
+                            "port": args.port, "started_at": _now()})
+    wait_until_ready(url, prepared["model_id"], process=process, log_path=args.log,
+                     timeout_seconds=args.timeout)
+    print(f"the model server (pid {process.pid}) serves {prepared['model_id']} on port "
+          f"{args.port}; log {args.log}, settings {args.info}")
+    return 0
+
+
+class _Pid:
+    """A running process known only by its pid, for ``wait_until_ready``."""
+
+    def __init__(self, pid: int):
+        self.pid, self.returncode = pid, None
+
+    def poll(self):
+        if process_alive(self.pid):
+            return None
+        self.returncode = "unknown (not a child of this process)"
+        return self.returncode
+
+
+def cmd_preflight(args) -> int:
+    from runtime.model_adapters.base import GenerationSettings, ModelMessage
+    from runtime.policies.planner_react import STOP_SEQUENCES
+    from traits.miner.miner import output_schema
+
+    prepared = load_prepared(args.prepared)
+    adapter = _adapter(args, prepared)
+    reply = adapter.generate(
+        [ModelMessage("user", "Reply with one line: Thought: ready")],
+        GenerationSettings(temperature=0.0, max_tokens=64, seed=None, stop=STOP_SEQUENCES))
+    if reply.prompt_tokens is None or reply.completion_tokens is None:
+        raise CliError("the server reports no token usage; the run needs exact counts")
+    teacher = adapter.structured_generate(  # validated against the schema by the adapter
+        [ModelMessage("user", "Propose at most one short household-task skill as JSON that "
+                              "follows the given schema.")],
+        GenerationSettings(temperature=0.7, max_tokens=2048, seed=11), output_schema())
+    print(json.dumps({"react_reply": reply.text[:200], "react_tokens": [
+        reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
+        "teacher_finish_reason": teacher.finish_reason}, indent=2))
+    return 0
+
+
+EXIT_UNMIRRORED = 3
+UNMIRRORED = "UNMIRRORED.json"  # left in a run directory whose last snapshot failed
+
+
+def _say(message: str) -> None:
+    """A line on stderr that never raises: a command whose notebook kernel
+    died writes into a pipe nobody reads (BrokenPipeError)."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _sigint_deferred():
+    """The last snapshot is never cut short: a SIGINT (the stop button, or the
+    watcher of a dead kernel) that arrives during it is dropped, since the
+    command ends right after. A second stop press still ends the command at
+    once: the notebook helper sends SIGTERM to its process group."""
+    import signal
+    import threading
+    previous = signal.getsignal(signal.SIGINT)
+    if previous is None or threading.current_thread() is not threading.main_thread():
+        yield  # no Python handler to restore, or not the main thread: leave it alone
+        return
+    signal.signal(signal.SIGINT, lambda *_: None)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _final_snapshot(mirror: RunMirror | None, local: Path) -> bool:
+    """The last snapshot of a session; False (with a marker file and a loud
+    message) when it fails, so nobody releases the machine that holds the
+    only copy of the newest records. It is not interrupted, and anything
+    that stops it short of a whole snapshot counts as a failure; only another
+    machine taking over the mirror is raised (ADR-0008 D5)."""
+    if mirror is None:
+        return True
+    with _sigint_deferred():  # the snapshot and its marker, as one step
+        marker, error = local / UNMIRRORED, None
+        try:
+            seq = mirror.snapshot()
+        except MirrorError:
+            raise
+        except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - nothing was mirrored
+            seq, error = None, repr(exc)
+        if seq is not None:
+            marker.unlink(missing_ok=True)
+            return True
+        _write_json(marker, {"failures": mirror.failures,
+                             "last_error": error or mirror.last_error, "at": _now()})
+    _say(f"UNMIRRORED: the last snapshot failed ({error or mirror.last_error}); the newest "
+         f"records of {local} exist only on this machine. Mount Google Drive again and run "
+         f"`snapshot` before the runtime is released.")
+    return False
+
+
+def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
+    if mirror_dir is None or (local.exists() and any(local.iterdir())):
+        return
+    if latest_snapshot(mirror_dir) is None:
+        return  # a fresh run
+    doc = restore(mirror_dir, local)
+    (local / UNMIRRORED).unlink(missing_ok=True)  # describes another machine, never mirrored
+    _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
+
+
+STOPPED = "stopped: every recorded episode is kept; run the same command again to resume"
+
+
+@contextlib.contextmanager
+def _run_dir_lock(local: Path):
+    """The run directory's one-writer lock, held from before the mirror is
+    taken over until after the last snapshot. A second command on the same
+    directory (one started while a command whose kernel restarted still
+    stops) fails here, before it touches the mirror or the ledger."""
+    from evaluation.exp0001.pipeline import lock_run_dir
+    local.mkdir(parents=True, exist_ok=True)
+    lock = lock_run_dir(local)
+    restore = _marker_on_sigterm(local)
+    try:
+        yield lock
+    finally:
+        restore()
+        lock.close()
+
+
+def _marker_on_sigterm(local: Path):
+    """While a command holds its run directory, SIGTERM (the stop button's
+    second press ends the command's process group at once) first leaves the
+    unmirrored marker, then ends the process: the records since the last
+    snapshot may exist only here, so the notebooks keep the runtime until
+    `snapshot` has run. Returns the function that restores the previous
+    handler (a no-op outside the main thread)."""
+    import os
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        return lambda: None
+
+    def terminated(signum, frame):
+        try:
+            _write_json(local / UNMIRRORED, {"failures": None, "at": _now(),
+                                             "last_error": "terminated (SIGTERM) before its "
+                                                           "last snapshot was confirmed"})
+        except Exception as exc:  # noqa: BLE001 - say so; the process ends either way
+            _say(f"UNMIRRORED: the marker could not be written ({exc!r}); the newest records "
+                 f"of {local} may exist only on this machine. Run `snapshot` before the "
+                 f"runtime is released.")
+        finally:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    previous = signal.signal(signal.SIGTERM, terminated)
+    return lambda: signal.signal(signal.SIGTERM, previous if previous is not None
+                                 else signal.SIG_DFL)
+
+
+def _stopped(mirrored: bool) -> int:
+    """A command stopped by its stop button or its kernel: 130 once the last
+    snapshot is taken, and still 3 when it failed."""
+    _say(STOPPED)
+    return 130 if mirrored else EXIT_UNMIRRORED
+
+
+def cmd_pilot(args) -> int:
+    from runtime.expression import compile_runtime_config
+    from runtime.seed_g0 import build_g0_seed_genome
+    from genome.validation.registry import TraitRegistry
+
+    gpu = require_a100_80gb(gpu_inventory())
+    prepared = load_prepared(args.prepared)
+    repo = Path(args.repo)
+    commit, dirty = git_state(repo)
+    if dirty:
+        raise CliError(f"the checkout at {repo} has changes; the pilot report names a clean commit")
+    splits, pilot = _manifests(repo)
+    verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
+    out = Path(args.out_dir)
+    _restore_if_missing(out, args.mirror_dir)
+    report_path = out / "pilot-report.json"
+    if report_path.exists():
+        _out(report_path.read_text(encoding="utf-8"))
+        return 0
+    adapter = _adapter(args, prepared)
+    with _run_dir_lock(out):  # one writer, before the mirror is taken over
+        mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
+        ledger = RunLedger(out / "ledger.jsonl", run_id=PILOT_RUN_ID, clock=time.time, caps=CAPS,
+                           session_info=_session_info(gpu, adapter, args.workers,
+                                                      args.server_info),
+                           on_append=Progress(mirror, args.progress_every))
+        registry = TraitRegistry(out / "registry")
+        g0 = build_g0_seed_genome(registry)
+        pilot_games = {("train", g["game_id"]): g["content_sha256"] for g in pilot["games"]}
+        executor = EpisodeExecutor(
+            model=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits,
+                                                          extra_games=pilot_games),
+            ledger=ledger, trajectories_dir=out / "trajectories", run_id=PILOT_RUN_ID,
+            code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
+        started = _now()
+        report, stopped, mirrored = None, False, False
+        try:
+            try:
+                measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry))
+            finally:
+                executor.close()
+            report = _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu,
+                                   verified, commit, dirty, started)
+            freeze_json(report_path, report)
+        except KeyboardInterrupt:
+            stopped = True
+        finally:
+            mirrored = _final_snapshot(mirror, out)
+    if stopped:
+        return _stopped(mirrored)
+    _out(json.dumps({"measures": report["measures"], "projection": report["projection"]},
+                    indent=2))
+    return 0 if mirrored else EXIT_UNMIRRORED
+
+
+def _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verified, commit,
+                  dirty, started) -> dict:
+    projection = project_exp0001(measured, t_mine_size=len(splits["pools"]["t_mine"]["games"]),
+                                 t_eval_size=len(splits["pools"]["t_eval"]["games"]),
+                                 transfer_size=len(splits["pools"]["ablation"]["games"]))
+    metadata = adapter.metadata()
+    report = {"schema": PILOT_REPORT_SCHEMA, "experiment": "EXP-0001",
+              "pilot_sha256": pilot["pilot_sha256"], "started_at": started,
+              "finished_at": _now(), "code": {"commit": commit, "dirty": dirty},
+              "model": {"model_id": metadata.model_id, "revision": metadata.revision,
+                        "backend": metadata.backend, "backend_version": metadata.backend_version,
+                        "weights_sha256": prepared["weights"]["sha256"]},
+              "accelerator": gpu, "workers": args.workers, "environment": _environment(verified),
+              "note": "a calibration measurement; it tunes nothing and is no EXP-0001 result",
+              **measured, "projection": projection}
+    return report
+
+
+def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
+               pilot: dict, commit: str, dirty: bool, tokenizer: str, environment: dict) -> dict:
+    path = local / "run-start.json"
+    if path.exists():  # a resumed run: the same code, model and weights, or nothing
+        record = _json(path)
+        if args.run_id and record["run_id"] != args.run_id:
+            raise CliError(f"{local} holds run {record['run_id']!r}, not {args.run_id!r}")
+        if record["code"]["commit"] != commit or dirty:
+            raise CliError(f"the run started at commit {record['code']['commit']}; this checkout "
+                           f"is {commit}{' (dirty)' if dirty else ''}. Check out that commit.")
+        if record["weights"]["sha256"] != prepared["weights"]["sha256"]:
+            raise CliError("the prepared weights differ from the ones the run started with")
+        started_with = (record.get("environment") or {}).get("software")
+        if started_with is not None and started_with != environment["software"]:
+            changed = {name: (started_with.get(name), version)
+                       for name, version in environment["software"].items()
+                       if started_with.get(name) != version}
+            raise CliError(f"the installed software differs from the run's (recorded, installed): "
+                           f"{changed}. Install the notebook's pinned versions (ADR-0008 D4).")
+        return record
+    if not args.run_id:
+        raise CliError("a new run needs --run-id")
+    from genome.validation.registry import TraitRegistry
+    from runtime.seed_g0 import build_g0_seed_genome
+    metadata = adapter.metadata()
+    model = {"model_id": metadata.model_id, "revision": metadata.revision,
+             "backend": metadata.backend, "backend_version": metadata.backend_version}
+    return build_run_start_record(
+        code_commit=commit, code_dirty=dirty, model={**model, "tokenizer": tokenizer},
+        teacher=model, weights=prepared["weights"], split_manifest=splits,
+        pilot_manifest=pilot, g0_genome=build_g0_seed_genome(TraitRegistry(local / "registry")),
+        run_id=args.run_id, started_at=_now(), environment=environment)
+
+
+def cmd_run(args) -> int:
+    from evaluation.exp0001.pipeline import Exp0001Run
+
+    gpu = require_a100_80gb(gpu_inventory())
+    prepared = load_prepared(args.prepared)
+    repo, local = Path(args.repo), Path(args.local_dir)
+    commit, dirty = git_state(repo)
+    splits, pilot = _manifests(repo)
+    verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
+    _restore_if_missing(local, args.mirror_dir)
+    adapter = _adapter(args, prepared)
+    counter = hf_token_counter(prepared["model_id"], prepared["revision"],
+                               path=Path(prepared["path"]))
+    record = _run_start(args, local, prepared, adapter, splits, pilot, commit, dirty,
+                        counter.identity, _environment(verified))
+    with _run_dir_lock(local) as lock:  # one writer, before the mirror is taken over
+        mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
+        started = time.monotonic()
+        budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
+        run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits, model=adapter,
+                         teacher=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits),
+                         token_counter=counter, workers=args.workers,
+                         session_info=_session_info(gpu, adapter, args.workers,
+                                                    args.server_info),
+                         on_ledger_append=Progress(mirror, args.progress_every),
+                         pause_when=None if budget is None
+                         else (lambda: time.monotonic() - started > budget), lock=lock)
+        report, stopped, mirrored = None, False, False
+        try:
+            report = run.run()
+        except RunPaused as exc:
+            _out(f"paused after {args.stop_after_hours} h of this session ({exc}); every "
+                 f"admitted episode is recorded. Run the same command again to resume.")
+        except KeyboardInterrupt:
+            stopped = True
+        finally:
+            mirrored = _final_snapshot(mirror, local)
+            if mirror and mirror.failures:
+                _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
+    if stopped:
+        return _stopped(mirrored)
+    if report is not None:
+        _out(json.dumps({k: report.get(k) for k in ("status", "stage", "reason", "episodes",
+                                                      "model_calls", "aborted_attempts")},
+                        indent=2))
+    return 0 if mirrored else EXIT_UNMIRRORED
+
+
+def cmd_snapshot(args) -> int:
+    local = Path(args.run_dir)
+    if not (local / "ledger.jsonl").exists():
+        raise CliError(f"{local} holds no run or pilot ledger")
+    with _run_dir_lock(local):  # a command still running takes its own snapshots
+        if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
+            return EXIT_UNMIRRORED
+    _out(f"snapshot of {local} taken in {args.mirror_dir}")
+    return 0
+
+
+def cmd_status(args) -> int:
+    run_dir = Path(args.run_dir)
+    record = run_dir / "run-start.json"
+    if record.exists():
+        start = _json(record)
+        run_id, caps = start["run_id"], start["protocol"]["caps"]
+    else:  # a pilot directory
+        run_id, caps = PILOT_RUN_ID, CAPS
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=run_id, clock=time.time, caps=caps,
+                       readonly=True)
+    summary = {"run_id": run_id, **ledger.summary()}
+    for name in ("report.json", "pilot-report.json"):
+        if (run_dir / name).exists():
+            summary[name] = {k: _json(run_dir / name).get(k) for k in ("status", "stage", "reason")}
+    if args.mirror_dir:
+        latest = latest_snapshot(args.mirror_dir)
+        summary["mirror_snapshot"] = None if latest is None else latest["seq"]
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_repair_ledger(args) -> int:
+    note = repair_torn_tail(Path(args.run_dir) / "ledger.jsonl")
+    print("the ledger ends with a complete record; nothing to repair" if note is None
+          else json.dumps(note))
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    top = argparse.ArgumentParser(prog="python -m evaluation.exp0001.cli",
+                                  description=__doc__.splitlines()[0])
+    sub = top.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("gpu-check").set_defaults(func=cmd_gpu_check)
+
+    p = sub.add_parser("fetch-data")
+    p.add_argument("--target", type=Path, required=True, help="becomes ALFWORLD_DATA")
+    p.set_defaults(func=cmd_fetch_data)
+
+    p = sub.add_parser("verify-data")
+    p.add_argument("--data-root", type=Path, required=True)
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_verify_data)
+
+    p = sub.add_parser("mirror-check")
+    p.add_argument("--mirror-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_mirror_check)
+
+    p = sub.add_parser("run-commit")
+    p.add_argument("--mirror-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_run_commit)
+
+    p = sub.add_parser("prepare-model")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--revision", default=None, help="a commit, branch or tag; default the "
+                   "hub's current commit (pinned in prepared.json)")
+    p.add_argument("--cache-dir", type=Path, default=None)
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=cmd_prepare_model)
+
+    p = sub.add_parser("serve")
+    p.add_argument("--prepared", type=Path, required=True)
+    p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--max-model-len", type=int, default=DEFAULT_MAX_MODEL_LEN)
+    p.add_argument("--gpu-memory-utilization", type=float, default=0.90)
+    p.add_argument("--log", type=Path, default=Path("vllm-server.log"))
+    p.add_argument("--info", type=Path, default=Path("vllm-server.json"),
+                   help="where the server's command and settings are written")
+    p.add_argument("--no-batch-invariant", action="store_true",
+                   help="faster, but a reply may then depend on the batch (ADR-0008 D4)")
+    p.add_argument("--timeout", type=float, default=1800.0)
+    p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("preflight")
+    p.add_argument("--prepared", type=Path, required=True)
+    p.add_argument("--server-url", default=f"http://127.0.0.1:{DEFAULT_PORT}")
+    p.set_defaults(func=cmd_preflight)
+
+    for name, func in (("pilot", cmd_pilot), ("run", cmd_run)):
+        p = sub.add_parser(name)
+        p.add_argument("--prepared", type=Path, required=True)
+        p.add_argument("--data-root", type=Path, required=True,
+                       help="ALFWorld's json_2.1.1 directory")
+        p.add_argument("--repo", type=Path, default=Path("."))
+        p.add_argument("--server-url", default=f"http://127.0.0.1:{DEFAULT_PORT}")
+        p.add_argument("--server-info", type=Path, default=Path("vllm-server.json"),
+                       help="the settings file `serve` wrote; recorded in the session")
+        p.add_argument("--workers", type=int, default=16)
+        p.add_argument("--progress-every", type=int, default=50)
+        p.add_argument("--mirror-dir", type=Path, default=None,
+                       help="snapshots of the run directory (on Colab: Google Drive)")
+        if name == "pilot":
+            p.add_argument("--out-dir", type=Path, required=True)
+        else:
+            p.add_argument("--local-dir", type=Path, required=True)
+            p.add_argument("--run-id", default=None, help="required for a new run")
+            p.add_argument("--stop-after-hours", type=float, default=None,
+                           help="admit no new episode after this many hours of this session; "
+                                "the run stays resumable (compute-unit budgeting)")
+        p.set_defaults(func=func)
+
+    p = sub.add_parser("status")
+    p.add_argument("--run-dir", type=Path, required=True)
+    p.add_argument("--mirror-dir", type=Path, default=None)
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("snapshot")
+    p.add_argument("--run-dir", type=Path, required=True)
+    p.add_argument("--mirror-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_snapshot)
+
+    p = sub.add_parser("repair-ledger")
+    p.add_argument("--run-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_repair_ledger)
+    return top
+
+
+STOP_WITH_PARENT = "HERITAGENT_STOP_WITH_PARENT"  # the starting process's pid (notebook helper)
+
+
+def _stop_with_parent(parent: int, poll_seconds: float = 2.0) -> None:
+    """When ``parent``, the process that started this one, is no longer our
+    parent (the notebook's kernel restarted or died, even before this
+    process got here), stop as at the stop button: one SIGINT to ourselves,
+    so the episodes in flight are recorded and a last snapshot is taken."""
+    import os
+    import signal
+    import threading
+
+    # the stop is a SIGINT: it must raise KeyboardInterrupt even in a process
+    # started with SIGINT ignored (a background shell, say)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(poll_seconds)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=watch, name="stop-with-parent", daemon=True).start()
+
+
+def main(argv: list[str] | None = None) -> int:
+    import os
+    args = parser().parse_args(argv)
+    parent = os.environ.get(STOP_WITH_PARENT, "")
+    try:
+        if parent.isdigit():  # its SIGINT may come at once: inside the try
+            _stop_with_parent(int(parent))
+        return args.func(args)
+    except (CliError, BackendError, ProvenanceError, LedgerError, MirrorError) as exc:
+        _say(f"error: {exc}")
+        return 2
+    except KeyboardInterrupt:
+        _say(STOPPED)
+        return 130
+    except RuntimeError as exc:
+        from evaluation.exp0001.pipeline import RunError  # a run raised it: already loaded
+        if not isinstance(exc, RunError):
+            raise
+        _say(f"error: {exc}")
+        if "in use by another run" in str(exc):
+            _say("a previous `run`, `pilot` or `snapshot` on this directory may still be running "
+                 "in this machine (one whose notebook kernel restarted stops by itself, saving "
+                 "its episodes). Wait for it to end; the notebook's release() keeps the GPU "
+                 "until then. Or end its process group.")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
