@@ -107,6 +107,12 @@ def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
     assert ("heritagent/pilot/" in cells[required]) == ("pilot" in name)
     assert first(cells, '"verify-data"') < covers  # it needs the data
     assert '"rehearse"' in cells[covers] and "except RuntimeError:" in cells[covers]
+    # a rehearsal repeated here is recorded where the next session's guard looks
+    fallback = cells[covers].split("except RuntimeError:", 1)[1]
+    assert fallback.index('"rehearse"') < fallback.index('/rehearsal-passed.json", PASSED)')
+    if "run" in name:  # the guard checks the commit a resumed run continues with
+        assert first(cells, '"run-commit"') < required
+        assert first(cells, "COMMIT = checkout(run_commit)") < required
 
 
 def test_the_rehearsal_writes_the_records_the_a100_notebooks_read():

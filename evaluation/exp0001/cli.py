@@ -541,8 +541,8 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
             stopped = True
         finally:
             mirrored = _final_snapshot(mirror, out, marker=not disposable)
-    if stopped:
-        return _stopped(mirrored)
+    if stopped:  # a rehearsal's records are disposable: it says itself that it stopped
+        return 130 if disposable else _stopped(mirrored)
     _out(json.dumps({"measures": report["measures"], "projection": report["projection"]},
                     indent=2))
     return 0 if mirrored else EXIT_UNMIRRORED
@@ -577,7 +577,8 @@ def _ledger_lines(path: Path) -> list[dict]:
 
 
 def _rehearsal_stopped() -> int:
-    _say("stopped: the rehearsal did not finish; run it again with a new directory")
+    _say("stopped: the rehearsal did not finish; run it again with a new directory and a new "
+         "mirror directory")
     return 130
 
 
@@ -680,8 +681,9 @@ def cmd_rehearse(args) -> int:
         checks["the first pass left no unmirrored marker"] = not (out / UNMIRRORED).exists()
         if mirror_dir is not None:
             latest = latest_snapshot(mirror_dir)
-            # one snapshot at the first record and one at the end: the ledger hook snapshots
-            checks["the mirror was snapshotted during the first pass"] = \
+            # one snapshot at the first record and one at the end (the 60-second cadence
+            # between them needs a longer pass than a fast machine plays)
+            checks["the ledger hook snapshotted the first pass"] = \
                 latest is not None and latest["seq"] >= 2
             shutil.rmtree(out)  # the rehearsal's own directory: the next pass restores it
         _out(f"[rehearsal] first pass stopped by the outage after {len(first)} episodes; "

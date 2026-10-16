@@ -157,6 +157,11 @@ def protocol_issues(payload: Mapping) -> list[str]:
                 payload.get("max_tokens") != MINER_MAX_TOKENS:
             issues.append(f"a teacher call at temperature {temperature!r}, seed {seed!r}, "
                           f"max_tokens {payload.get('max_tokens')!r}")
+        unsupported = xgrammar_unsupported(
+            payload["response_format"].get("json_schema", {}).get("schema"))
+        if unsupported:
+            issues.append(f"the schema has {unsupported}, which vLLM 0.29.0 does not give "
+                          f"to xgrammar")
     else:  # a ReAct step
         if (seed is None and temperature != 0.0) or \
                 (seed is not None and temperature != MINING_TEMPERATURE):
@@ -168,6 +173,46 @@ def protocol_issues(payload: Mapping) -> list[str]:
             issues.append(f"max_tokens {payload.get('max_tokens')!r} is outside 1.."
                           f"{MAX_TOKENS_PER_REQUEST}")
     return issues
+
+
+# vLLM 0.29.0's vllm/v1/structured_output/backend_xgrammar.py: the string formats xgrammar
+# supports, and has_xgrammar_unsupported_json_features below. vLLM keeps such a schema from
+# xgrammar before compiling it; with the default "auto" backend it tries guidance instead, so
+# that request would run on another grammar backend than every other. xgrammar itself
+# compiles such a schema without a word, so the stand-in applies vLLM's rule and refuses it.
+XGRAMMAR_STRING_FORMATS = frozenset({
+    "email", "date", "time", "date-time", "duration", "ipv4", "ipv6", "hostname", "uuid", "uri",
+    "uri-reference", "uri-template", "json-pointer", "relative-json-pointer"})
+
+
+def xgrammar_unsupported(schema) -> str | None:
+    """The first part of ``schema`` that vLLM 0.29.0 does not give to
+    xgrammar, or None (a copy of its ``has_xgrammar_unsupported_json_features``)."""
+    if not isinstance(schema, dict):
+        return None
+    kind = schema.get("type")
+    if kind in ("integer", "number") and "multipleOf" in schema:
+        return f"multipleOf on a {kind}"
+    if kind == "array":
+        for key in ("uniqueItems", "contains", "minContains", "maxContains"):
+            if key in schema:
+                return f"{key} on an array"
+    if kind == "string":
+        if "format" in schema and schema["format"] not in XGRAMMAR_STRING_FORMATS:
+            return f"the string format {schema['format']!r}"
+        if ("pattern" in schema or "format" in schema) and \
+                ("minLength" in schema or "maxLength" in schema):
+            return "a string with a pattern or format and a length bound"
+    if kind == "object":
+        for key in ("patternProperties", "propertyNames"):
+            if key in schema:
+                return f"{key} on an object"
+    for value in schema.values():
+        for item in (value if isinstance(value, list) else [value]):
+            found = xgrammar_unsupported(item) if isinstance(item, dict) else None
+            if found:
+                return found
+    return None
 
 
 def xgrammar_check(tokenizer) -> Callable[[dict], None] | None:
@@ -290,21 +335,21 @@ class StandInServer:
         if issues:
             return self._refuse(f"the stand-in refuses a request that breaks the pilot's "
                                 f"protocol: {'; '.join(issues)}")
+        error = None
         with self._lock:  # tokenizers and grammar compilers are not shared across threads
             try:
                 prompt = self._count(payload["messages"])
             except Exception as exc:  # noqa: BLE001 - the server answers 400 to a template error
-                prompt = None
                 error = f"the chat template refused the request: {exc}"
-            if prompt is None:
-                pass
-            elif payload.get("response_format") and self._check_schema is not None:
-                try:
-                    self._check_schema(payload["response_format"]["json_schema"]["schema"])
-                except Exception as exc:  # noqa: BLE001 - the server answers 400
-                    return self._refuse(f"the grammar backend refused the schema: {exc}")
-                self.schemas_compiled += 1
-        if prompt is None:
+            else:
+                if payload.get("response_format") and self._check_schema is not None:
+                    try:
+                        self._check_schema(payload["response_format"]["json_schema"]["schema"])
+                    except Exception as exc:  # noqa: BLE001 - the server answers 400
+                        error = f"the grammar backend refused the schema: {exc}"
+                    else:
+                        self.schemas_compiled += 1
+        if error is not None:  # refused once the lock is free: _refuse takes it again
             return self._refuse(error)
         if prompt + payload["max_tokens"] > self._window:
             return self._refuse(

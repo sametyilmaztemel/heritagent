@@ -15,7 +15,7 @@ from evaluation.exp0001.protocol import CONTEXT_WINDOW, attempt_sampling_seed
 from runtime.model_adapters import ModelMessage
 from runtime.model_adapters.base import GenerationSettings
 from runtime.model_adapters.errors import BackendUnavailableError, ContextWindowExceeded
-from runtime.model_adapters.openai_server import VLLMServerAdapter
+from runtime.model_adapters.openai_server import ServerRequestError, VLLMServerAdapter
 from runtime.policies.planner_react import ReActPlanner
 from runtime.tool_adapters.alfworld import ACT_TOOL
 from tests.evaluation.exp0001_workers import GameFactory
@@ -111,6 +111,33 @@ def test_the_stand_in_answers_as_the_server_does():
         server.outage_seed = None
         with pytest.raises(ContextWindowExceeded):
             adapter.generate([ModelMessage("user", "x" * 4 * CONTEXT_WINDOW)], settings)
+
+
+def test_the_stand_in_refuses_a_template_or_a_schema_and_keeps_answering():
+    """A refusal answers 400 and frees the server for the next request."""
+    def refuse_schema(schema):
+        raise ValueError("no grammar for this schema")
+
+    def refuse_system_only(messages):
+        if all(m["role"] == "system" for m in messages):
+            raise ValueError("No user query found in messages.")
+        return chars(messages)
+
+    policy = rehearsal.StandInPolicy({TASK: ["go to a 1"]})
+    with rehearsal.StandInServer(MODEL, policy, count_prompt=refuse_system_only,
+                                 check_schema=refuse_schema) as server:
+        adapter = VLLMServerAdapter(server.url, MODEL, "b" * 40, transport_retries=0,
+                                    backoff_seconds=0.01, timeout_seconds=10)
+        react = GenerationSettings(temperature=0.0, max_tokens=512, seed=None,
+                                   stop=("\nObservation:",))
+        teacher = GenerationSettings(temperature=0.7, max_tokens=2048, seed=1)
+        with pytest.raises(ServerRequestError, match="the grammar backend refused the schema"):
+            adapter.structured_generate([ModelMessage("user", "x")], teacher, {"type": "object"})
+        with pytest.raises(ServerRequestError, match="No user query found"):
+            adapter.generate([ModelMessage("system", "x")], react)
+        reply = adapter.generate([ModelMessage(**m) for m in messages(TASK, [])], react)
+        assert ReActPlanner.parse(reply.text).action is not None
+        assert (server.refused, server.schemas_compiled) == (2, 0)
 
 
 # -- the command ----------------------------------------------------------------------------
@@ -269,6 +296,38 @@ def test_a_stopped_rehearsal_stops_and_leaves_no_marker(tmp_path, stubbed, monke
     assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
 
 
+def test_a_rehearsal_stopped_while_its_mirror_fails_still_stops(tmp_path, stubbed, monkeypatch,
+                                                                 capsys):
+    """A stop whose last snapshot fails is a stop too: no second pass."""
+    passes = []
+
+    def stopped(*args, **kwargs):
+        passes.append(1)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "run_pilot", stopped)
+    monkeypatch.setattr(cli, "_final_snapshot", lambda *a, **k: False)
+    assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 130
+    err = capsys.readouterr().err
+    assert passes == [1] and "did not finish" in err and cli.STOPPED not in err
+    assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
+
+
+def test_the_stand_in_keeps_from_xgrammar_what_vllm_does():
+    """vLLM 0.29.0's rule, on the schema the miner sends and on its full one."""
+    from runtime.model_adapters.openai_server import server_constraint
+    from traits.miner.miner import output_schema
+    assert rehearsal.xgrammar_unsupported(server_constraint(output_schema())) is None
+    assert rehearsal.xgrammar_unsupported(output_schema()) == "uniqueItems on an array"
+    for schema, found in [({"type": "number", "multipleOf": 2}, "multipleOf"),
+                          ({"type": "string", "format": "phone"}, "'phone'"),
+                          ({"type": "string", "format": "email"}, None),
+                          ({"type": "string", "pattern": "a+", "maxLength": 3}, "length bound"),
+                          ({"anyOf": [{"type": "object", "propertyNames": {}}]}, "propertyNames")]:
+        result = rehearsal.xgrammar_unsupported(schema)
+        assert result is None if found is None else found in result, (schema, result)
+
+
 def test_a_rehearsals_lock_installs_no_sigterm_marker(tmp_path):
     import signal
     before = signal.getsignal(signal.SIGTERM)
@@ -298,6 +357,10 @@ def react_payload(**overrides):
       "max_tokens": 2048, "stop": None}, None),
     ({"response_format": {"type": "json_schema"}, "temperature": 0.0, "seed": None,
       "max_tokens": 2048}, "a teacher call at temperature 0.0"),
+    ({"response_format": {"type": "json_schema", "json_schema": {"schema": {
+        "type": "object", "properties": {"f": {"type": "array", "uniqueItems": True}}}}},
+      "temperature": 0.7, "seed": 11, "max_tokens": 2048, "stop": None},
+     "uniqueItems on an array, which vLLM 0.29.0 does not give to xgrammar"),
 ])
 def test_the_stand_in_names_what_breaks_the_protocol(overrides, issue):
     found = rehearsal.protocol_issues(react_payload(**overrides))
