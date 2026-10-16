@@ -408,3 +408,18 @@ def test_the_teacher_prompt_goes_as_one_user_message():
     from traits.miner.miner import TEACHER_ROLE, teacher_messages
     assert TEACHER_ROLE == "user"
     assert [(m.role, m.content) for m in teacher_messages("prompt")] == [("user", "prompt")]
+
+
+def test_a_refused_request_ends_a_command_with_its_reason_not_a_traceback(tmp_path, capsys):
+    from evaluation.exp0001.serving import PREPARED_SCHEMA
+    prepared = tmp_path / "prepared.json"
+    prepared.write_text(json.dumps({"schema": PREPARED_SCHEMA, "model_id": MODEL,
+                                    "revision": "b" * 40, "path": str(tmp_path),
+                                    "weights": {"sha256": "c" * 64}}))
+    policy = rehearsal.StandInPolicy({})
+    with rehearsal.StandInServer(MODEL, policy, count_prompt=chars,
+                                 template_kwargs={"enable_thinking": True}) as server:
+        code = cli.main(["preflight", "--prepared", str(prepared), "--server-url", server.url])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "error: the model server: ServerRequestError" in err and "Traceback" not in err

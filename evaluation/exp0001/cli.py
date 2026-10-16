@@ -32,7 +32,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   repair-ledger   cut off a torn last ledger line, keeping it on record
 
 Exit codes: 0 done; 2 an error the message explains (a run directory
-another command still holds, say); 130 stopped (the stop button, or the
+another command still holds, or a request the model server refused or
+failed); 130 stopped (the stop button, or the
 notebook kernel that started the command restarted or died: environment
 variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
 3 when a ``run`` or ``pilot`` that finished, paused or was stopped, or a
@@ -108,6 +109,7 @@ from evaluation.exp0001.serving import (
     start_server,
     wait_until_ready,
 )
+from runtime.model_adapters.errors import AdapterError
 from runtime.model_adapters.openai_server import VLLMServerAdapter
 
 MANIFESTS = Path("experiments") / "manifests"
@@ -1055,6 +1057,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (CliError, BackendError, ProvenanceError, LedgerError, MirrorError) as exc:
         _say(f"error: {exc}")
+        return 2
+    except AdapterError as exc:  # the model server refused or failed a request
+        _say(f"error: the model server: {type(exc).__name__}: {exc}")
         return 2
     except KeyboardInterrupt:
         if args.func is cmd_rehearse:  # stopped outside a pass: a rehearsal never resumes
