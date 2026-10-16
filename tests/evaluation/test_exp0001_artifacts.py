@@ -155,6 +155,7 @@ def test_the_manifest_stage_lines_name_the_codes_rules():
     lines the manifest records are the ones the code runs."""
     import re
     from evaluation.metrics.final_statistics import FINAL_RULE
+    from inheritance.generalization import OUT_SCOPE_COUNT, OUT_SCOPE_MIN_DELTA
     from inheritance.regression import REGRESSION_TASK_COUNT, TAU_R
     text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
     stages = re.search(r"^inheritance:[^\n]*\n((?:  .*\n|\n)+)", text, re.MULTILINE)
@@ -165,8 +166,12 @@ def test_the_manifest_stage_lines_name_the_codes_rules():
         f"tasks: {REGRESSION_TASK_COUNT}, runs_per_condition: 1, pass: \"paired drop "
         f"(success_without - success_with)/{REGRESSION_TASK_COUNT} <= {TAU_R} (tau_r)\", "
         "g0_run: shared-per-seed-at-gate-settings")
-    assert re.search(r"^      out_of_scope: +\{.*, all_family_applicability: vacuous-pass\}",
-                     stages.group(1), re.MULTILINE)
+    out_of_scope = re.search(r"^      out_of_scope: +\{(.*)\}", stages.group(1), re.MULTILINE)
+    assert out_of_scope, "the out-of-scope stage line is missing"
+    assert out_of_scope.group(1) == (
+        f"tasks: {OUT_SCOPE_COUNT}, source: families-outside-frozen-applicability, "
+        f"runs_per_condition: 1, pass: \"delta>={OUT_SCOPE_MIN_DELTA}\", "
+        "all_family_applicability: vacuous-pass")
     run_protocol = re.search(r"^run_protocol:[^\n]*\n((?:  .*\n)+)", text, re.MULTILINE)
     final = re.search(r"^  final_evaluation: \{(.*)\}", run_protocol.group(1), re.MULTILINE)
     assert final.group(1) == ("temperature: 0.0, sampling_seed: none, arm_a: once, "

@@ -2,13 +2,13 @@
 
 Date: 2026-10-16 · Status: **PROPOSED** (builder-2, for the owner's decision). Not part of ADR-0006. ADR-0009 D5 authorizes one note in ADR-0006, the scope of the H2 regression clause, and that note is in ADR-0006 D4. The notes below go beyond D5's text. Builder-2's own review of the ADR-0009 D1/D2/D5 PR found that they had been added to ADR-0006 under D5's label without that basis, so they were moved here. Only the owner's decision moves any of them into ADR-0006.
 
-None of them changes a threshold, a rule or a computation. They state, before any EXP-0001 data, how the pre-registered rule's outcomes are to be read. The code already behaves as they describe; three of them are visible in the results record, as noted.
+None of them changes a threshold, a rule or a computation. They state, before any EXP-0001 data, how the pre-registered rule's outcomes are to be read. The code already behaves as they describe. The results record carries plain labels for two of them (N1 and N4), as noted; the interpretive parts are only here.
 
 ## N1 — The intervals are conditional on the three mining seeds (under D1)
 
-Only tasks are resampled, so each interval is conditional on the three mining seeds [11, 23, 41]. Seed-to-seed variability enters only through the 2/3 rule.
+Only tasks are resampled, so each interval is conditional on the three mining seeds [11, 23, 41]. Seed-to-seed variability enters H2 only through the 2/3 rule on C−B, and H1 not at all.
 
-The record states this in every contrast block (`uncertainty`, `evaluation/metrics/final_statistics.py`).
+The record's `uncertainty` label in every contrast block (`evaluation/metrics/final_statistics.py`) states the first sentence: task clusters only, conditional on the mining seeds, seed-to-seed variability not resampled.
 
 ## N2 — The percentile index convention (under D2)
 
@@ -31,7 +31,7 @@ ADR-0006 D4 now says the H2 regression clause is measured on T_reg, the suite th
 - it is not an out-of-sample estimate;
 - it favours C over B by construction.
 
-The record states this as the clause's `scope`.
+The record's `scope` label on the clause states only D4's scope, in D5's words; this reading would be added with the note.
 
 ## N5 — Detectability under the locked rule (Research implication)
 
@@ -42,9 +42,9 @@ Status M. Computed with the pinned implementation before any data.
   - k = 3 (7.5 pp) gives an upper bound of exactly 0, so the clause fails.
 
   On disjoint tasks per seed, k ≥ 2 (5 pp) passes.
-- **The expected reduction.** The pre-registered expectation is 3–8 pp (1.2–3.2 tasks). In the same-tasks pattern, most of that range is below the floor.
-- **The success clause at n = 134.** Take a net +7.46 pp made of 20 wins and 10 losses per seed: it fails (lower bound −0.0075). 15 wins and 5 losses pass. The expected central value is +7 pp.
-- **What follows.** An outcome that matches the expectations can fail H2. This is conservative, not a bias, and no threshold changes.
+- **The expected reduction.** The pre-registered expectation is 3–8 pp (1.2–3.2 tasks). In the same-tasks pattern, all of that range is below the floor.
+- **The success clause at n = 134.** Take a net +7.46 pp made of 20 wins and 10 losses per seed, on the same tasks in every seed: it fails (lower bound −1/134 ≈ −0.0075, or 0, depending on where the tasks fall in `task_id` order). 15 wins and 5 losses on the same tasks pass. On disjoint tasks per seed, both pass (lower bound 2/67 ≈ +0.030 for 20 and 10; 5/134 or 8/201, about +0.037 to +0.040, for 15 and 5). The expected central value is +7 pp.
+- **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. This is conservative, not a bias, and no threshold changes.
 
 The proposal reads a null on the regression clause as "below detectability at n = 40", not as evidence against the mechanism. That reading is an interpretation of a future result, which is why it needs the owner's decision.
 

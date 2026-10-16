@@ -256,7 +256,7 @@ class RegressionEvaluation:
 
     @property
     def regression_drop(self) -> float:
-        """Nearest float to the exact drop; decisions use drop_within()."""
+        """Nearest float to the exact paired drop; decisions use paired_drop_within()."""
         return self._regression_drop
 
     @property

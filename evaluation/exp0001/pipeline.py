@@ -3,9 +3,11 @@ ADR-0006, ADR-0007).
 
 Order: every seed's G0 lifetime, then the one shared T_reg, then per
 mining seed the miner (frozen candidate set), the CIG (replay and ablation
-per candidate, then stages 3-4, interactions and the somatic decisions),
-and the arm genomes; then the final evaluation (arm A once, arms B and C
-per seed, on T_eval, T_reg and the transfer subset) and the final
+per candidate, then stages 3-4 with one shared G0 run on T_reg,
+interactions and the somatic decisions), and the arm genomes; then the
+final evaluation (each distinct genome once, on T_eval, T_reg and the
+transfer subset: arm A, and arms B and C per seed, read the same cells
+wherever their genomes coincide; ADR-0009 D1, D2) and the final
 statistics. T_eval is touched only by the final evaluation.
 
 Every stage result is a write-once artifact in the run directory and
@@ -124,7 +126,7 @@ def gate_summary(gate: Mapping) -> dict:
 
 ADAPTATION_COST_SCOPE = (
     "measured on the transfer subset, the stage-2 ablation pool (ADR-0007 E4), which selected "
-    "arm C's traits: it favours C and is descriptive only (ADR-0006 D6; ADR-0009 D5)")
+    "arm C's traits: it can favour C and is descriptive only (ADR-0006 D6; ADR-0009 D5)")
 
 
 def teacher_calls(mining_records) -> int:
@@ -328,7 +330,9 @@ class Exp0001Run:
                 issues = ablation_evidence_issues(child["measurements"])
                 if issues:
                     raise RunError(f"seed {seed}: {child_id} does not recompute: {issues}")
-        # the frozen tau_c/tau_r grid is the pre-planned analysis-only one, per gated candidate
+        # the frozen tau_c/tau_r grid is the pre-planned analysis-only one, per gated
+        # candidate. The check is structural: the cells' contents are not re-derived, since
+        # no verdict, arm or statistic reads them (the report carries them, secondary)
         sensitivity = gate.get("sensitivity")
         if not isinstance(sensitivity, Mapping) or set(sensitivity) != set(genes):
             raise RunError(f"seed {seed}: gate.json's sensitivity grids are not the frozen "
@@ -337,7 +341,10 @@ class Exp0001Run:
                  for tau_r in SENSITIVITY_TAU_R_GRID}
         for gene, grid in sensitivity.items():
             if not isinstance(grid, Mapping) or grid.get("gene_id") != gene \
-                    or grid.get("analysis_only") is not True or grid.get("runner_calls") != 0 \
+                    or grid.get("analysis_only") is not True \
+                    or type(grid.get("runner_calls")) is not int or grid["runner_calls"] != 0 \
+                    or grid.get("tau_c_grid") != list(SENSITIVITY_TAU_C_GRID) \
+                    or grid.get("tau_r_grid") != list(SENSITIVITY_TAU_R_GRID) \
                     or not isinstance(grid.get("cells"), Mapping) or set(grid["cells"]) != cells:
                 raise RunError(f"seed {seed}: gate.json's sensitivity grid for {gene!r} is not "
                                f"the pre-planned analysis-only grid")

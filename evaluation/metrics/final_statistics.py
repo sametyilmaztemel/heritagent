@@ -71,15 +71,15 @@ FINAL_RULE = MappingProxyType({
 CLAIM_STATUS = ("pre-registered rule outcome only; not a validated result "
                 "(SPEC section 32) and not a causal claim (SPEC section 34)")
 BOOTSTRAP_METHOD = "percentile-paired-cluster-bootstrap-exact"
-# ADR-0006 D1: only tasks are resampled (a description of the record; the ADR note is
-# proposed for the owner in research/proposals/ADR-0006-notes-proposal.md, N1)
-UNCERTAINTY = ("task clusters, conditional on the mining seeds {seeds}; seed variability enters "
-               "only through the seed-consistency rule")
-# ADR-0006 D4, scoped by ADR-0009 D5 (the in-sample reading is a description of the record;
-# its ADR note is proposed for the owner in research/proposals/ADR-0006-notes-proposal.md, N4)
-REGRESSION_CLAUSE_SCOPE = ("in sample: T_reg is the suite the gate's stage 4A used to decide "
-                           "which traits arm C keeps; this checks the regression the gate "
-                           "controls and favours C over B by construction")
+# ADR-0006 D1: the tasks are the clusters and the seeds are pooled, not resampled; what this
+# means for the hypotheses is proposed for the owner in
+# research/proposals/ADR-0006-notes-proposal.md, N1
+UNCERTAINTY = ("task clusters only, conditional on the mining seeds {seeds}; seed-to-seed "
+               "variability is not resampled")
+# ADR-0006 D4, scoped by ADR-0009 D5 in D5's words; the in-sample reading is proposed for the
+# owner in research/proposals/ADR-0006-notes-proposal.md, N4
+REGRESSION_CLAUSE_SCOPE = ("measured on T_reg, the suite the gate's stage 4A used to decide "
+                           "which traits arm C keeps (ADR-0009 D5)")
 
 
 class FinalStatisticsError(ValueError):
