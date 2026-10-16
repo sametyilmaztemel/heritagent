@@ -18,6 +18,12 @@ boundary:
   ``AlfredDemangler(shuffle=False)`` and ``AlfredInfos``, without expert
   plans (``open_game``; needs the optional ``alfworld`` extra).
 
+On Python 3.13, TextWorld 1.7.0 cannot generate a game's text: its
+``EvalSymbol.derive`` relies on ``locals().update(...)`` reaching ``eval``,
+which PEP 667 ended. ``open_game`` first replaces that one method with the
+same evaluation over explicit namespaces (``patch_textworld_eval``), on every
+Python version, so all of them run one code path.
+
 The adapter talks to a ``GameSession``: TextWorld's single-game gym API,
 ``reset() -> (observation, infos)`` and
 ``step(command) -> (observation, score, done, infos)``, so tests can script
@@ -167,12 +173,58 @@ class AlfworldEnvironment:
                              steps=self._steps, invalid_commands=self._invalid)
 
 
+TEXTWORLD_VERSION = "1.7.0"  # the alfworld extra's pin (ADR-0003)
+
+
+def eval_namespace(variables: dict, symbol, context) -> dict:
+    """The local names TextWorld 1.7.0's ``EvalSymbol.derive`` evaluated its
+    expression with up to Python 3.12: the grammar's variables, under the
+    method's bound locals ``self`` and ``context``, without its still-unbound
+    ``value`` (``eval`` refreshed the updated ``locals()`` dict from the frame
+    first)."""
+    namespace = dict(variables)
+    namespace.pop("value", None)
+    namespace.update(self=symbol, context=context)
+    return namespace
+
+
+def patch_textworld_eval(textgen, version: str) -> None:
+    """Make TextWorld's ``EvalSymbol.derive`` (``{r.name}`` in a grammar)
+    work on Python 3.13, where ``locals()`` in a function is a snapshot
+    (PEP 667): the original's ``locals().update(variables)`` no longer reaches
+    its ``eval``, and every game fails with ``NameError`` on its first
+    description. The replacement evaluates the expression in the module's
+    globals and ``eval_namespace``, the names the original saw. It is written
+    against TextWorld 1.7.0 and refuses any other version; applying it twice
+    changes nothing."""
+    if version != TEXTWORLD_VERSION:
+        raise AlfworldAdapterError(
+            f"textworld {version} is installed; the EvalSymbol fix is written for "
+            f"{TEXTWORLD_VERSION}, the alfworld extra's pin")
+    symbol_class = textgen.EvalSymbol
+    if getattr(symbol_class.derive, "heritagent_eval_fix", False):
+        return
+    module_globals = vars(textgen)
+
+    def derive(self, context=None):
+        context = context or self.context
+        value = eval(self.expression, module_globals,
+                     eval_namespace(context["variables"], self, context))
+        return [textgen.TerminalSymbol(value)]
+
+    derive.heritagent_eval_fix = True
+    symbol_class.derive = derive
+
+
 def open_game(gamefile: str, *, max_episode_steps: int) -> GameSession:
     """Open one real ALFWorld game (D8). Requires ``pip install .[alfworld]``
     and the ALFWorld data; not exercised by the offline test suite."""
     import textworld
     import textworld.gym
     from alfworld.agents.environment.alfred_tw_env import AlfredDemangler, AlfredInfos
+    from textworld.envs.pddl import textgen
+
+    patch_textworld_eval(textgen, textworld.__version__)
 
     request_infos = textworld.EnvInfos(won=True, admissible_commands=True, extras=["gamefile"])
     env_id = textworld.gym.register_game(
