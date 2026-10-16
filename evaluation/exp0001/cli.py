@@ -419,6 +419,10 @@ def _marker_on_sigterm(local: Path):
             _write_json(local / UNMIRRORED, {"failures": None, "at": _now(),
                                              "last_error": "terminated (SIGTERM) before its "
                                                            "last snapshot was confirmed"})
+        except Exception as exc:  # noqa: BLE001 - say so; the process ends either way
+            _say(f"UNMIRRORED: the marker could not be written ({exc!r}); the newest records "
+                 f"of {local} may exist only on this machine. Run `snapshot` before the "
+                 f"runtime is released.")
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
             os.kill(os.getpid(), signal.SIGTERM)
@@ -452,7 +456,7 @@ def cmd_pilot(args) -> int:
     _restore_if_missing(out, args.mirror_dir)
     report_path = out / "pilot-report.json"
     if report_path.exists():
-        print(report_path.read_text(encoding="utf-8"))
+        _out(report_path.read_text(encoding="utf-8"))
         return 0
     adapter = _adapter(args, prepared)
     with _run_dir_lock(out):  # one writer, before the mirror is taken over
@@ -597,7 +601,7 @@ def cmd_snapshot(args) -> int:
     with _run_dir_lock(local):  # a command still running takes its own snapshots
         if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
             return EXIT_UNMIRRORED
-    print(f"snapshot of {local} taken in {args.mirror_dir}")
+    _out(f"snapshot of {local} taken in {args.mirror_dir}")
     return 0
 
 

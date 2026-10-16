@@ -964,7 +964,8 @@ def test_a_terminated_command_leaves_the_marker(tmp_path):
         "from evaluation.exp0001 import cli\n"
         f"with cli._run_dir_lock(Path({str(local)!r})):\n"
         "    print('held', flush=True)\n"
-        "    time.sleep(30)\n")
+        "    for _ in range(600):\n"  # short sleeps: a signal that lands just before a
+        "        time.sleep(0.05)\n")  # sleep starts is handled when that sleep ends
     process = subprocess.Popen([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True,
                                cwd=Path(cli.__file__).parents[2])
     try:
