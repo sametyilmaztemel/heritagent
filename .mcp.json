@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "colab-mcp": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--exclude-newer",
+        "2026-10-18T00:00:00Z",
+        "git+https://github.com/googlecolab/colab-mcp@b9ab3899e0f1fa493390b1fd6d54aa2e464ecdf1"
+      ]
+    }
+  }
+}
