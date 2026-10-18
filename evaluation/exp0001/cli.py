@@ -30,6 +30,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   snapshot        take a snapshot of a run (or pilot) directory now, for example
                   after Drive is mounted again (exit code 3 if it fails)
   repair-ledger   cut off a torn last ledger line, keeping it on record
+  figures         paper figures, their tables and captions from a run directory
+                  or its mirror (read-only; needs matplotlib)
 
 Exit codes: 0 done; 2 an error the message explains (a run directory
 another command still holds, or a request the model server refused or
@@ -907,6 +909,29 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_figures(args) -> int:
+    from evaluation.exp0001.figures import FiguresError, make_figures
+    try:
+        repo = Path(__file__).resolve().parents[2]
+        try:  # provenance only: figures are drawn without it
+            commit = git_state(repo) if (repo / ".git").exists() else None
+        except (OSError, subprocess.CalledProcessError):
+            commit = None
+        manifest = make_figures(run_dir=args.run_dir, mirror_dir=args.mirror_dir,
+                                out_dir=args.out_dir,
+                                code_commit=None if commit is None else
+                                f"{commit[0]}{'-dirty' if commit[1] else ''}")
+    except FiguresError as exc:
+        raise CliError(str(exc)) from None
+    for entry in manifest["figures"]:
+        _out(f"{entry['name']}: {entry['status']}"
+             + (f" ({entry['reason']})" if entry.get("reason") else ""))
+    for note in manifest["notes"]:
+        _out(f"note: {note}")
+    _out(f"{manifest['state']} run {manifest['run_id']}: figures in {args.out_dir}")
+    return 0
+
+
 def cmd_repair_ledger(args) -> int:
     note = repair_torn_tail(Path(args.run_dir) / "ledger.jsonl")
     print("the ledger ends with a complete record; nothing to repair" if note is None
@@ -1020,6 +1045,13 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("repair-ledger")
     p.add_argument("--run-dir", type=Path, required=True)
     p.set_defaults(func=cmd_repair_ledger)
+
+    p = sub.add_parser("figures")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--run-dir", type=Path, default=None)
+    source.add_argument("--mirror-dir", type=Path, default=None)
+    p.add_argument("--out-dir", type=Path, required=True)
+    p.set_defaults(func=cmd_figures)
     return top
 
 

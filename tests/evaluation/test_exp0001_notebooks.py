@@ -62,7 +62,7 @@ def test_every_command_of_the_notebook_parses(name):
     data = {"mirror-check", "fetch-data", "verify-data", "rehearse"}
     expected = data if name == REHEARSAL else \
         data | {"gpu-check", "prepare-model", "serve", "preflight", "rehearsal-check"} | \
-        ({"pilot"} if "pilot" in name else {"run", "status"})
+        ({"pilot"} if "pilot" in name else {"run", "status", "figures"})
     assert commands == expected
 
 
@@ -320,3 +320,49 @@ def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
         assert "fetch-data" in text and "verify-data" in text
         for package in SOFTWARE_PACKAGES:  # every recorded package has one version
             assert f'{package}==' in text or f'"{package}==' in pyproject, package
+
+
+FIGURES = "EXP-0001-figures.ipynb"  # the CPU notebook that redraws a run's figures
+
+
+def test_the_run_notebook_draws_its_figures_after_the_report_and_before_the_release():
+    cells = code_cells(NAMES[1])
+    report, figures = first(cells, '"/content/exp0001-run/report.json"'), first(cells, '"figures"')
+    assert report < figures == len(cells) - 2  # the release cell comes last
+    source = cells[figures]
+    call = cli_calls(source)[0]
+    args = cli.parser().parse_args(argv(call, {}))
+    assert args.run_dir == Path("/content/exp0001-run") and args.mirror_dir is None
+    # outside the run directory (a snapshot would sweep it in) and the checkout
+    assert 'FIGURES = "/content/exp0001-figures"' in source
+    assert 'shutil.copytree(FIGURES, f"{RUN_DRIVE}/figures")' in source
+
+
+def test_the_figures_notebook_reads_the_mirror_on_a_cpu_runtime():
+    cells = code_cells(FIGURES)
+    commands = set()
+    for source in cells:
+        assert not [line for line in source.splitlines() if line.lstrip().startswith(("!", "%"))]
+        for call in cli_calls(source):
+            args = cli.parser().parse_args(argv(call, {}))
+            commands.add(args.command)
+            assert args.mirror_dir is not None and args.run_dir is None  # read only, from Drive
+    assert commands == {"figures"}
+    text = "".join(cells)
+    # no GPU asked for and no serving stack installed (the shared handler only names its log)
+    assert "nvidia-smi" not in text and "cuda.is_available" not in text
+    assert "vllm==" not in text and "torch==" not in text and "[alfworld]" not in text
+    # the same error handler, Drive and checkout cells as the CPU rehearsal, handler first
+    rehearsal = code_cells(REHEARSAL)
+    handler = first(cells, "set_custom_exc")
+    assert cells[handler] == next(s for s in rehearsal if "set_custom_exc" in s)
+    assert handler < first(cells, "# 2) Google Drive") < first(cells, 'cli("figures"')
+    assert cells[first(cells, "def checkout(ref):")] == \
+        next(s for s in rehearsal if "def checkout(ref):" in s)
+    helper = next(s for s in rehearsal if "def cli(" in s)
+    mine = cells[first(cells, "def cli(")]
+    assert mine[mine.index("def cli("):] == helper[helper.index("def cli("):]
+    assert [line.strip() for line in cells[-1].splitlines() if not line.startswith("#")] == \
+        ["if AUTO_RELEASE:", "release()"]
+    notebook = json.loads((NOTEBOOKS / FIGURES).read_text(encoding="utf-8"))
+    assert notebook["metadata"]["accelerator"] == "None"

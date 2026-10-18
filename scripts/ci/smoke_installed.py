@@ -22,6 +22,7 @@ def main() -> int:
 
     import evaluation.benchmarks.alfworld.splits  # noqa: F401
     import evaluation.exp0001.backends  # noqa: F401
+    import evaluation.exp0001.figures  # noqa: F401  (imports without matplotlib)
     import evaluation.exp0001.pipeline  # noqa: F401  (the whole EXP-0001 run stack)
     import evaluation.metrics.final_statistics  # noqa: F401
     import genome

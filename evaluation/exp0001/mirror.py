@@ -120,12 +120,22 @@ def latest_snapshot(mirror_dir: Path) -> dict | None:
 def snapshot_file(mirror_dir: Path, relpath: str) -> bytes | None:
     """One file of the newest whole snapshot (for example the run's
     run-start.json), checked against its hash; None if absent."""
-    mirror = Path(mirror_dir)
-    doc = latest_snapshot(mirror)
-    entry = None if doc is None else doc["files"].get(relpath)
+    doc = latest_snapshot(mirror_dir)
+    return None if doc is None else read_snapshot_file(mirror_dir, doc, relpath)
+
+
+def read_snapshot_file(mirror_dir: Path, snapshot: Mapping, relpath: str) -> bytes | None:
+    """One file of ``snapshot`` (a document from ``latest_snapshot``), checked
+    against its hash; None if the snapshot lacks it. Several files of one
+    snapshot read this way list the blobs once, not once per file."""
+    entry = snapshot["files"].get(relpath)
     if entry is None:
         return None
-    data = _blob(mirror, entry["sha256"]).read_bytes()
+    try:
+        data = _blob(Path(mirror_dir), entry["sha256"]).read_bytes()
+    except FileNotFoundError:  # collected since the listing: a run is writing the mirror
+        raise MirrorError(f"{relpath}: its blob is gone from the mirror; a run may be "
+                          "writing it. Read again when no run is active") from None
     if _sha256(data) != entry["sha256"]:
         raise MirrorError(f"{relpath}: the mirrored content does not match its hash")
     return data
