@@ -387,6 +387,16 @@ def _compact(axis) -> None:
         lambda v, _: f"{v / 1000:g}K" if abs(v) >= 1000 else f"{v:g}"))
 
 
+def _marker_key(fig, ncols: int = 2) -> None:
+    """What filled and open markers mean, under the figure (arms are named on the rows)."""
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], linestyle="none", marker="o", markersize=5, color=INK_2,
+                      label="pooled over mining seeds (A: its one run)"),
+               Line2D([], [], linestyle="none", marker="o", markersize=5, color=INK_2,
+                      markerfacecolor="white", markeredgewidth=1.2, label="one mining seed")]
+    fig.legend(handles=handles, loc="outside lower center", ncols=ncols)
+
+
 def _interval(ax, y: float, point, lower, upper, color=INK) -> None:
     ax.hlines(y, lower, upper, color=color, linewidth=1.6, zorder=2)
     ax.plot([point], [y], "o", color=color, markersize=6, markeredgecolor="white",
@@ -399,7 +409,10 @@ def _zero(ax) -> None:
 
 def _title(fig, title: str, state: str) -> None:
     # a run that did not complete says so on the figure itself, under the title
-    fig.suptitle(title if state == "complete" else f"{title}\n{STATES[state]}", x=0.01,
+    import textwrap
+    width = int(fig.get_figwidth() * 12)  # characters per line at this size
+    text = title if state == "complete" else f"{title}\n{STATES[state]}"
+    fig.suptitle("\n".join(textwrap.fill(line, width) for line in text.split("\n")), x=0.01,
                  ha="left", fontsize=9, color=INK)
 
 
@@ -443,13 +456,14 @@ def draw_t_reg(Figure, rate_rows, contrast, state):
         right.set_xlim(-span, span)
         right.annotate(_span(contrast), (contrast["point_pp"], 0), xytext=(0, 9),
                        textcoords="offset points", ha="center", fontsize=7, color=INK_2)
+    _marker_key(fig)
     _title(fig, "Regression on T_reg: failure rates per arm and the H2 regression contrast",
            state)
     return fig
 
 
 def draw_seed_direction(Figure, rows, consistency, state):
-    fig = Figure(figsize=(3.35, 2.1), layout="constrained")
+    fig = Figure(figsize=(4.6, 2.1), layout="constrained")
     ax = fig.add_subplot()
     for i, row in enumerate(rows):
         color = ARM_COLORS["C"]
@@ -475,11 +489,12 @@ def draw_seed_direction(Figure, rows, consistency, state):
 
 
 def draw_t_eval_success(Figure, rows, state):
-    fig = Figure(figsize=(3.35, 2.6), layout="constrained")
+    fig = Figure(figsize=(4.6, 2.9), layout="constrained")
     ax = fig.add_subplot()
     _dot_rows(ax, rows, "rate_pct")
     ax.set_xlim(-2, 102)
     ax.set_xlabel("T_eval success rate, %")
+    _marker_key(fig, ncols=1)
     _title(fig, "Success on T_eval per arm", state)
     return fig
 
@@ -543,6 +558,7 @@ def draw_adaptation(Figure, rows, state):
         ax.set_xlim(left=0, right=102 if key == "solved_pct" else top * 1.15)
         if key == "median_tokens_to_success":
             _compact(ax.xaxis)
+    _marker_key(fig)
     _title(fig, "Adaptation cost on the transfer subset (H3 preview, descriptive)", state)
     return fig
 
@@ -690,6 +706,8 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
                             "lower_pp": contrast["lower_pp"],
                             "upper_pp": contrast["upper_pp"]}]
         plot_rows = [r for r in rows if r["arm"] in ARMS]
+        if contrast is None and all(r["rate_pct"] is None for r in plot_rows):
+            return None
         return rows, (lambda: draw_t_reg(Figure, plot_rows, contrast, state))
 
     def seeds():
@@ -699,6 +717,8 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
 
     def success():
         rows = _rows_per_run(statistics["t_eval"]["success_rate"], _rate_value)
+        if all(r["rate_pct"] is None for r in rows):
+            return None
         return rows, (lambda: draw_t_eval_success(Figure, rows, state))
 
     def gate():
@@ -745,7 +765,12 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
                 manifest["figures"].append({"name": name, "status": "skipped",
                                             "reason": why_not})
                 continue
-            rows, draw = plan()
+            planned = plan()
+            if planned is None:
+                manifest["figures"].append({"name": name, "status": "skipped",
+                                            "reason": "no cell of it recorded yet"})
+                continue
+            rows, draw = planned
             _write_csv(out_dir / f"{name}.csv", rows)
             _save(draw(), out_dir, name)
             drawn[name] = f"{name}.pdf"

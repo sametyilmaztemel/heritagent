@@ -161,15 +161,24 @@ def test_a_run_stopped_in_the_final_evaluation_gets_descriptive_figures_only(spl
     manifest = make_figures(run_dir=run_dir, out_dir=out)
     status = {f["name"]: f["status"] for f in manifest["figures"]}
     assert manifest["state"] == "incomplete"
-    assert status == {"fig1_t_eval_contrasts": "skipped", "fig2_t_reg": "drawn",
+    statistics = report["statistics"]
+    recorded_t_reg = any(arm["pooled"] for arm in statistics["t_reg"]["regression_rate"].values())
+    assert status == {"fig1_t_eval_contrasts": "skipped",
+                      "fig2_t_reg": "drawn" if recorded_t_reg else "skipped",
                       "fig3_seed_direction": "skipped", "fig4_t_eval_success": "drawn",
                       "fig5_gate_outcomes": "drawn", "fig6_genome_size": "skipped",
                       "fig7_adaptation_cost": "skipped", "run_accounting": "drawn"}
     assert not (out / "fig1_t_eval_contrasts.pdf").exists()
-    # no contrast and no verdict: the T_reg table holds rates only
-    assert {r["arm"] for r in rows(out, "fig2_t_reg")} <= {"A", "B", "C"}
-    for name in ("fig2_t_reg", "fig4_t_eval_success", "fig5_gate_outcomes"):
+    success = rows(out, "fig4_t_eval_success")
+    assert [r["recorded"] for r in success if r["arm"] == "A"] == \
+        [str(statistics["t_eval"]["success_rate"]["A"]["per_seed"]["11"]["recorded"])]
+    for name in ("fig4_t_eval_success", "fig5_gate_outcomes"):
         assert any("INCOMPLETE" in s for s in texts[name]), name
+    if recorded_t_reg:  # no contrast and no verdict: the T_reg table holds rates only
+        assert {r["arm"] for r in rows(out, "fig2_t_reg")} <= {"A", "B", "C"}
+    else:
+        assert next(f for f in manifest["figures"] if f["name"] == "fig2_t_reg")["reason"] == \
+            "no cell of it recorded yet"
     captions = (out / "captions.md").read_text(encoding="utf-8")
     assert "H1 rule" not in captions and "clause met" not in captions
     assert "not comparable" in captions
