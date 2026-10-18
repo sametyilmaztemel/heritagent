@@ -913,7 +913,10 @@ def cmd_figures(args) -> int:
     from evaluation.exp0001.figures import FiguresError, make_figures
     try:
         repo = Path(__file__).resolve().parents[2]
-        commit = git_state(repo) if (repo / ".git").exists() else None
+        try:  # provenance only: figures are drawn without it
+            commit = git_state(repo) if (repo / ".git").exists() else None
+        except (OSError, subprocess.CalledProcessError):
+            commit = None
         manifest = make_figures(run_dir=args.run_dir, mirror_dir=args.mirror_dir,
                                 out_dir=args.out_dir,
                                 code_commit=None if commit is None else

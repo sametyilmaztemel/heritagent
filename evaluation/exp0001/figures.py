@@ -113,11 +113,16 @@ def _rate(value) -> float | None:
 
 
 def _pp(value) -> float | None:
-    return None if value is None else 100 * _rate(value)
+    """A recorded fraction in percentage points, rounded clear of binary noise."""
+    return None if value is None else round(100 * _rate(value), 6)
+
+
+def _exact(value) -> str | None:
+    return None if value is None else value["exact"]
 
 
 def _ledger(files: RunFiles, run_start: Mapping) -> tuple[dict | None, str | None]:
-    """The ledger's counts, or None and why not (a torn tail of a live run)."""
+    """The ledger's counts and notes, or None and why not (a torn tail of a live run)."""
     data = files.read("ledger.jsonl")
     if data is None:
         return None, "no ledger.jsonl"
@@ -129,9 +134,7 @@ def _ledger(files: RunFiles, run_start: Mapping) -> tuple[dict | None, str | Non
                                caps=run_start["protocol"]["caps"], readonly=True)
         except LedgerError as exc:
             return None, f"the ledger cannot be read: {exc}"
-        return {**ledger.summary(), "restores": sum(n.get("type") == "restore"
-                                                    for n in ledger.notes),
-                "repairs": sum(n.get("type") == "repair" for n in ledger.notes)}, None
+        return {**ledger.summary(), "note_records": [dict(n) for n in ledger.notes]}, None
 
 
 def _gates(files: RunFiles) -> dict[int, dict]:
@@ -171,9 +174,15 @@ def collect(files: RunFiles) -> dict:
                            "directory or its mirror?")
     report = files.json("report.json")
     ledger, ledger_note = _ledger(files, run_start)
-    return {"run_start": run_start, "report": report, "ledger": ledger,
-            "ledger_note": ledger_note, "gates": _gates(files),
-            "state": _state(report, ledger),
+    gates = _gates(files)
+    notes = [] if ledger_note is None else [f"ledger: {ledger_note}"]
+    # a seed the report counts but whose gate record is not here is named, never dropped
+    expected = sorted(int(s) for s in (report or {}).get("gates") or {})
+    missing = [seed for seed in expected if seed not in gates]
+    if missing:
+        notes.append(f"gate records missing for mining seeds {missing}; the report lists them")
+    return {"run_start": run_start, "report": report, "ledger": ledger, "gates": gates,
+            "missing_gates": missing, "notes": notes, "state": _state(report, ledger),
             "genomes": _arm_genomes(report) if report else {}}
 
 
@@ -199,19 +208,21 @@ def _rows_per_run(rates: Mapping, value: Callable) -> list[dict]:
 
 def _rate_value(cell) -> dict:
     if cell is None:
-        return {"rate_pct": None, "count": None, "recorded": None}
-    return {"rate_pct": _pp(cell.get("rate")), "count": cell.get("count"),
-            "recorded": cell.get("recorded")}
+        return {"rate_exact": None, "rate_pct": None, "count": None, "recorded": None}
+    return {"rate_exact": _exact(cell.get("rate")), "rate_pct": _pp(cell.get("rate")),
+            "count": cell.get("count"), "recorded": cell.get("recorded")}
+
+
+def _contrast_row(name: str, c: Mapping) -> dict:
+    return {"contrast": name, "point_pp": _pp(c["point_estimate"]),
+            "lower_pp": _pp(c["lower_bound"]), "upper_pp": _pp(c["upper_bound"]),
+            "point_exact": _exact(c["point_estimate"]), "lower_exact": _exact(c["lower_bound"]),
+            "upper_exact": _exact(c["upper_bound"]), "n_cells": c.get("n_cells")}
 
 
 def t_eval_contrast_rows(statistics: Mapping) -> list[dict]:
     contrasts = statistics["t_eval"]["contrasts"]
-    return [{"contrast": name, "point_pp": _pp(c["point_estimate"]),
-             "lower_pp": _pp(c["lower_bound"]), "upper_pp": _pp(c["upper_bound"]),
-             "point_exact": c["point_estimate"]["exact"],
-             "lower_exact": c["lower_bound"]["exact"],
-             "upper_exact": c["upper_bound"]["exact"], "n_cells": c.get("n_cells")}
-            for name in CONTRASTS for c in [contrasts[name]]]
+    return [_contrast_row(name, contrasts[name]) for name in CONTRASTS]
 
 
 def seed_rows(statistics: Mapping, genomes: Mapping) -> list[dict]:
@@ -222,29 +233,38 @@ def seed_rows(statistics: Mapping, genomes: Mapping) -> list[dict]:
         b, c, a = genomes.get(("B", str(seed))), genomes.get(("C", str(seed))), \
             genomes.get(("A", "once"))
         rows.append({"seed": seed, "c_minus_b_pp": _pp(entry["c_minus_b"]),
-                     "c_minus_b_exact": entry["c_minus_b"]["exact"], "holds": entry["holds"],
+                     "c_minus_b_exact": _exact(entry["c_minus_b"]), "holds": entry["holds"],
                      "c_equals_b_genome": c is not None and c == b,
                      "c_equals_g0_genome": c is not None and c == a})
     return rows
 
 
+def _child(gate: Mapping, aggregate: Mapping, stage: str) -> Mapping:
+    """The stage's child record, through the aggregate's own list of them (its
+    stages' ``measurements_ref`` names the list, not a child)."""
+    for cid in aggregate.get("child_records") or ():
+        child = gate["children"].get(cid)
+        if child is not None and child.get("stage") == stage:
+            return child
+    return {}
+
+
 def gate_rows(gates: Mapping[int, Mapping]) -> list[dict]:
     """Per seed and stage, how many candidates passed, failed, were not run
-    (ADR-0012 D7, if accepted) or passed vacuously (ADR-0007 E6)."""
+    (a record that says ``not_run``; ADR-0012 D7, if accepted) or passed
+    vacuously (ADR-0007 E6)."""
     rows = []
     for seed, gate in sorted(gates.items()):
-        aggregates, children = gate["aggregates"], gate["children"]
+        aggregates = gate["aggregates"]
         for stage in STAGES:
             counts = {"passed": 0, "failed": 0, "not_run": 0, "vacuous": 0}
             for aggregate in aggregates.values():
-                result = aggregate["stages"][stage]
-                measurements = (children.get(result.get("measurements_ref")) or {}) \
-                    .get("measurements", {})
+                measurements = _child(gate, aggregate, stage).get("measurements") or {}
                 if measurements.get("not_run"):
                     counts["not_run"] += 1
-                elif result["pass"]:
+                elif aggregate["stages"][stage]["pass"]:
                     counts["passed"] += 1
-                    counts["vacuous"] += bool(measurements.get("vacuous"))
+                    counts["vacuous"] += measurements.get("vacuous") is True
                 else:
                     counts["failed"] += 1
             rows.append({"seed": seed, "stage": stage, "candidates": len(aggregates), **counts})
@@ -283,7 +303,9 @@ def adaptation_rows(cost: Mapping) -> list[dict]:
         for run, c in [*entry["runs"].items(), *([("pooled", entry["pooled"])]
                                                    if arm != "A" else [])]:
             rows.append({"arm": arm, "run": run, "tasks": c["tasks"], "solved": c["solved"],
-                         "solved_pct": 100 * c["solved"] / c["tasks"] if c["tasks"] else None,
+                         # derived: solved / tasks
+                         "solved_pct": round(100 * c["solved"] / c["tasks"], 6)
+                         if c["tasks"] else None,
                          "censored_unsolved": c["censored_unsolved"],
                          "median_tokens_to_success": median(c["total_tokens_to_success"]),
                          "median_steps_to_success": median(c["steps_to_success"])})
@@ -293,6 +315,10 @@ def adaptation_rows(cost: Mapping) -> list[dict]:
 def accounting_rows(data: Mapping) -> list[dict]:
     caps = data["run_start"]["protocol"]["caps"]
     report, ledger = data["report"] or {}, data["ledger"] or {}
+    notes = ledger.get("note_records")
+    if notes is None:
+        notes = report.get("ledger_notes") or []
+    restores = [n for n in notes if n.get("type") == "restore"]
     rows = [("run_id", data["run_start"]["run_id"], None),
             ("state", data["state"], None),
             ("report status", report.get("status"), None),
@@ -305,10 +331,13 @@ def accounting_rows(data: Mapping) -> list[dict]:
             ("sessions", ledger.get("sessions"), None),
             ("aborted attempts", ledger.get("aborted_attempts",
                                             report.get("aborted_attempts")), None),
-            ("restores", ledger.get("restores"), None),
-            ("repairs", ledger.get("repairs"), None),
+            ("restores", len(restores), None),
+            ("repairs", sum(n.get("type") == "repair" for n in notes), None),
             ("model", data["run_start"]["model"]["model_id"], None),
             ("code commit", data["run_start"]["code"]["commit"], None)]
+    # every restore on record: work after its snapshot ran again (ADR-0008 D5)
+    for i, note in enumerate(restores, 1):
+        rows.append((f"restore {i}", f"snapshot_seq={note.get('snapshot_seq')}", None))
     for entry in report.get("final_genomes") or ():
         rows.append((f"genome {entry['genome_id'][:12]}", " ".join(entry["arms"]), None))
     return [{"item": item, "value": value, "cap": cap} for item, value, cap in rows]
@@ -349,30 +378,53 @@ def _row_axis(ax, labels: list[str], bold: set[int] = frozenset()) -> None:
     ax.set_axisbelow(True)
 
 
+def _halo():
+    """A white stroke behind value text, so grid and zero lines never cross it."""
+    from matplotlib import patheffects
+    return [patheffects.withStroke(linewidth=2.5, foreground="white")]
+
+
+def _note(ax, text: str, xy, **options) -> None:
+    ax.annotate(text, xy, textcoords="offset points", fontsize=options.pop("fontsize", 7),
+                color=options.pop("color", INK_2), path_effects=_halo(), zorder=4, **options)
+
+
 def _run_label(row: Mapping) -> str:
     if row["arm"] == "A":
         return "A (ran once)"
     return f"{row['arm']} pooled" if row["run"] == "pooled" else f"{row['arm']} seed {row['run']}"
 
 
-def _dot_rows(ax, rows: list[dict], key: str) -> None:
+def _dot_rows(ax, rows: list[dict], key: str,
+              absent: Callable[[Mapping], str] = lambda row: "not recorded") -> None:
     """Rows by arm and run: filled markers for A and the pooled rows, open
-    markers for single seeds."""
+    markers for single seeds; a row without a value says why."""
     for i, row in enumerate(rows):
         value = row[key]
         if value is None:
-            ax.text(0.01, i, "not recorded", transform=ax.get_yaxis_transform(),
-                    va="center", color=MUTED, fontsize=7)
+            ax.text(0.02, i, absent(row), transform=ax.get_yaxis_transform(), va="center",
+                    color=MUTED, fontsize=7, path_effects=_halo(), zorder=4)
             continue
         filled = row["arm"] == "A" or row["run"] == "pooled"
         ax.plot([value], [i], ARM_MARKERS[row["arm"]], markersize=6 if filled else 5,
                 color=ARM_COLORS[row["arm"]], markerfacecolor=ARM_COLORS[row["arm"]]
-                if filled else "white", markeredgewidth=1.4, zorder=3, clip_on=False)
+                if filled else "white", markeredgewidth=1.4, zorder=3)
     _row_axis(ax, [_run_label(r) for r in rows],
               {i for i, r in enumerate(rows) if r["arm"] == "A" or r["run"] == "pooled"})
 
 
+def _count_axis(ax, top: float, *, integer: bool = False, rate: bool = False) -> None:
+    """From zero, with room on the left so a zero never sits on the axis line."""
+    from matplotlib.ticker import MaxNLocator
+    right = 100.0 if rate else max(top, 1) * 1.15
+    ax.set_xlim(-0.04 * right, right * (1.02 if rate else 1))
+    if integer:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+
 def _signed(value: float) -> str:
+    if round(value, 1) == 0:
+        return "0.0"
     return f"{value:+.1f}".replace("-", "\u2212")
 
 
@@ -404,7 +456,7 @@ def _interval(ax, y: float, point, lower, upper, color=INK) -> None:
 
 
 def _zero(ax) -> None:
-    ax.axvline(0, color=AXIS, linewidth=1.0, zorder=1)
+    ax.axvline(0, color=INK_2, linewidth=0.9, zorder=1)
 
 
 def _title(fig, title: str, state: str) -> None:
@@ -419,15 +471,16 @@ def _title(fig, title: str, state: str) -> None:
 def draw_t_eval_contrasts(Figure, rows, state):
     fig = Figure(figsize=(6.75, 1.9), layout="constrained")
     ax = fig.add_subplot()
+    threshold = float(H2_MIN_DELTA) * 100
     for i, row in enumerate(rows):
         _interval(ax, i, row["point_pp"], row["lower_pp"], row["upper_pp"])
-        ax.annotate(_span(row), (row["upper_pp"], i), xytext=(6, 0), textcoords="offset points",
-                    va="center", fontsize=7, color=INK_2)
+        # right of the interval, and on the C - B row right of the +5 pp mark too
+        anchor = max(row["upper_pp"], threshold) if row["contrast"] == "C-B" else row["upper_pp"]
+        _note(ax, _span(row), (anchor, i), xytext=(6, 0), va="center")
     _zero(ax)
-    threshold = float(H2_MIN_DELTA) * 100
     ax.vlines(threshold, -0.32, 0.32, color=INK_2, linewidth=1.0, zorder=1)  # C-B row only
-    ax.annotate(f"+{threshold:g} pp (H2)", (threshold, -0.32), xytext=(0, 2),
-                textcoords="offset points", ha="center", va="bottom", fontsize=6.5, color=INK_2)
+    _note(ax, f"+{threshold:g} pp (H2)", (threshold, -0.32), xytext=(0, 2), ha="center",
+          va="bottom", fontsize=6.5)
     labels = {"C-B": "C − B", "C-A": "C − A", "B-A": "B − A (no rule)"}
     _row_axis(ax, [labels[r["contrast"]] for r in rows])
     ax.set_xlabel("T_eval success difference, percentage points (95 % bootstrap interval)")
@@ -446,16 +499,17 @@ def draw_t_reg(Figure, rate_rows, contrast, state):
         left, right = fig.add_subplot(), None
     _dot_rows(left, rate_rows, "rate_pct")
     left.set_xlabel("T_reg failure rate, % (higher = more failures)")
-    left.set_xlim(-2, 102)
+    _count_axis(left, 100, rate=True)
     if right is not None:
         _interval(right, 0, contrast["point_pp"], contrast["lower_pp"], contrast["upper_pp"])
         _zero(right)
         _row_axis(right, ["reg(C) − reg(B)"])
+        right.set_title("H2 regression contrast", fontsize=8)
         right.set_xlabel("percentage points\n(95 % bootstrap interval)")
         span = max(5.0, abs(contrast["lower_pp"]), abs(contrast["upper_pp"])) + 3
         right.set_xlim(-span, span)
-        right.annotate(_span(contrast), (contrast["point_pp"], 0), xytext=(0, 9),
-                       textcoords="offset points", ha="center", fontsize=7, color=INK_2)
+        _note(right, _span(contrast), (0.5, 0), xytext=(0, 9), ha="center",
+              xycoords=("axes fraction", "data"))
     _marker_key(fig)
     _title(fig, "Regression on T_reg: failure rates per arm and the H2 regression contrast",
            state)
@@ -465,18 +519,15 @@ def draw_t_reg(Figure, rate_rows, contrast, state):
 def draw_seed_direction(Figure, rows, consistency, state):
     fig = Figure(figsize=(4.6, 2.1), layout="constrained")
     ax = fig.add_subplot()
-    for i, row in enumerate(rows):
-        color = ARM_COLORS["C"]
-        ax.plot([row["c_minus_b_pp"]], [i], "o", markersize=6, color=color,
-                markerfacecolor=color if row["holds"] else "white", markeredgewidth=1.4,
-                zorder=3)
+    for i, row in enumerate(rows):  # a contrast, not an arm: neutral ink
+        ax.plot([row["c_minus_b_pp"]], [i], "o", markersize=6, color=INK,
+                markerfacecolor=INK if row["holds"] else "white", markeredgewidth=1.4, zorder=3)
         note = "holds" if row["holds"] else "does not hold"
         if row["c_equals_b_genome"]:
             note += "; C = B genome, 0 by construction"
         elif row["c_equals_g0_genome"]:
             note += "; C = G0 genome"
-        ax.annotate(note, (row["c_minus_b_pp"], i), xytext=(7, 0), textcoords="offset points",
-                    va="center", fontsize=6.5, color=INK_2)
+        _note(ax, note, (row["c_minus_b_pp"], i), xytext=(7, 0), va="center", fontsize=6.5)
     _zero(ax)
     _row_axis(ax, [f"seed {r['seed']}" for r in rows])
     values = [r["c_minus_b_pp"] for r in rows]
@@ -492,7 +543,7 @@ def draw_t_eval_success(Figure, rows, state):
     fig = Figure(figsize=(4.6, 2.9), layout="constrained")
     ax = fig.add_subplot()
     _dot_rows(ax, rows, "rate_pct")
-    ax.set_xlim(-2, 102)
+    _count_axis(ax, 100, rate=True)
     ax.set_xlabel("T_eval success rate, %")
     _marker_key(fig, ncols=1)
     _title(fig, "Success on T_eval per arm", state)
@@ -500,6 +551,7 @@ def draw_t_eval_success(Figure, rows, state):
 
 
 def draw_gate(Figure, rows, state):
+    from matplotlib.ticker import MaxNLocator
     seeds = sorted({r["seed"] for r in rows})
     order = [*STAGES, "promoted"]
     fig = Figure(figsize=(6.75, 2.3), layout="constrained")
@@ -507,18 +559,19 @@ def draw_gate(Figure, rows, state):
     for ax, seed in zip(axes, seeds):
         mine = {r["stage"]: r for r in rows if r["seed"] == seed}
         k = mine["promoted"]["candidates"]
-        for y, stage in enumerate(order):
+        for y, stage in enumerate(order):  # counts of candidates, not an arm: neutral ink
             row = mine[stage]
-            ax.barh(y, row["passed"], height=0.55, color=ARM_COLORS["C"], zorder=2)
+            ax.barh(y, row["passed"], height=0.55, color=INK_2, zorder=2)
             note = str(row["passed"])
             extra = [f"{row[key]} {label}" for key, label in (("vacuous", "vacuous"),
                                                              ("not_run", "not run"))
                      if row[key]]
             if extra:
                 note += f" ({', '.join(extra)})"
-            ax.annotate(note, (row["passed"], y), xytext=(3, 0), textcoords="offset points",
-                        va="center", fontsize=6.5, color=INK_2)
-        ax.set_xlim(0, max(k, 1) * 1.7)
+            _note(ax, note, (row["passed"], y), xytext=(3, 0), va="center", fontsize=6.5)
+        ax.axvline(k, color=AXIS, linewidth=0.8, zorder=1)  # every candidate
+        ax.set_xlim(0, max(k, 1) * 1.6)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.set_title(f"seed {seed}: {k} candidates", fontsize=8, loc="left")
         ax.set_xlabel("candidates passing")
         ax.grid(axis="x")
@@ -539,7 +592,7 @@ def draw_genome_size(Figure, rows, state):
                            (right, "skill_block_tokens", "skill-block tokens")):
         _dot_rows(ax, rows, key)
         ax.set_xlabel(label)
-        ax.set_xlim(left=0, right=max([r[key] for r in rows] + [1]) * 1.15)
+        _count_axis(ax, max(r[key] for r in rows), integer=key == "skill_genes")
         if key == "skill_block_tokens":
             _compact(ax.xaxis)
     _title(fig, "Genome size per arm (descriptive)", state)
@@ -549,13 +602,17 @@ def draw_genome_size(Figure, rows, state):
 def draw_adaptation(Figure, rows, state):
     fig = Figure(figsize=(6.75, 2.6), layout="constrained")
     axes = fig.subplots(1, 3, sharey=True)
+
+    def absent(row):  # a median over no solved task is undefined, not missing
+        return "no task solved" if row["solved"] == 0 else "not recorded"
+
     for ax, key, label in ((axes[0], "solved_pct", "solved, % of transfer tasks"),
                            (axes[1], "median_tokens_to_success", "median tokens to success"),
                            (axes[2], "median_steps_to_success", "median steps to success")):
-        _dot_rows(ax, rows, key)
+        _dot_rows(ax, rows, key, absent)
         ax.set_xlabel(label)
-        top = max([r[key] for r in rows if r[key] is not None] + [1])
-        ax.set_xlim(left=0, right=102 if key == "solved_pct" else top * 1.15)
+        _count_axis(ax, max([r[key] for r in rows if r[key] is not None] + [1]),
+                    rate=key == "solved_pct")
         if key == "median_tokens_to_success":
             _compact(ax.xaxis)
     _marker_key(fig)
@@ -569,43 +626,83 @@ def _met(clause) -> str:
     return "met" if clause else "not met"
 
 
+POOLED = ("Pooled = the arm's rate over all its recorded (seed, task) cells, cell-weighted; "
+          "for A its one run.")
+
+
+def _sharing(data: Mapping) -> str:
+    """Seeds where arm C shares a genome with A or B: their cells are shared, so the
+    contrast is 0 by construction and supports nothing (ADR-0009 D1, D2)."""
+    genomes, parts = data["genomes"], []
+    g0 = genomes.get(("A", "once"))
+    for other, label in (("A", "G0"), ("B", "B")):
+        seeds = [s for s in MINING_SEEDS
+                 if genomes.get(("C", str(s))) is not None
+                 and genomes.get(("C", str(s))) == (g0 if other == "A"
+                                                    else genomes.get(("B", str(s))))]
+        if seeds:
+            parts.append(f"C = {label} in mining seeds {seeds}: their C − {other} cells are "
+                         "shared and 0 by construction, which supports nothing (ADR-0009)")
+    return "; ".join(parts) + "." if parts else ""
+
+
 def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
     report = data["report"] or {}
     statistics = report.get("statistics") or {}
     state, run_start = data["state"], data["run_start"]
+    complete = state == "complete"
     claim = statistics.get("claim_status") or ""
     lines = [f"# EXP-0001 figures: {run_start['run_id']}", "",
              f"State: {STATES[state]}. Model: {run_start['model']['model_id']} "
              f"(revision {run_start['model']['revision']}); code commit "
              f"{run_start['code']['commit']}.",
-             "Every figure shows quantities the run recorded; nothing is re-estimated. "
-             "Serving used no batch-invariant kernels (ADR-0011 D2), so a temperature-0 reply "
-             "may depend on the batch.", ""]
-    if claim:
+             "Every figure shows quantities the run recorded; nothing is re-estimated."]
+    if run_start["model"].get("backend") != "scripted":
+        lines.append(
+            "Under ADR-0011 D2 the serving uses no batch-invariant kernels, so a temperature-0 "
+            "reply may depend on the batch; the calibration pilot's temperature-0 repeat "
+            f"measure (pilot {run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]}) is "
+            "the only evidence of its size.")
+    lines += [f"Note: {note}." for note in data["notes"]]
+    lines.append("")
+    # rule outcomes only where the run completed (ADR-0006 D5)
+    h1 = statistics.get("h1") if complete else None
+    h2 = statistics.get("h2") if complete else None
+    if claim and h2:
         lines += [f"Claim status of every rule outcome below: {claim}.", ""]
-    h1, h2 = statistics.get("h1"), statistics.get("h2")
-    contrasts = (statistics.get("t_eval") or {}).get("contrasts")
+    contrasts = (statistics.get("t_eval") or {}).get("contrasts") or {}
+    gates = data["gates"]
+    rows = gate_rows(gates) if gates else []
+    versions = threshold_versions(gates)
+    all_family = {s: g.get("all_family_candidates")
+                  for s, g in (report.get("gates") or {}).items()}
+    cost = report.get("adaptation_cost") or {}
     texts = {
         "fig1_t_eval_contrasts": (
             "Pooled T_eval contrasts in percentage points: point estimate and two-sided 95 % "
             "percentile bootstrap interval as recorded (10,000 resamples, seed 0, task "
             "clusters in task_id order, exact arithmetic; ADR-0006). Uncertainty: "
-            f"{(contrasts or {}).get('C-B', {}).get('uncertainty', '')}. The line at 0 applies "
-            "to every row; the +5 pp mark applies to C − B only (H2 success clause). B − A has "
-            "no decision rule. "
-            + (f"H2 success clause: {_met(h2['success_clause']['met'])}; H1 rule: "
-               f"{_met(h1['rule_met'])} (rule outcomes as recorded). " if h1 and h2 else "")
+            f"{contrasts.get('C-B', {}).get('uncertainty', '')}. The line at 0 applies to every "
+            "row; the +5 pp mark applies to C − B only (H2 success clause). B − A has no "
+            "decision rule. "
+            + (f"H2 rule (all three clauses, as recorded): {_met(h2['rule_met'])}; its "
+               f"success clause: {_met(h2['success_clause']['met'])}. H1 rule: "
+               f"{_met(h1['rule_met'])}. " if h1 and h2 else "")
+            + (_sharing(data) + " " if _sharing(data) else "")
             + "Compare with the expectations in design §8 (forecasts, not decision rules)."),
         "fig2_t_reg": (
             "Left: T_reg failure rate per arm (higher = more failures), per mining seed (open "
             "markers) and pooled (filled); arm A ran once and serves every seed (ADR-0006 "
-            "D7). No intervals on rates by design (ADR-0006). Right, when the run is "
-            "complete: reg(C) − reg(B) with its recorded 95 % bootstrap interval; the H2 "
-            "regression clause needs it below 0 with the upper bound below 0"
-            + (f" (clause {_met(h2['regression_clause']['met'])}; scope: "
-               f"{h2['regression_clause']['scope']})" if h2 else "")
-            + ". T_reg holds tasks G0 solved at least once at temperature 0.7, so arm A can "
-              "fail them (ADR-0007 E3)."),
+            f"D7). {POOLED} No intervals on rates by design (ADR-0006). "
+            + ("Right: reg(C) − reg(B) with its recorded 95 % bootstrap interval; the H2 "
+               "regression clause needs it below 0 with the upper bound below 0"
+               + (f" (clause {_met(h2['regression_clause']['met'])}; scope: "
+                  f"{h2['regression_clause']['scope']})" if h2 else "") + ". "
+               if complete else
+               "In a run that did not complete the arms' rates rest on different recorded "
+               "subsets and are not comparable; the CSV gives each rate's recorded count. ")
+            + "T_reg holds tasks G0 solved at least once at temperature 0.7, so arm A can fail "
+              "them (ADR-0007 E3)."),
         "fig3_seed_direction": (
             "C − B on T_eval per mining seed; filled = the seed holds (C − B > 0; a tie does "
             "not hold), open = it does not (ADR-0006 D3). Where C and B are one genome in a "
@@ -614,31 +711,39 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
             + (f". H2 seed clause: {_met(h2['seed_clause']['met'])}." if h2 else ".")),
         "fig4_t_eval_success": (
             "T_eval success rate per arm, per mining seed (open markers) and pooled (filled); "
-            "arm A ran once. Descriptive; no intervals by design (ADR-0006)."
-            + (" In an incomplete run the arms' rates rest on different recorded subsets and "
-               "are not comparable; the CSV gives each rate's recorded count."
-               if state != "complete" else "")),
+            f"arm A ran once. {POOLED} Descriptive; no intervals by design (ADR-0006)."
+            + (" In a run that did not complete the arms' rates rest on different recorded "
+               "subsets and are not comparable; the CSV gives each rate's recorded count."
+               if not complete else "")),
         "fig5_gate_outcomes": (
-            "Candidates passing each gate stage per mining seed (marginal counts: every "
-            "candidate is checked at every stage it reaches), and the number promoted (the "
-            "gate's verdict). Out-of-scope passes of candidates whose applicability names "
-            "every family are vacuous (ADR-0007 E6) and marked; 'not run' marks stages a "
-            "candidate never reached. Threshold version: "
-            + ", ".join(threshold_versions(data["gates"])) + "."),
+            "Candidates passing each gate stage per mining seed, and the number promoted (the "
+            "gate's verdict); the line marks every candidate of the seed. "
+            + ("Every candidate is checked at every stage (marginal counts). "
+               if not any(r["not_run"] for r in rows) else
+               "'not run' counts stages a candidate's record says were not run. ")
+            + "An out-of-scope pass of a candidate whose applicability names every family is "
+              "vacuous (ADR-0007 E6) and counted as such"
+            + (f"; candidates naming every family, as the report counts them: "
+               + ", ".join(f"seed {s}: {n}" for s, n in sorted(all_family.items()))
+               if all_family else "")
+            + f". Threshold version: {', '.join(versions) or 'none recorded'}."
+            + (f" Gate records missing for mining seeds {data['missing_gates']}."
+               if data["missing_gates"] else "")),
         "fig6_genome_size": (
             "Genome size per arm: skill genes and the token count of the rendered skill block "
             f"({(report.get('genome_sizes') or {}).get('token_counter', 'the run tokenizer')}"
             "); arm A ran once. Secondary, descriptive only (ADR-0006 D6)."),
         "fig7_adaptation_cost": (
-            "Adaptation cost on the transfer subset (the 20-task ablation pool, ADR-0007 E4): "
-            "share solved, and median tokens and steps to success over solved tasks. "
-            "Secondary and descriptive (H3 preview); the pool also selected arm C's traits at "
-            "the gate's stage 2, so it can favour C."),
+            "Adaptation cost on the transfer subset: share solved, and median tokens and "
+            "steps to success over solved tasks ('no task solved' where there is none). "
+            "Secondary and descriptive (H3 preview). Scope, as the report records it: "
+            f"{cost.get('scope', '')}."),
         "run_accounting": (
             "Run accounting against the caps frozen in the run-start record: episodes, model "
             "calls and active hours (only active run time counts, ADR-0008 D2), aborted "
-            "attempts, restores and repairs (work after a restored snapshot ran again and its "
-            "calls and time are not counted), and which arms shared a genome (ADR-0009 D2)."),
+            "attempts, every restore and repair (work after a restored snapshot ran again and "
+            "its calls and time are not counted), and which arms shared a genome (ADR-0009 "
+            "D2)."),
     }
     for name, path in drawn.items():
         lines += [f"## {name}", "", f"`{path}`", "", texts[name], ""]
@@ -666,12 +771,21 @@ def _inside(path: Path, root: Path) -> bool:
     return path.resolve().is_relative_to(root.resolve())
 
 
+MANAGED = tuple(f"{n}{s}" for n in OUTPUT_NAMES for s in (".pdf", ".png", ".csv")) + \
+    ("captions.md", "figures.json")
+
+
 def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
                  out_dir: Path, code_commit: str | None = None) -> dict:
     """Draw every figure the run's records allow into ``out_dir``. Returns
     the manifest also written as ``figures.json``; a figure the records do
     not allow yet is listed as skipped, with the reason. ``code_commit``
-    names the code that drew them (the run's own commit is in run-start)."""
+    names the code that drew them (the run's own commit is in run-start).
+
+    The set is drawn beside ``out_dir`` and moved in only when whole: a
+    failure leaves an earlier set as it was. In ``out_dir`` the files this
+    module names (``MANAGED``) are replaced; other files are left alone."""
+    import shutil
     files = RunFiles(run_dir=run_dir, mirror_dir=mirror_dir)
     out_dir = Path(out_dir)
     if _inside(out_dir, files.root):
@@ -679,12 +793,21 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
                            "directories (a snapshot would sweep it in)")
     data = collect(files)
     matplotlib, Figure = _matplotlib()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for name in OUTPUT_NAMES:  # a figure skipped now must not survive from an earlier call
-        for suffix in (".pdf", ".png", ".csv"):
-            (out_dir / f"{name}{suffix}").unlink(missing_ok=True)
-    for extra in ("captions.md", "figures.json"):
-        (out_dir / extra).unlink(missing_ok=True)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}-", dir=out_dir.parent))
+    try:
+        manifest = _draw_all(data, files, staging, Figure, matplotlib, code_commit)
+        out_dir.mkdir(exist_ok=True)
+        for name in MANAGED:  # a figure skipped now must not survive from an earlier call
+            (out_dir / name).unlink(missing_ok=True)
+        for path in sorted(staging.iterdir()):
+            path.replace(out_dir / path.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return manifest
+
+
+def _draw_all(data, files, out_dir: Path, Figure, matplotlib, code_commit) -> dict:
     report, state = data["report"] or {}, data["state"]
     statistics = report.get("statistics") or {}
     complete = state == "complete"
@@ -698,17 +821,12 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
         rows = _rows_per_run(rates, _rate_value)
         contrast = None
         if complete and statistics["t_reg"].get("contrast"):
-            c = statistics["t_reg"]["contrast"]["reg(C)-reg(B)"]
-            contrast = {"point_pp": _pp(c["point_estimate"]), "lower_pp": _pp(c["lower_bound"]),
-                        "upper_pp": _pp(c["upper_bound"])}
-            rows = rows + [{"arm": "reg(C)-reg(B)", "run": "pooled contrast",
-                            "rate_pct": contrast["point_pp"], "count": None, "recorded": None,
-                            "lower_pp": contrast["lower_pp"],
-                            "upper_pp": contrast["upper_pp"]}]
-        plot_rows = [r for r in rows if r["arm"] in ARMS]
-        if contrast is None and all(r["rate_pct"] is None for r in plot_rows):
+            contrast = _contrast_row("reg(C)-reg(B)",
+                                     statistics["t_reg"]["contrast"]["reg(C)-reg(B)"])
+        if contrast is None and all(r["rate_pct"] is None for r in rows):
             return None
-        return rows, (lambda: draw_t_reg(Figure, plot_rows, contrast, state))
+        table = rows + ([{"arm": "", "run": "pooled contrast", **contrast}] if contrast else [])
+        return table, (lambda: draw_t_reg(Figure, rows, contrast, state))
 
     def seeds():
         rows = seed_rows(statistics, data["genomes"])
@@ -734,6 +852,7 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
         return rows, (lambda: draw_adaptation(Figure, rows, state))
 
     has_t_eval = bool((statistics.get("t_eval") or {}).get("success_rate"))
+    versions = threshold_versions(data["gates"])
     plans = [
         ("fig1_t_eval_contrasts", contrasts if complete and statistics.get("t_eval", {})
          .get("contrasts") else None, "needs a complete run (ADR-0006 D5)"),
@@ -743,9 +862,10 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
          else None, "needs a complete run (ADR-0006 D5)"),
         ("fig4_t_eval_success", success if has_t_eval else None,
          "no final evaluation recorded yet"),
-        ("fig5_gate_outcomes", gate if data["gates"] and len(threshold_versions(data["gates"]))
-         == 1 else None, "no gate recorded yet" if not data["gates"] else
-         "the gates used different threshold versions; they are not drawn together"),
+        ("fig5_gate_outcomes", gate if data["gates"] and len(versions) <= 1 else None,
+         "no gate recorded yet" if not data["gates"] else
+         f"the gates used different threshold versions ({', '.join(versions)}); they are not "
+         "drawn together"),
         ("fig6_genome_size", sizes if complete and report.get("genome_sizes") else None,
          "needs a complete run"),
         ("fig7_adaptation_cost", adaptation if complete and report.get("adaptation_cost")
@@ -753,22 +873,16 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
     ]
     manifest = {"schema": FIGURES_SCHEMA, "run_id": data["run_start"]["run_id"],
                 "state": state, "drawn_by": {"code_commit": code_commit},
-                "source": {"kind": files.kind,
-                                           "snapshot_seq": files.snapshot_seq},
-                "figures": [], "notes": []}
-    if data["ledger_note"]:
-        manifest["notes"].append(f"ledger: {data['ledger_note']}")
+                "source": {"kind": files.kind, "snapshot_seq": files.snapshot_seq},
+                "figures": [], "notes": list(data["notes"])}
     drawn: dict[str, str] = {}
     with matplotlib.rc_context(STYLE):
         for name, plan, why_not in plans:
-            if plan is None:
-                manifest["figures"].append({"name": name, "status": "skipped",
-                                            "reason": why_not})
-                continue
-            planned = plan()
+            planned = None if plan is None else plan()
             if planned is None:
                 manifest["figures"].append({"name": name, "status": "skipped",
-                                            "reason": "no cell of it recorded yet"})
+                                            "reason": why_not if plan is None else
+                                            "no cell of it recorded yet"})
                 continue
             rows, draw = planned
             _write_csv(out_dir / f"{name}.csv", rows)
@@ -781,8 +895,7 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
     (out_dir / "captions.md").write_text(captions(data, drawn), encoding="utf-8")
     manifest["inputs"] = dict(sorted(files.digests.items()))
     manifest["outputs"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                           for p in sorted(out_dir.iterdir()) if p.is_file()
-                           and (p.stem in OUTPUT_NAMES or p.name == "captions.md")}
+                           for p in sorted(out_dir.iterdir()) if p.name != "figures.json"}
     (out_dir / "figures.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                                           encoding="utf-8")
     return manifest

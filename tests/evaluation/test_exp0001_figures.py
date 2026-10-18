@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 from evaluation.exp0001 import cli, figures
-from evaluation.exp0001.figures import OUTPUT_NAMES, FiguresError, make_figures
-from evaluation.exp0001.mirror import RunMirror
+from evaluation.exp0001.figures import OUTPUT_NAMES, FiguresError, RunFiles, make_figures
+from evaluation.exp0001.mirror import MirrorError, RunMirror, latest_snapshot
 from evaluation.exp0001.protocol import CAPS, MINING_SEEDS
 from evaluation.metrics.final_statistics import (
     CLAIM_STATUS,
@@ -141,6 +141,11 @@ def test_captions_quote_the_record_and_the_figures_avoid_claim_words(clean, tmp_
     make_figures(run_dir=clean[0], out_dir=out)
     captions = (out / "captions.md").read_text(encoding="utf-8")
     assert CLAIM_STATUS in captions
+    h2 = clean[1]["statistics"]["h2"]
+    assert f"H2 rule (all three clauses, as recorded): {'met' if h2['rule_met'] else 'not met'}" \
+        in captions
+    assert "Every candidate is checked at every stage" in captions and "not run" not in captions
+    assert clean[1]["adaptation_cost"]["scope"] in captions
     assert UNCERTAINTY.format(seeds=list(MINING_SEEDS)) in captions
     assert REGRESSION_CLAUSE_SCOPE in captions
     assert not CLAIM_WORDS.findall(captions.replace(CLAIM_STATUS, ""))
@@ -266,3 +271,141 @@ def test_the_module_imports_without_matplotlib_and_says_what_is_missing(tmp_path
     result = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True,
                             text=True, check=True)
     assert "pip install -e .[figures]" in result.stdout
+
+
+def copy_run(clean, tmp_path):
+    run_dir = tmp_path / "run"
+    shutil.copytree(clean[0], run_dir)
+    return run_dir
+
+
+def edit(path, change):
+    document = json.loads(path.read_text(encoding="utf-8"))
+    change(document)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_vacuous_and_not_run_stages_are_read_from_the_records_children(clean, tmp_path):
+    """The aggregate's stages name their children by the list "children", not by id:
+    the child is found through ``child_records`` and its ``stage``."""
+    run_dir = copy_run(clean, tmp_path)
+
+    def mark(gate):
+        first, second = list(gate["aggregates"].values())[:2]
+        assert first["stages"]["generalization_out_of_scope"]["measurements_ref"] == "children"
+        by_stage = {gate["children"][c]["stage"]: gate["children"][c]
+                    for c in first["child_records"]}
+        by_stage["generalization_out_of_scope"]["measurements"]["vacuous"] = True
+        first["stages"]["generalization_out_of_scope"]["pass"] = True
+        other = {gate["children"][c]["stage"]: gate["children"][c]
+                 for c in second["child_records"]}
+        other["ablation"]["measurements"]["not_run"] = True  # an ADR-0012 D7-style record
+        second["stages"]["ablation"]["pass"] = False
+
+    edit(run_dir / "seed-11" / "gate.json", mark)
+    out = tmp_path / "figures"
+    make_figures(run_dir=run_dir, out_dir=out)
+    table = {(r["seed"], r["stage"]): r for r in rows(out, "fig5_gate_outcomes")}
+    assert table[("11", "generalization_out_of_scope")]["vacuous"] == "1"
+    assert table[("11", "ablation")]["not_run"] == "1"
+    assert table[("23", "ablation")]["not_run"] == "0"
+    captions = (out / "captions.md").read_text(encoding="utf-8")
+    assert "'not run' counts stages" in captions
+    assert ", ".join(f"seed {s}: {g['all_family_candidates']}"
+                     for s, g in sorted(clean[1]["gates"].items())) in captions
+
+
+def test_a_complete_report_beside_a_running_ledger_quotes_no_rule_outcome(clean, tmp_path):
+    run_dir = copy_run(clean, tmp_path)  # the crash window: report written, ledger not closed
+    ledger = run_dir / "ledger.jsonl"
+    lines = ledger.read_text(encoding="utf-8").splitlines(keepends=True)
+    ledger.write_text("".join(lines[:-1]), encoding="utf-8")
+    out = tmp_path / "figures"
+    manifest = make_figures(run_dir=run_dir, out_dir=out)
+    assert manifest["state"] == "unfinished"
+    captions = (out / "captions.md").read_text(encoding="utf-8")
+    assert "H2 rule" not in captions and "clause met" not in captions \
+        and "clause not met" not in captions and "H1 rule" not in captions
+    assert {f["name"] for f in manifest["figures"] if f["status"] == "drawn"} >= \
+        {"fig2_t_reg", "fig4_t_eval_success", "fig5_gate_outcomes"}
+    assert not (out / "fig1_t_eval_contrasts.pdf").exists()
+
+
+def test_a_missing_gate_record_is_named(clean, tmp_path):
+    run_dir = copy_run(clean, tmp_path)
+    (run_dir / "seed-23" / "gate.json").unlink()
+    out = tmp_path / "figures"
+    manifest = make_figures(run_dir=run_dir, out_dir=out)
+    assert manifest["notes"] == ["gate records missing for mining seeds [23]; the report "
+                                 "lists them"]
+    assert {r["seed"] for r in rows(out, "fig5_gate_outcomes")} == {"11", "41"}
+    assert "Gate records missing for mining seeds [23]" in \
+        (out / "captions.md").read_text(encoding="utf-8")
+
+
+def test_a_gate_without_candidates_is_drawn(clean, tmp_path):
+    run_dir = copy_run(clean, tmp_path)
+    for seed in MINING_SEEDS:
+        edit(run_dir / f"seed-{seed}" / "gate.json",
+             lambda gate: gate.update(aggregates={}, children={}, verdicts={}))
+    manifest = make_figures(run_dir=run_dir, out_dir=tmp_path / "figures")
+    assert {f["name"]: f["status"] for f in manifest["figures"]}["fig5_gate_outcomes"] == "drawn"
+    assert {r["candidates"] for r in rows(tmp_path / "figures", "fig5_gate_outcomes")} == {"0"}
+
+
+def test_a_torn_ledger_tail_is_noted_and_the_report_still_counts(clean, tmp_path):
+    run_dir = copy_run(clean, tmp_path)
+    with (run_dir / "ledger.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write('{"type": "heartbeat", "clo')  # a live run cut mid-line
+    out = tmp_path / "figures"
+    manifest = make_figures(run_dir=run_dir, out_dir=out)
+    assert manifest["notes"][0].startswith("ledger: the ledger cannot be read")
+    accounting = {r["item"]: r["value"] for r in rows(out, "run_accounting")}
+    assert accounting["episodes"] == str(clean[1]["episodes"])
+    assert accounting["active hours"] == ""
+
+
+def test_a_blob_collected_under_the_reader_stops_it(clean, tmp_path):
+    local, mirror = copy_run(clean, tmp_path), tmp_path / "mirror"
+    RunMirror(local, mirror).snapshot()
+    files = RunFiles(mirror_dir=mirror)  # the snapshot is listed whole
+    digest = latest_snapshot(mirror)["files"]["report.json"]["sha256"]
+    (mirror / "blobs" / digest[:2] / digest).unlink()  # then a live run collects a blob
+    with pytest.raises(MirrorError, match="gone from the mirror"):
+        files.read("report.json")
+    with pytest.raises(FiguresError, match="no whole snapshot"):  # listed after: none whole
+        make_figures(mirror_dir=mirror, out_dir=tmp_path / "figures")
+
+
+def test_a_failure_part_way_leaves_the_earlier_set_whole(clean, tmp_path):
+    out = tmp_path / "figures"
+    make_figures(run_dir=clean[0], out_dir=out)
+    before = tree(out)
+    broken = copy_run(clean, tmp_path)
+    edit(broken / "report.json",
+         lambda report: report["genome_sizes"]["per_arm"]["B"]["runs"].update({"11": {}}))
+    with pytest.raises(KeyError):
+        make_figures(run_dir=broken, out_dir=out)
+    assert tree(out) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["figures", "run"]  # no staging left
+    (out / "notes.txt").write_text("mine", encoding="utf-8")  # not ours: left alone
+    make_figures(run_dir=clean[0], out_dir=out)
+    assert (out / "notes.txt").read_text(encoding="utf-8") == "mine"
+
+
+def test_a_seed_where_c_and_b_share_a_genome_is_marked(clean, tmp_path):
+    run_dir = copy_run(clean, tmp_path)
+
+    def share(report):
+        genomes = report["final_genomes"]
+        b = next(g for g in genomes if "B/11" in g["arms"])
+        c = next(g for g in genomes if "C/11" in g["arms"])
+        c["arms"].remove("C/11")
+        b["arms"].append("C/11")
+
+    edit(run_dir / "report.json", share)
+    out = tmp_path / "figures"
+    make_figures(run_dir=run_dir, out_dir=out)
+    seed = {r["seed"]: r for r in rows(out, "fig3_seed_direction")}
+    assert seed["11"]["c_equals_b_genome"] == "True" and seed["23"]["c_equals_b_genome"] == "False"
+    assert "C = B in mining seeds [11]" in (out / "captions.md").read_text(encoding="utf-8")
