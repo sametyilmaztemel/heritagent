@@ -329,6 +329,8 @@ def test_a_complete_report_beside_a_running_ledger_quotes_no_rule_outcome(clean,
     assert {f["name"] for f in manifest["figures"] if f["status"] == "drawn"} >= \
         {"fig2_t_reg", "fig4_t_eval_success", "fig5_gate_outcomes"}
     assert not (out / "fig1_t_eval_contrasts.pdf").exists()
+    assert "(the report is complete; the ledger's terminal record is missing)" in captions
+    assert "may rest on different recorded subsets" in captions  # a possibility, not a claim
 
 
 def test_a_missing_gate_record_is_named(clean, tmp_path):
@@ -409,3 +411,34 @@ def test_a_seed_where_c_and_b_share_a_genome_is_marked(clean, tmp_path):
     seed = {r["seed"]: r for r in rows(out, "fig3_seed_direction")}
     assert seed["11"]["c_equals_b_genome"] == "True" and seed["23"]["c_equals_b_genome"] == "False"
     assert "C = B in mining seeds [11]" in (out / "captions.md").read_text(encoding="utf-8")
+
+
+def test_a_missing_child_record_and_a_count_the_report_disagrees_with_are_named(clean,
+                                                                                 tmp_path):
+    run_dir = copy_run(clean, tmp_path)
+
+    def drop_and_mark(gate):
+        first = next(iter(gate["aggregates"].values()))
+        out_of_scope = next(c for c in first["child_records"]
+                            if gate["children"][c]["stage"] == "generalization_out_of_scope")
+        del gate["children"][out_of_scope]  # the aggregate's own threshold still marks it
+        first["stages"]["generalization_out_of_scope"]["pass"] = True
+        first["stages"]["generalization_out_of_scope"]["threshold"] = "vacuous: every family"
+
+    edit(run_dir / "seed-11" / "gate.json", drop_and_mark)
+    out = tmp_path / "figures"
+    make_figures(run_dir=run_dir, out_dir=out)
+    row = next(r for r in rows(out, "fig5_gate_outcomes")
+               if r["seed"] == "11" and r["stage"] == "generalization_out_of_scope")
+    assert row["missing_child"] == "1" and row["vacuous"] == "1"
+    captions = (out / "captions.md").read_text(encoding="utf-8")
+    assert "1 stage records lack their child record" in captions
+    assert f"Seed 11: the report counts {clean[1]['gates']['11']['all_family_candidates']} " \
+           "candidates naming every family, the gate record 1 vacuous" in captions
+
+
+def test_an_output_that_cannot_be_written_is_named(clean, tmp_path):
+    blocked = tmp_path / "a-file"
+    blocked.write_text("", encoding="utf-8")
+    with pytest.raises(FiguresError, match="cannot write figures there"):
+        make_figures(run_dir=clean[0], out_dir=blocked)

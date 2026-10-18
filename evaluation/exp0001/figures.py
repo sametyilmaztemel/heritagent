@@ -252,26 +252,31 @@ def _child(gate: Mapping, aggregate: Mapping, stage: str) -> Mapping:
 def gate_rows(gates: Mapping[int, Mapping]) -> list[dict]:
     """Per seed and stage, how many candidates passed, failed, were not run
     (a record that says ``not_run``; ADR-0012 D7, if accepted) or passed
-    vacuously (ADR-0007 E6)."""
+    vacuously (ADR-0007 E6), and how many stage records lack their child."""
     rows = []
     for seed, gate in sorted(gates.items()):
         aggregates = gate["aggregates"]
         for stage in STAGES:
-            counts = {"passed": 0, "failed": 0, "not_run": 0, "vacuous": 0}
+            counts = {"passed": 0, "failed": 0, "not_run": 0, "vacuous": 0,
+                      "missing_child": 0}
             for aggregate in aggregates.values():
-                measurements = _child(gate, aggregate, stage).get("measurements") or {}
+                result, child = aggregate["stages"][stage], _child(gate, aggregate, stage)
+                counts["missing_child"] += not child
+                measurements = child.get("measurements") or {}
                 if measurements.get("not_run"):
                     counts["not_run"] += 1
-                elif aggregate["stages"][stage]["pass"]:
+                elif result["pass"]:
                     counts["passed"] += 1
-                    counts["vacuous"] += measurements.get("vacuous") is True
+                    # the aggregate's own threshold says so too (inheritance/gate.py)
+                    counts["vacuous"] += measurements.get("vacuous") is True or \
+                        str(result.get("threshold", "")).startswith("vacuous:")
                 else:
                     counts["failed"] += 1
             rows.append({"seed": seed, "stage": stage, "candidates": len(aggregates), **counts})
         promoted = sum(v == "promote" for v in gate["verdicts"].values())
         rows.append({"seed": seed, "stage": "promoted", "candidates": len(aggregates),
                      "passed": promoted, "failed": len(aggregates) - promoted,
-                     "not_run": 0, "vacuous": 0})
+                     "not_run": 0, "vacuous": 0, "missing_child": 0})
     return rows
 
 
@@ -408,7 +413,7 @@ def _dot_rows(ax, rows: list[dict], key: str,
         filled = row["arm"] == "A" or row["run"] == "pooled"
         ax.plot([value], [i], ARM_MARKERS[row["arm"]], markersize=6 if filled else 5,
                 color=ARM_COLORS[row["arm"]], markerfacecolor=ARM_COLORS[row["arm"]]
-                if filled else "white", markeredgewidth=1.4, zorder=3)
+                if filled else "white", markeredgewidth=1.4, zorder=3, clip_on=False)
     _row_axis(ax, [_run_label(r) for r in rows],
               {i for i, r in enumerate(rows) if r["arm"] == "A" or r["run"] == "pooled"})
 
@@ -419,7 +424,7 @@ def _count_axis(ax, top: float, *, integer: bool = False, rate: bool = False) ->
     right = 100.0 if rate else max(top, 1) * 1.15
     ax.set_xlim(-0.04 * right, right * (1.02 if rate else 1))
     if integer:
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
 
 
 def _signed(value: float) -> str:
@@ -506,7 +511,7 @@ def draw_t_reg(Figure, rate_rows, contrast, state):
         _row_axis(right, ["reg(C) − reg(B)"])
         right.set_title("H2 regression contrast", fontsize=8)
         right.set_xlabel("percentage points\n(95 % bootstrap interval)")
-        span = max(5.0, abs(contrast["lower_pp"]), abs(contrast["upper_pp"])) + 3
+        span = max(5.0, abs(contrast["lower_pp"]), abs(contrast["upper_pp"])) * 1.1 + 3
         right.set_xlim(-span, span)
         _note(right, _span(contrast), (0.5, 0), xytext=(0, 9), ha="center",
               xycoords=("axes fraction", "data"))
@@ -611,8 +616,10 @@ def draw_adaptation(Figure, rows, state):
                            (axes[2], "median_steps_to_success", "median steps to success")):
         _dot_rows(ax, rows, key, absent)
         ax.set_xlabel(label)
-        _count_axis(ax, max([r[key] for r in rows if r[key] is not None] + [1]),
-                    rate=key == "solved_pct")
+        values = [r[key] for r in rows if r[key] is not None]
+        _count_axis(ax, max(values + [1]), rate=key == "solved_pct",
+                    integer=key == "median_steps_to_success"  # steps: whole numbers
+                    and all(float(v).is_integer() for v in values))
         if key == "median_tokens_to_success":
             _compact(ax.xaxis)
     _marker_key(fig)
@@ -628,6 +635,8 @@ def _met(clause) -> str:
 
 POOLED = ("Pooled = the arm's rate over all its recorded (seed, task) cells, cell-weighted; "
           "for A its one run.")
+NOT_COMPLETE = ("In a run that did not complete the arms' rates may rest on different recorded "
+                "subsets and are then not comparable; the CSV gives each rate's recorded count.")
 
 
 def _sharing(data: Mapping) -> str:
@@ -646,6 +655,14 @@ def _sharing(data: Mapping) -> str:
     return "; ".join(parts) + "." if parts else ""
 
 
+def _vacuous_mismatch(rows: list[dict], all_family: Mapping) -> list[tuple]:
+    """Seeds whose report count of all-family candidates differs from the gate record."""
+    vacuous = {str(r["seed"]): r["vacuous"] for r in rows
+               if r["stage"] == "generalization_out_of_scope"}
+    return [(s, all_family[s], vacuous[s]) for s in sorted(vacuous)
+            if s in all_family and all_family[s] != vacuous[s]]
+
+
 def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
     report = data["report"] or {}
     statistics = report.get("statistics") or {}
@@ -653,7 +670,10 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
     complete = state == "complete"
     claim = statistics.get("claim_status") or ""
     lines = [f"# EXP-0001 figures: {run_start['run_id']}", "",
-             f"State: {STATES[state]}. Model: {run_start['model']['model_id']} "
+             f"State: {STATES[state]}"
+             + (" (the report is complete; the ledger's terminal record is missing)"
+                if state == "unfinished" and report.get("status") == "complete" else "")
+             + f". Model: {run_start['model']['model_id']} "
              f"(revision {run_start['model']['revision']}); code commit "
              f"{run_start['code']['commit']}.",
              "Every figure shows quantities the run recorded; nothing is re-estimated."]
@@ -661,8 +681,9 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
         lines.append(
             "Under ADR-0011 D2 the serving uses no batch-invariant kernels, so a temperature-0 "
             "reply may depend on the batch; the calibration pilot's temperature-0 repeat "
-            f"measure (pilot {run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]}) is "
-            "the only evidence of its size.")
+            "measure (the pilot of manifest "
+            f"{run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]}) is the only evidence "
+            "of its size.")
     lines += [f"Note: {note}." for note in data["notes"]]
     lines.append("")
     # rule outcomes only where the run completed (ADR-0006 D5)
@@ -699,8 +720,7 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
                + (f" (clause {_met(h2['regression_clause']['met'])}; scope: "
                   f"{h2['regression_clause']['scope']})" if h2 else "") + ". "
                if complete else
-               "In a run that did not complete the arms' rates rest on different recorded "
-               "subsets and are not comparable; the CSV gives each rate's recorded count. ")
+               f"{NOT_COMPLETE} ")
             + "T_reg holds tasks G0 solved at least once at temperature 0.7, so arm A can fail "
               "them (ADR-0007 E3)."),
         "fig3_seed_direction": (
@@ -712,9 +732,7 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
         "fig4_t_eval_success": (
             "T_eval success rate per arm, per mining seed (open markers) and pooled (filled); "
             f"arm A ran once. {POOLED} Descriptive; no intervals by design (ADR-0006)."
-            + (" In a run that did not complete the arms' rates rest on different recorded "
-               "subsets and are not comparable; the CSV gives each rate's recorded count."
-               if not complete else "")),
+            + (f" {NOT_COMPLETE}" if not complete else "")),
         "fig5_gate_outcomes": (
             "Candidates passing each gate stage per mining seed, and the number promoted (the "
             "gate's verdict); the line marks every candidate of the seed. "
@@ -728,7 +746,13 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
                if all_family else "")
             + f". Threshold version: {', '.join(versions) or 'none recorded'}."
             + (f" Gate records missing for mining seeds {data['missing_gates']}."
-               if data["missing_gates"] else "")),
+               if data["missing_gates"] else "")
+            + (f" {sum(r['missing_child'] for r in rows)} stage records lack their child "
+               "record; their vacuous and not-run marks may be missing."
+               if any(r["missing_child"] for r in rows) else "")
+            + "".join(f" Seed {s}: the report counts {n} candidates naming every family, the "
+                      f"gate record {v} vacuous out-of-scope passes."
+                      for s, n, v in _vacuous_mismatch(rows, all_family))),
         "fig6_genome_size": (
             "Genome size per arm: skill genes and the token count of the rendered skill block "
             f"({(report.get('genome_sizes') or {}).get('token_counter', 'the run tokenizer')}"
@@ -782,9 +806,11 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
     not allow yet is listed as skipped, with the reason. ``code_commit``
     names the code that drew them (the run's own commit is in run-start).
 
-    The set is drawn beside ``out_dir`` and moved in only when whole: a
-    failure leaves an earlier set as it was. In ``out_dir`` the files this
-    module names (``MANAGED``) are replaced; other files are left alone."""
+    The set is drawn in a staging directory inside ``out_dir`` and moved in
+    only when drawn whole, file by file with ``figures.json`` last: a
+    failure while drawing leaves an earlier set as it was. In ``out_dir``
+    the files this module names (``MANAGED``) are replaced; other files are
+    left alone."""
     import shutil
     files = RunFiles(run_dir=run_dir, mirror_dir=mirror_dir)
     out_dir = Path(out_dir)
@@ -793,15 +819,20 @@ def make_figures(*, run_dir: Path | None = None, mirror_dir: Path | None = None,
                            "directories (a snapshot would sweep it in)")
     data = collect(files)
     matplotlib, Figure = _matplotlib()
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}-", dir=out_dir.parent))
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # staged inside the output, so every move is a rename on one filesystem
+        staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=out_dir))
+    except OSError as exc:
+        raise FiguresError(f"{out_dir}: cannot write figures there: {exc}") from None
     try:
         manifest = _draw_all(data, files, staging, Figure, matplotlib, code_commit)
-        out_dir.mkdir(exist_ok=True)
+        new = {path.name for path in staging.iterdir()}
+        for name in sorted(new - {"figures.json"}) + ["figures.json"]:  # the manifest last
+            (staging / name).replace(out_dir / name)
         for name in MANAGED:  # a figure skipped now must not survive from an earlier call
-            (out_dir / name).unlink(missing_ok=True)
-        for path in sorted(staging.iterdir()):
-            path.replace(out_dir / path.name)
+            if name not in new:
+                (out_dir / name).unlink(missing_ok=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     return manifest
