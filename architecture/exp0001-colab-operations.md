@@ -25,3 +25,23 @@ Builder-2's engineering within ADR-0008 D4 and D5, added after the owner accepte
   - A command whose kernel restarts or dies stops the same way: the notebook helper passes the kernel's pid in `HERITAGENT_STOP_WITH_PARENT`, and the command stops when that process is no longer its parent.
   - A stopped command exits with code 130, or 3 when its last snapshot failed.
   - Its own messages and the mirror's warnings never fail on a pipe nobody reads any more.
+
+## Driving the notebooks from a Claude session (colab-mcp)
+
+The owner asked on 2026-10-18 that Claude run the notebooks and read their outputs in Colab. This section is how. It changes nothing in the notebooks, the run or ADR-0008.
+
+- **Where it works.** `.mcp.json` registers Google's colab-mcp, pinned to commit `b9ab389`. It works only in a Claude Code session on the owner's computer: the Desktop app's local session, or `claude remote-control` in a local clone. The server listens on that computer's `localhost`, and the Colab tab in the owner's browser connects to it. A cloud session cannot be reached by the tab, so it does not call the tool.
+- **Setup.** The computer needs `uv` and `git`. Claude Code asks once to approve the project's server. If the first start times out while `uvx` installs it, start Claude Code with `MCP_TIMEOUT=60000`.
+- **Tried so far.** In a cloud container (2026-10-18), the pinned server installs, answers the MCP handshake and lists `open_colab_browser_connection`. No session on the owner's computer has tried it yet. Reports differ on whether Claude Code shows the notebook tools after the tab connects. The first live trial settles that on a CPU runtime with `EXP-0001-rehearsal.ipynb`, before any A100 notebook.
+- **What it cannot do.**
+  - The tool opens an empty scratch notebook, not a repository notebook. Connecting a repository notebook through Colab's command palette ("mcp") is reported to work but untried. Otherwise Claude copies the repository notebook's cells into the scratch notebook unchanged.
+  - It has no tool to choose, change or release a runtime. The owner picks the runtime type.
+  - Mounting Drive needs the owner's consent in the browser.
+  - The tab must stay open: a Colab session ends when its browser disconnects, and the VM's disk goes with it (ADR-0008, context).
+- **Rules for Claude.**
+  - Before a step that starts or prolongs A100 use, Claude asks the owner. A100 time spends the owner's compute units (ADR-0008 D1).
+  - The guard cells stay as they are: the GPU check and the rehearsal marker. Claude never writes a marker itself.
+  - `CODE_REF` is the commit the rehearsal printed, in the rehearsal and in the A100 notebook alike.
+  - One tab and one command per run directory. A `RUN_ID` never runs in two tabs or two sessions at once (the run notebook's first cell); resuming it in a later session is the normal path.
+  - To stop, Claude presses Stop once and waits. A second press is only for a command that has hung. It never uses "Disconnect and delete runtime" while `UNMIRRORED.json` exists or a command runs. It releases the runtime with the notebook's own release cell.
+  - Claude reads outputs in the notebook and the records in the Drive mirror. It reports them with status keys and never calls a result validated (SPEC §32).

@@ -22,6 +22,10 @@ Claude is the **second builder**. It takes engineering work that the main Builde
 2. Run `ListAgents` / `list_sessions` to check for other Claude sessions.
 3. **Conflict check.** List the open PRs, the remote `issue-*` branches and the latest Critic "#N START" handoff. Handoffs are posted on the item's own issue (e.g. "#12 START" on #12); #20 carries only status notes. Handoffs up to and including the #13 Phase A one are Codex's; after the owner removed Codex (2026-10-14), Claude writes them. Pick work only when none of them covers the issue or files you plan to touch. Zcode owns the SPEC §28 M0 sequence (#13 onward) unless the owner reassigns an item. On 2026-10-14 the owner reassigned the rest of #13 Phase A to Claude and asked it for the Colab execution path and notebooks (Phase B).
 
+## Colab
+
+`.mcp.json` registers colab-mcp, which lets Claude drive a Colab notebook in the owner's browser. It works only in a session on the owner's computer (the Desktop app's local session, or `claude remote-control`). A cloud session cannot reach Colab and does not call it. Before driving a notebook, read the rules in `architecture/exp0001-colab-operations.md` ("Driving the notebooks from a Claude session").
+
 ## Builder protocol (issue #20 rules 1–6)
 
 - Work from issues and ADRs, never from chat. A research-relevant design change needs an ADR in SPEC §31 format first.
