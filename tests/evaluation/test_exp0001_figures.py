@@ -24,6 +24,7 @@ from evaluation.metrics.final_statistics import (
     UNCERTAINTY,
 )
 from tests.evaluation.test_exp0001_pipeline import (  # noqa: F401 (fixtures)
+    GATE_PER_SEED,
     PILOTS,
     clean,
     make_run,
@@ -144,7 +145,10 @@ def test_captions_quote_the_record_and_the_figures_avoid_claim_words(clean, tmp_
     h2 = clean[1]["statistics"]["h2"]
     assert f"H2 rule (all three clauses, as recorded): {'met' if h2['rule_met'] else 'not met'}" \
         in captions
-    assert "Every candidate is checked at every stage" in captions and "not run" not in captions
+    assert figures.V2_DISCLOSURE in captions  # ADR-0012 D11
+    # ADR-0012 D7: the futility-stopped candidate's out-of-scope check, 4A and 4C were not run
+    assert "'not run' counts stages a candidate's record says were not run" in captions
+    assert "Every candidate is checked at every stage" not in captions
     assert clean[1]["adaptation_cost"]["scope"] in captions
     assert UNCERTAINTY.format(seeds=list(MINING_SEEDS)) in captions
     assert REGRESSION_CLAUSE_SCOPE in captions
@@ -159,8 +163,12 @@ def test_captions_quote_the_record_and_the_figures_avoid_claim_words(clean, tmp_
 
 def test_a_run_stopped_in_the_final_evaluation_gets_descriptive_figures_only(splits, tmp_path,
                                                                               texts):
+    import evaluation.exp0001.pipeline as pipeline
     run_dir = tmp_path / "run"
-    report = make_run(run_dir, splits, caps={**CAPS, "episodes_max": 540 + 3 * 300 + 50}).run()
+    with pytest.MonkeyPatch.context() as patch:  # a stop the reserve cannot rule out
+        patch.setattr(pipeline, "FINAL_EVALUATION_RESERVE", 0)
+        report = make_run(run_dir, splits,
+                          caps={**CAPS, "episodes_max": 540 + 3 * GATE_PER_SEED + 50}).run()
     assert report["stage"] == "final"
     out = tmp_path / "figures"
     manifest = make_figures(run_dir=run_dir, out_dir=out)
@@ -434,7 +442,7 @@ def test_a_missing_child_record_and_a_count_the_report_disagrees_with_are_named(
     captions = (out / "captions.md").read_text(encoding="utf-8")
     assert "1 stage records lack their child record" in captions
     assert f"Seed 11: the report counts {clean[1]['gates']['11']['all_family_candidates']} " \
-           "candidates naming every family, the gate record 1 vacuous" in captions
+           "candidates naming every family, the gate records 1." in captions
 
 
 def test_an_output_that_cannot_be_written_is_named(clean, tmp_path):
@@ -442,3 +450,42 @@ def test_an_output_that_cannot_be_written_is_named(clean, tmp_path):
     blocked.write_text("", encoding="utf-8")
     with pytest.raises(FiguresError, match="cannot write figures there"):
         make_figures(run_dir=clean[0], out_dir=blocked)
+
+
+def test_a_not_run_all_family_candidate_counts_as_naming_every_family(clean):
+    """The out-of-scope row counts a vacuous pass and a not-run record of an
+    all-family candidate alike (ADR-0012 D7)."""
+    gate = json.loads((clean[0] / "seed-11" / "gate.json").read_text())
+    rows = {r["stage"]: r for r in figures.gate_rows({11: gate})}
+    assert rows["generalization_out_of_scope"]["all_family"] == 0
+    assert rows["generalization_out_of_scope"]["not_run"] == 1
+    for child in gate["children"].values():
+        if child["stage"] == "generalization_out_of_scope" and child["measurements"].get("not_run"):
+            child["measurements"]["all_family_applicability"] = True
+    rows = {r["stage"]: r for r in figures.gate_rows({11: gate})}
+    assert rows["generalization_out_of_scope"]["all_family"] == 1
+
+
+def test_the_v2_disclosure_follows_the_threshold_version(clean, tmp_path):
+    """ADR-0012 D11: the disclosure is the v2 gate's; a record of another
+    version gets none."""
+    # ADR-0012 D11's disclosures, each named
+    for clause in ("stage 1 checks only that a successful replay of the source task expresses "
+                   "the gene", "the in-scope record is stage 2's games by reference",
+                   "in ADR-0012's model (M), rarely binds",
+                   "true effects below 0.05 can be promoted",
+                   "the seeds' gates read the same benefit-bank games",
+                   "H2 can hold only if arm B carries candidates that harm"):
+        assert clause in figures.V2_DISCLOSURE, clause
+    run_dir = copy_run(clean, tmp_path)
+
+    def to_v1(gate):
+        for aggregate in gate["aggregates"].values():
+            aggregate["thresholds_used"]["version"] = "EXP-0001-CIG-M0-v1"
+
+    for seed in MINING_SEEDS:
+        edit(run_dir / f"seed-{seed}" / "gate.json", to_v1)
+    out = tmp_path / "figures"
+    make_figures(run_dir=run_dir, out_dir=out)
+    captions = (out / "captions.md").read_text(encoding="utf-8")
+    assert "EXP-0001-CIG-M0-v1" in captions and figures.V2_DISCLOSURE not in captions

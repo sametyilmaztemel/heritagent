@@ -51,10 +51,11 @@ experiment:
         interaction_regression_overhead: 3
         attrition_note: "overhead check mostly passes; attrition primarily regression + occasional harmful pair"
         final_promoted: 3
+        recalibration_note: "ADR-0012 D11 (owner, 2026-10-19): these expectations stay as recorded, written for Qwen2.5-7B and the locked gate. ADR-0012's projections for the recalibrated gate (M, not decision rules; planning mixture, delta 0 / 0.05 / 0.18): helpful traits promoted per seed 4.71 / 4.02 / 2.37 of 5; no-effect traits promoted 0 / 0.0034 / 0.0115 of 15; arm C empty per seed ~1e-6 / 3e-4 / 0.049"
       compute_cap:                   # hard resource envelope
         accelerator_nodes_max: 1
-        episodes_max: 7000           # hard cap; normal expectation ~6000
-        model_calls_max: 225000      # hard cap; normal expectation ~180-200k
+        episodes_max: 14500          # hard cap; ADR-0012 D9 (owner, 2026-10-19; was 7000); expected ~6,200-7,400 episodes in ADR-0012's planning mixture (M)
+        model_calls_max: 507500      # hard cap; ADR-0012 D9: 35 calls per episode (was 225000, 32 per episode); expected ~163-194k at the pilot's 26.3 calls per episode (M)
         wall_clock_hours_max: 96
         wall_clock_basis: active-run-time   # ADR-0008 D2 (owner, 2026-10-14: active run time only; the span rule is builder-2's): the sum of the ledger sessions' spans; time between sessions is not counted
         mining_seeds: [11, 23, 41]
@@ -74,8 +75,9 @@ model:
   miner_context_overflow: full-evidence-then-without-admissible-commands-then-reject-never-truncated   # ADR-0009 D8 (owner, 2026-10-15); the cap check reserves 2 teacher calls per pair, the run records the forms sent
   mining_temperature: 0.7
   determinism_policy:                # critic round 2, R1
-    executions_per_task_condition: 1 # exactly one run per (task instance, condition) in all gate stages
-    no_pseudo_replication: true      # duplicate deterministic runs are never independent evidence
+    executions_per_task_condition: 1 # one run per (mining seed, gate round, task instance, condition): the round's G0 cell is shared by the round's candidates and read only in its round (ADR-0012 D2; was per (task instance, condition))
+    no_pseudo_replication: true      # duplicate deterministic runs are never independent evidence; no gate decision uses a game's cells in two rounds, temperature-0 repeats or the lifetime's temperature-0.7 attempts (ADR-0012 D2, D8)
+    descriptive_noise_measures: [cross-round-cell-disagreement, cross-seed-cell-disagreement]   # ADR-0012 D8: exact 95% intervals; decide nothing, cost no episode
     uncertainty_sources: [distinct-task-instances, independent-mining-seeds]
     future_stochastic_repeats: require-explicit-pre-registered-stochastic-source
     backend: no-batch-invariant-kernels   # ADR-0011 D2 (owner, 2026-10-16): vLLM has none for Qwen3.8's Gated-DeltaNet layers; a temperature-0 reply may depend on the batch; never averaged, measured by the pilot's repeat check, disclosed
@@ -92,7 +94,7 @@ genome:
     field: applicability.task_families[]
     produced_at: extraction
     frozen: with-candidate-set
-    evaluation_only: true             # gate sampling / audit ONLY
+    evaluation_only: true             # gate sampling / audit ONLY; selects the stage-2 benefit-bank games and the stage-3 out-of-scope games (ADR-0012 D4, D5)
     runtime_use: forbidden            # never a regulation predicate or agent-visible oracle
   runtime_input_policy:               # critic final round, R3
     strip_evaluation_only_metadata: all-arms   # A, B, and C — not only the strict SkillRL projection
@@ -118,6 +120,8 @@ environment:
         feasibility_fallback: pre-registered-family-specific-maximum   # recorded in split manifest before run start if availability prevents the minimum; never improvised mid-run
         disjoint_from: [T_mine, T_reg, ablation_pool, interaction_pool, T_eval]
         construction_cost: no-LLM-calls   # only per-trait evaluations on bank instances are billed
+        gate_use: none-since-ADR-0012   # D3 and D5: replay plays the source task alone and stage 3 draws from the benefit bank; both banks stay in the split manifest
+      benefit_bank: {indexed_by: family, per_family: 192, source: train-games-in-no-pool-and-not-in-the-pilot, draw: "ascending sha256('heritagent-split|0|benefit_bank|<family>|<game_id>')", shortfall: fail-closed, purpose: stage-2 and stage-3 out-of-scope games, manifest: EXP-0001-benefit-bank.json, construction_cost: no-LLM-calls}   # ADR-0012 D1 (owner, 2026-10-19): its own manifest, so the split manifest and its hash are unchanged
     T_eval: {source: official-unseen-eval, size: 134, hash: commit-at-lock}   # untouched
     T_reg:  {source: subset-of-T_mine-solved-by-G0, size: 40}
   contamination_rule: T_eval never visible to miner, gate, or threshold tuning
@@ -127,16 +131,17 @@ run_protocol:                         # ADR-0007 (E1-E8 owner decisions, 2026-10
   split_plan: EXP-0001-split-plan.json  # SplitPlan seed 0, counts from the real ALFWorld inventory
   split_manifest: {file: EXP-0001-splits.json, sha256: 2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c}
   calibration_pilot: {file: EXP-0001-pilot.json, sha256: 4fc2b6fe1766dec7bad7795a2f0169fa354b67baab4a569c3d1fcb92700daa52, games: 30, per_family: 5, seed: 0}
+  benefit_bank: {file: EXP-0001-benefit-bank.json, sha256: fd44bb361e7e0176f281f14b75e7381f4bbf68a0b7b73eee33d50b44323ca545, per_family: 192, seed: 0}   # ADR-0012 D1: bank_sha256, drawn against the split and pilot hashes above
   lifetime: {attempts_per_task: 3, temperature: 0.7, pairing: first-success-first-failure, attempt_seed: sha256-derived}
   t_reg: {eligible: solved-in-any-lifetime-episode, size: 40, seed: 0, baseline: earliest-success, shortfall: fail-closed}
   transfer_subset: ablation-pool
   budgets: {max_steps: 50, max_total_retries: 10, max_tokens_per_request: 512}   # E5
-  cap_check: worst-case-before-each-episode   # E5: max_steps + max_total_retries calls; teacher calls count too
-  generalization_allocation: {split: even-over-families, draw: sha256-keyed-per-family, seed: 0, all_family_applicability: vacuous-out-of-scope}   # E6; for an all-family candidate this supersedes inheritance.stages.generalization.out_of_scope (10 tasks)
+  cap_check: worst-case-before-each-episode-and-final-evaluation-reserve-before-each-gate-round   # E5: max_steps + max_total_retries calls; teacher calls count too. ADR-0012 D9: before each gate round, room for the round's largest count given the candidates still in it plus the final evaluation's largest (1,358), episodes and calls (calls at the run's mean per episode so far); otherwise stop, incomplete
+  generalization_allocation: {in_scope: stage-2-games-by-reference, out_of_scope: 24-benefit-bank-games-round-robin-over-omitted-families-in-name-order, per_family: first-in-bank-order, round: R5, all_family_applicability: vacuous-out-of-scope}   # ADR-0012 D5 (was E6: 10 + 10 generalization_bank games, sha256-keyed per family)
   arm_genomes: {origin: assimilation, provenance: [source_trajectory, aggregate_cig_record], skill_order: frozen-rank}   # E7
   run_order: [lifetimes-all-seeds, t_reg, per-seed-miner-gate-arms, final-evaluation]   # E8
   final_evaluation: {temperature: 0.0, sampling_seed: none, arm_a: once, identical_genomes: one-run-cells-shared}   # E8; ADR-0009 D2 (owner, 2026-10-15)
-  execution: {accelerator: one-A100-80GB-only, episodes: parallel-worker-processes-one-vllm-server, cap_check: counts-attempts-in-flight, gate_parallelism: dependency-free-stretches, persistence: local-run-dir-plus-mirror-snapshots, data: alfworld-release-0.2.2-sha256-pinned}   # ADR-0008: the owner decided the accelerator, parallel episodes and the cap basis (2026-10-14); cap_check, gate_parallelism, persistence and data are builder-2's engineering under D3-D6, accepted by the owner on 2026-10-15
+  execution: {accelerator: one-A100-80GB-only, episodes: parallel-worker-processes-one-vllm-server, cap_check: counts-attempts-in-flight, gate_parallelism: six-rounds-per-seed-one-hash-ordered-queue-each, persistence: local-run-dir-plus-mirror-snapshots, data: alfworld-release-0.2.2-sha256-pinned}   # ADR-0008: the owner decided the accelerator, parallel episodes and the cap basis (2026-10-14); cap_check, gate_parallelism, persistence and data are builder-2's engineering under D3-D6, accepted by the owner on 2026-10-15; ADR-0012 D2 (owner, 2026-10-19): per seed R1 stage 1 + stage-2 look 1, R2-R4 looks 2-4, R5 out-of-scope + 4A, R6 4C; a round's cells and with-trait executions form one queue in ascending sha256 of their ledger keys; cap_check here is unchanged
 
 arms:
   A-no-inheritance:   {g1_genome: "G0"}
@@ -147,22 +152,25 @@ arms:
 inheritance:
   causal_gate: true
   stages:
-    replay:          {variants: 4, variant_source: same-family-valid-resampling,   # no synthetic substitution in M0
-                      substitution_note: "admissible later only if proven semantics-preserving",
-                      runs_per_condition: 1, pass: "success_with>=0.6-of-5-instances and delta>=+0.4", expression_check: true}
-    ablation:        {pool: stratified-ablation, tasks: 20, runs_per_condition: 1,
-                      pass: "cluster-bootstrap95-over-instances_lb>0 and delta>=0.05 (tau_c)",
-                      bootstrap: {method: percentile, confidence: 0.95, generator: "random.Random(seed).randrange(n)", seed: 0, resamples: 10000, cluster_order: task_id, recomputed_by_gate: true}}   # ADR-0005, pre-registered; ADR-0009 D5
+    replay:          {tasks: 1, source: source-task-of-the-mining-pair-success, conditions: [with-trait], runs: 1, round: R1,
+                      pass: "target gene expressed in the episode, or the episode failed", expression_check: true}   # ADR-0012 D3 (owner, 2026-10-19); was: source + 4 replay_bank variants, success_with>=0.6-of-5 and delta>=+0.4
+    ablation:        {pool: benefit_bank, games: 192, allocation: round-robin-over-applicability-families-in-name-order-bank-order, looks: [48, 96, 144, 192], rounds: [R1, R2, R3, R4],
+                      reference: round-cell, test: exact-paired-sign-test, alpha: [0.0005, 0.0005, 0.001, 0.003], tau_c: 0.05,
+                      pass: "at a look k: P(Bin(n_plus + n_minus, 1/2) >= n_plus) <= alpha_k and net/n_k >= 0.05 (tau_c)",
+                      futility: "looks 1-3: stop and fail iff net <= floor(n_k/40); no efficacy at look 4 fails",
+                      contribution: point-at-stopping-look, decision_recomputed_by_gate: true,
+                      bootstrap: {role: descriptive, method: percentile, confidence: 0.95, generator: "random.Random(seed).randrange(n)", seed: 0, resamples: 10000, cluster_order: task_id, recomputed_by_gate: true}}   # ADR-0012 D4 (owner, 2026-10-19); the bootstrap is ADR-0005's and ADR-0009 D5's, over the games played, descriptive only; was: 20-task ablation pool, bootstrap lb>0 and delta>=0.05
     generalization:
-      in_scope:      {tasks: 10, source: families-matching-frozen-applicability, runs_per_condition: 1, pass: "delta>=0"}
-      out_of_scope:  {tasks: 10, source: families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05", all_family_applicability: vacuous-pass}   # ADR-0007 E6; ADR-0009 D5
+      in_scope:      {tasks: 0, source: stage-2-paired-outcomes-by-reference, pass: "delta>=0 over the games stage 2 played"}   # ADR-0012 D5: no episode; was 10 generalization_bank games
+      out_of_scope:  {tasks: 24, source: benefit-bank-families-outside-frozen-applicability, runs_per_condition: 1, pass: "delta>=-0.05", all_family_applicability: vacuous-pass}   # ADR-0012 D5: R5, round cells, net loss <= 1 of 24 in exact arithmetic; ADR-0007 E6; ADR-0009 D5
       scope_declaration: {declared_by: trait-miner-at-extraction, frozen_before: gate-stage-1, recorded_in: cig-record}
-    regression:      {tasks: 40, runs_per_condition: 1, pass: "paired drop (success_without - success_with)/40 <= 0.03 (tau_r)", g0_run: shared-per-seed-at-gate-settings}   # ADR-0009 D1 (owner, 2026-10-15)
-    interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, runs_per_condition: 1, harmful_pair_threshold: -0.05}
+    regression:      {tasks: 40, runs_per_condition: 1, pass: "paired drop (success_without - success_with)/40 <= 0.03 (tau_r)", g0_run: shared-per-seed-at-gate-settings}   # ADR-0009 D1 (owner, 2026-10-15); ADR-0012 D2, D6: in R5, so the seed's R5 cells are D1's single G0 run per task
+    interaction:     {trigger: ">=2 validated skills", pairwise_tasks: 10, runs_per_condition: 1, harmful_pair_threshold: -0.05, neither: seed-R6-cells, round: R6}   # ADR-0002 A1; ADR-0012 D6: 10 both-trait episodes per pair; the member with the lower stage-2 contribution is removed, an exact tie keeps the earlier frozen rank
+    stages_run: "1, 2 and 4B, and the in-scope child, for every candidate; out-of-scope, 4A and 4C only if stage 2's p_k met alpha_k at some look; the others' children carry stage_pass false, measurements.not_run true and the reason"   # ADR-0012 D7
   sampling_reuse:                     # critic round 2, R2
     within_trait_evaluation_set: no-replacement
     across_traits: allowed-and-logged # paired comparability; per-trait allocations recorded in CIG records
-    applies_to: [generalization_bank, replay_bank]
+    applies_to: [benefit_bank]          # ADR-0012 D4, D5 (was [generalization_bank, replay_bank]); a candidate's stage-2 and out-of-scope games are disjoint
   expression_overhead_cap_tokens: 512   # tau_k
 
 evaluation:
@@ -173,7 +181,7 @@ evaluation:
     h2_supported_if: "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
     h1_supported_if: "C-A > 0, CI excl. 0"
     seed_consistency: "direction holds in >= 2/3 mining seeds"
-    gate_statistics: "over distinct task instances only; one deterministic execution per (instance, condition)"
+    gate_statistics: "over distinct task instances only; one execution per (seed, round, instance, condition); stage 2: group-sequential exact paired sign test, its bootstrap descriptive"   # ADR-0012 D2, D4
     final_rule:                         # ADR-0006 (owner decisions, 2026-10-14; before any EXP-0001 execution)
       seed_pooling: per-task-mean-over-seeds
       bootstrap: {method: percentile, confidence: 0.95, seed: 0, resamples: 10000, cluster_order: task_id}
@@ -185,14 +193,16 @@ evaluation:
       secondary: descriptive-only
       t_reg: one-set-shared-across-seeds   # ADR-0006 D8
   sensitivity_secondary:                # pre-planned, clearly secondary, no retuning on T_eval
-    thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}
+    thresholds: {tau_c_grid: [0.03, 0.05, 0.08], tau_r_grid: [0.02, 0.03, 0.05], data: T_gate-stage-only}   # ADR-0012 D7: tau_c on the recorded stage-2 paths, a grid value that would have continued past the observed stopping look recorded as not identifiable; tau_r on 4A where it ran; not-run children unchanged
     candidate_cap: {k_grid: [5, 10, 20], followup_experiment: EXP-0005}
 
 budget:
-  episodes_est: 6000
-  breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"
-  banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"
-  note: "~180-200k local-7B calls; single GPU node, few days"
+  episodes_est: 6000                   # the locked gate's estimate (design section 7), kept as a record
+  episodes_expected_recalibrated: "6181 / 6879 / 7373 mean (p99 6834 / 7834 / 8598; largest seen 9632) at delta 0 / 0.05 / 0.18, planning mixture"   # ADR-0012 D11, status M; not a decision rule
+  episodes_planning_bound: 16724       # ADR-0012 D9, V arithmetic: every candidate runs every look and stage, every pair runs 4C; the cap is set from simulated tails, not this bound
+  breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"   # the locked gate's estimate (design section 7), kept as a record
+  banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"   # the locked gate's, kept as a record: stage 2 now plays up to 192 games per candidate from the 1,152-game benefit bank (ADR-0012 D1, D4)
+  note: "~180-200k local-7B calls; single GPU node, few days"   # the locked gate's estimate, kept as a record; compute_cap gives the recalibrated figures (ADR-0012 D9)
 
 record:
-  required_at_run_time: [model-weights-hash, code-commit, split-hashes, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]
+  required_at_run_time: [model-weights-hash, code-commit, split-hashes, benefit-bank-hash, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]   # ADR-0012 D1, D10: the bank's bank_sha256; gate thresholds EXP-0001-CIG-M0-v2

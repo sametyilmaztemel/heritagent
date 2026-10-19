@@ -23,10 +23,10 @@ Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeove
 **Decision (owner).**
 - **B1 Record.**
   - Every child carries `candidate_version` (a strict int), `candidate_artifact` (the registry URI) and `base_genome_id` in its `measurements`, beside `candidate_gene_id`.
-  - The values come from the validated candidate and the base runtime configuration, not from the raw envelope. The vacuous out-of-scope child (ADR-0007 E6) carries them too.
+  - The values come from the validated candidate and the base runtime configuration, not from the raw envelope. The vacuous out-of-scope child (ADR-0007 E6) carries them too, and so do the by-reference in-scope child and every not-run child (ADR-0012 D5, D7, owner, 2026-10-19).
   - The aggregate's `artifacts` gains `base_genome: {genome_id}` beside `candidate`.
-- **B2 Interaction evidence.** Each pair evidence keeps `gene_ids` and adds `artifacts`: one `{gene_id, version, artifact}` per gene, in `gene_ids` order. Its `evidence_sha256` covers them.
-- **B3 Gate check before any episode.** The gate refuses the batch when a stage 1–2 child names another `(gene_id, version, artifact)` than the candidate it evaluates, or another base genome than the gate's. A child that lacks a field is a mismatch. It is the only check of the stage 1–2 children's binding that fails before a stage-3 episode is spent: it saves the stage 3–4 episodes, not the stage 1–2 episodes already run.
+- **B2 Interaction evidence.** Each pair evidence keeps `gene_ids` and adds `artifacts`: one `{gene_id, version, artifact}` per gene, in `gene_ids` order. Its `evidence_sha256` covers them. (Unchanged by ADR-0012 D6; the neither outcomes are the seed's R6 cells.)
+- **B3 Gate check before any episode.** The gate refuses the batch when a stage 1–2 child names another `(gene_id, version, artifact)` than the candidate it evaluates, or another base genome than the gate's. A child that lacks a field is a mismatch. It is the only check of the stage 1–2 children's binding that fails before a stage-3 episode is spent: it saves the stage 3–4 episodes, not the stage 1–2 episodes already run. (ADR-0012 D4: it runs before any R5 episode, with the gate's recomputation of the stage-2 decision; B4's store checks are unchanged.)
 - **B4 Store check at commit and on stored state.**
   - An M0 bundle needs a complete and coherent `artifacts.candidate`:
     - the URI parses;
@@ -42,7 +42,7 @@ Made before any pilot or EXP-0001 episode; no CIG record exists. Origin: takeove
   - Both copies of a pair evidence are linked: for every pair evidence in a child of candidate g that names partner p, an interaction_regression child of an M0 aggregate for p carries a pair evidence with the same `evidence_sha256`. This check spans two bundles. It therefore runs in `verify()`, and in the gate as a store-wide check on the staged store, once every bundle of the batch is added and before any live store changes.
 - **B5 Not bound.** The target regulation is not recorded or compared (owner, Q4, as the cross-review recommended); it stays a recorded residual. A regulated candidate would first have to become part of the candidate, pinned by its artifact URI, in its own ADR.
 - **B6 Scope.** The store checks prove that the records are consistent with each other and with the artifact URI (name and version; the digest is not recomputed). They do not authenticate the records: a forged, self-consistent set of bundles is not caught.
-- **B7 Compatibility.** `THRESHOLD_VERSION` stays `EXP-0001-CIG-M0-v1` (as in ADR-0005: free-form fields, no record yet). `architecture/eag-v0-schema.md` documents `artifacts.candidate`, `artifacts.base_genome` and the child fields.
+- **B7 Compatibility.** `THRESHOLD_VERSION` stays `EXP-0001-CIG-M0-v1` (as in ADR-0005: free-form fields, no record yet). (Superseded by ADR-0012 D10: `EXP-0001-CIG-M0-v2`.) `architecture/eag-v0-schema.md` documents `artifacts.candidate`, `artifacts.base_genome` and the child fields.
 
 **Reason.**
 - **B1–B4** close the version gap where the evidence is consumed (the gate, before any episode) and where it is kept (the store), with the URI the aggregate and the somatic store already use. They need no schema change.

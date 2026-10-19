@@ -20,7 +20,7 @@ from runtime.policies.planner_react import ReActPlanner
 from runtime.tool_adapters.alfworld import ACT_TOOL
 from tests.evaluation.exp0001_workers import GameFactory
 from tests.evaluation.test_exp0001_lifetime import Game
-from tests.evaluation.test_exp0001_pipeline import PILOTS, splits  # noqa: F401 (fixture)
+from tests.evaluation.test_exp0001_pipeline import PILOTS, bank_of, splits  # noqa: F401 (fixture)
 
 MODEL = "Org/Model-7B"
 TASK = "You are in a room.\n\nYour task is to: solve g1.\n\nAdmissible commands:\ngo to a 1\nlook"
@@ -176,7 +176,7 @@ class FactoryWithAnUnwinnableGame(GameFactory):
 def stubbed(monkeypatch, splits):  # noqa: F811
     pilot = PILOTS[splits["manifest_sha256"]]
     games = sorted(g["game_id"] for g in pilot["games"])
-    monkeypatch.setattr(cli, "_manifests", lambda repo: (splits, pilot))
+    monkeypatch.setattr(cli, "_manifests", lambda repo: (splits, pilot, bank_of(splits)))
     monkeypatch.setattr(cli, "verify_data", lambda *a: {"release": "0.2.2", "archives": {},
                                                          "games": 0})
     monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))

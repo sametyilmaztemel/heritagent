@@ -605,25 +605,30 @@ def test_a_resumed_run_must_use_the_code_weights_and_software_it_started_with(tm
     software = {"vllm": "0.29.0+cu129", "transformers": "5.19.0", "xgrammar": "0.2.8"}
     (local / "run-start.json").write_text(json.dumps(
         {"code": {"commit": "a" * 40}, "weights": {"sha256": "b" * 64},
+         "benefit_bank": {"bank_sha256": "e" * 64},
          "environment": {"software": software, "data": {}}}))
+    bank = {"bank_sha256": "e" * 64}
     args = type("Args", (), {"run_id": None})()
     prepared = {"weights": {"sha256": "b" * 64}}
     env = {"software": dict(software), "data": {}}
     with pytest.raises(cli.CliError, match="Check out that commit"):
-        cli._run_start(args, local, prepared, None, None, None, "c" * 40, False, "tok", env)
+        cli._run_start(args, local, prepared, None, None, None, bank, "c" * 40, False, "tok", env)
     with pytest.raises(cli.CliError, match="dirty"):
-        cli._run_start(args, local, prepared, None, None, None, "a" * 40, True, "tok", env)
+        cli._run_start(args, local, prepared, None, None, None, bank, "a" * 40, True, "tok", env)
     with pytest.raises(cli.CliError, match="weights differ"):
         cli._run_start(args, local, {"weights": {"sha256": "d" * 64}}, None, None, None,
-                       "a" * 40, False, "tok", env)
+                       bank, "a" * 40, False, "tok", env)
     other = {"software": {**software, "transformers": "5.20.0"}, "data": {}}
     with pytest.raises(cli.CliError, match=r"installed software differs.*'transformers': "
                                            r"\('5.19.0', '5.20.0'\)"):
-        cli._run_start(args, local, prepared, None, None, None, "a" * 40, False, "tok", other)
-    assert cli._run_start(args, local, prepared, None, None, None, "a" * 40, False,
+        cli._run_start(args, local, prepared, None, None, None, bank, "a" * 40, False, "tok", other)
+    assert cli._run_start(args, local, prepared, None, None, None, bank, "a" * 40, False,
                           "tok", env)["code"]["commit"] == "a" * 40
+    with pytest.raises(cli.CliError, match="another benefit bank"):  # ADR-0012 D1
+        cli._run_start(args, local, prepared, None, None, None, {"bank_sha256": "f" * 64},
+                       "a" * 40, False, "tok", env)
     with pytest.raises(cli.CliError, match="needs --run-id"):
-        cli._run_start(args, tmp_path / "fresh", prepared, None, None, None, "a" * 40, False,
+        cli._run_start(args, tmp_path / "fresh", prepared, None, None, None, bank, "a" * 40, False,
                        "tok", env)
 
 
@@ -979,7 +984,7 @@ def stub_command(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "load_prepared", lambda path: {
         "model_id": "m", "revision": "a" * 40, "path": str(tmp_path), "weights": {"sha256": "b" * 64}})
     monkeypatch.setattr(cli, "git_state", lambda repo: ("c" * 40, False))
-    monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {"games": []}))
+    monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {"games": []}, {"families": {}}))
     monkeypatch.setattr(cli, "verify_data", lambda *a: {})
     monkeypatch.setattr(cli, "_adapter", lambda args, prepared: object())
     monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(

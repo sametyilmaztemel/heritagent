@@ -2,9 +2,10 @@
 ADR-0006, ADR-0007).
 
 Order: every seed's G0 lifetime, then the one shared T_reg, then per
-mining seed the miner (frozen candidate set), the CIG (replay and ablation
-per candidate, then stages 3-4 with one shared G0 run on T_reg,
-interactions and the somatic decisions), and the arm genomes; then the
+mining seed the miner (frozen candidate set), the CIG in six rounds
+(ADR-0012 D2: R1 stage 1 and stage-2 look 1, R2-R4 looks 2-4, R5 the
+out-of-scope check and 4A, R6 the interaction pairs; then the somatic
+decisions), and the arm genomes; then the
 final evaluation (each distinct genome once, on T_eval, T_reg and the
 transfer subset: arm A, and arms B and C per seed, read the same cells
 wherever their genomes coincide; ADR-0009 D1, D2) and the final
@@ -24,16 +25,15 @@ no primary verdict (ADR-0006 D5). Nothing here labels a result as
 validated (SPEC section 32).
 
 With ``workers`` > 1 independent episodes run in parallel (ADR-0008): the
-lifetimes of all seeds at once, the final evaluation at once, and the
-gate in three stretches whose episodes do not depend on each other's
-outcomes (replay and ablation of every candidate; generalization and
-regression of every candidate; the interaction pairs of the eligible
-set). A dry pass of the real gate code collects each stretch's episodes,
-they run in parallel, and the real pass then finds them recorded; a
-recorded gate episode the real pass does not request fails the run closed,
-in this session and in every later one.
-The episodes and decisions are the sequential run's; the order in which
-the episodes run is not."""
+lifetimes of all seeds at once and the final evaluation at once. The gate
+runs, at every worker count, as one queue per round (ADR-0012 D2): a dry
+pass of the real gate code collects the round's with-trait episodes and
+the G0 cells they are compared with, a reserve check makes sure the caps
+leave room for them and the final evaluation (D9), and they run in
+ascending sha256 of their keys; a second dry pass must find the round
+complete. A read pass then runs the gate code against recorded episodes
+only: an unrecorded request, or a recorded gate episode it does not
+request, fails the run closed, in this session and in every later one."""
 
 from __future__ import annotations
 
@@ -44,17 +44,30 @@ from pathlib import Path
 
 from evaluation.exp0001.allocations import (
     AllocationError,
-    ablation_allocation,
     evaluation_task,
-    generalization_allocation,
     interaction_allocation,
+    out_of_scope_allocation,
     pool_tasks,
     replay_allocation,
+    stage2_allocation,
 )
 from evaluation.exp0001.arms import arm_genomes
-from evaluation.exp0001.episodes import EpisodeExecutor, EpisodeSpec, protocol_budgets
-from evaluation.exp0001.gate_runner import LedgerGateRunner, PrefetchGateRunner, PrefetchStop
+from evaluation.exp0001.episodes import (
+    EpisodeExecutor,
+    EpisodeSpec,
+    protocol_budgets,
+    trajectory_id_for,
+)
+from evaluation.exp0001.gate_runner import (
+    GatePass,
+    GateQueueError,
+    PrefetchStop,
+    config_fingerprint,
+    key_round,
+    queue_order,
+)
 from evaluation.exp0001.ledger import CapExceeded, RunLedger
+from evaluation.exp0001.noise import cell_disagreement
 from evaluation.exp0001.lifetime import (
     LifetimeError,
     derive_t_reg,
@@ -66,6 +79,10 @@ from evaluation.exp0001.lifetime import (
 )
 from evaluation.exp0001.protocol import (
     CANDIDATE_CAP,
+    FINAL_EVALUATION_RESERVE,
+    GATE_ROUNDS,
+    LOCKED_BENEFIT_BANK_SHA256,
+    LOCKED_PILOT_SHA256,
     LOCKED_SPLIT_MANIFEST_SHA256,
     MAX_TOKENS_PER_REQUEST,
     MINER_CALLS_PER_PAIR_MAX,
@@ -74,6 +91,7 @@ from evaluation.exp0001.protocol import (
     MINING_TEMPERATURE,
 )
 from evaluation.exp0001.provenance import (
+    RUN_START_SCHEMA,
     ProvenanceError,
     freeze_json,
     verify_pre_run_artifacts,
@@ -91,14 +109,17 @@ from evaluation.metrics.final_statistics import (
 from genome.validation.errors import GenomeValidationError
 from genome.validation.records import CigRecordStore
 from genome.validation.registry import TraitRegistry
-from inheritance.ablation import AblationEvaluator
+from inheritance.ablation import LOOKS, AblationEvaluator
 from inheritance.gate import (
     SENSITIVITY_TAU_C_GRID,
     SENSITIVITY_TAU_R_GRID,
+    THRESHOLD_VERSION,
     CigGateOrchestrator,
     GateCandidateInput,
     ablation_evidence_issues,
+    replay_evidence_issues,
 )
+from inheritance.generalization import paired_outcomes_sha256, resolve_frozen_applicability
 from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.replay import ReplayEvaluator
@@ -115,19 +136,32 @@ CANDIDATES_SCHEMA = "heritagent/exp0001-candidates/0.1"
 
 def gate_summary(gate: Mapping) -> dict:
     """What a seed's gate decided, for the report (ADR-0009 D5): its
-    candidates, how many it promoted, and how many named every family, whose
-    out-of-scope stage was vacuous (ADR-0007 E6)."""
+    candidates, how many it promoted, how many named every family (whose
+    out-of-scope stage is vacuous, ADR-0007 E6, or not run), how stage 2
+    stopped (ADR-0012 D4) and how many candidates reached round R5 (D7)."""
+    stops: dict[str, int] = {}
+    reached = 0
+    for child in gate["children"].values():
+        if child.get("stage") == "ablation":
+            stop = child["measurements"]["stop"]
+            label = f"{stop['decision']}:{stop['reason']}@look{stop['look']}"
+            stops[label] = stops.get(label, 0) + 1
+            reached += child["measurements"]["alpha_met"] is True
     return {"candidates": len(gate["verdicts"]),
             "promoted": sum(v == "promote" for v in gate["verdicts"].values()),
             "all_family_candidates": sum(
                 1 for child in gate["children"].values()
                 if child.get("stage") == "generalization_out_of_scope"
-                and child["measurements"].get("vacuous") is True)}
+                and (child["measurements"].get("vacuous") is True
+                     or child["measurements"].get("all_family_applicability") is True)),
+            "stage2_stops": dict(sorted(stops.items())),
+            "reached_round_5": reached}
 
 
 ADAPTATION_COST_SCOPE = (
-    "measured on the transfer subset, the stage-2 ablation pool (ADR-0007 E4), which selected "
-    "arm C's traits: it can favour C and is descriptive only (ADR-0006 D6; ADR-0009 D5)")
+    "measured on the transfer subset, the 20-task ablation pool (ADR-0007 E4); since ADR-0012 "
+    "the gate plays the benefit bank, so this pool selected no trait; descriptive only "
+    "(ADR-0006 D6; ADR-0009 D5)")
 
 
 def _record_store_issues(aggregates: Mapping, children: Mapping) -> list[str]:
@@ -158,10 +192,25 @@ def teacher_calls(mining_records) -> int:
     forms before it overflowed the context window."""
     return sum(1 + EVIDENCE_FORMS.index(record.get("evidence_form", EVIDENCE_FORMS[0]))
                for record in mining_records)
-GATE_SCHEMA = "heritagent/exp0001-gate/0.1"
+GATE_SCHEMA = "heritagent/exp0001-gate/0.2"  # 0.2: rounds and cells (ADR-0012 D2)
 ARMS_SCHEMA = "heritagent/exp0001-arms/0.1"
 REPORT_SCHEMA = "heritagent/exp0001-report/0.1"
 SHARED = "once"  # arm A's run label (ADR-0006 D7)
+
+
+def _round_summary(reader: GatePass) -> dict:
+    """Per round of a seed's gate: the with-trait episodes and the cells the
+    read pass requested, and how many readers each cell had (ADR-0012 D2:
+    reuse within a round is logged)."""
+    rounds: dict[str, dict] = {}
+    for key in reader.requested:
+        gate_round = key_round(key)
+        entry = rounds.setdefault(f"R{gate_round}", {"with_trait": 0, "cells": 0,
+                                                     "cell_readers": {}})
+        entry["cells" if key.split("/")[3] == "cell" else "with_trait"] += 1
+    for (gate_round, task_id), readers in sorted(reader.cell_reads.items()):
+        rounds[f"R{gate_round}"]["cell_readers"][task_id] = readers
+    return dict(sorted(rounds.items()))
 
 
 class RunError(RuntimeError):
@@ -193,12 +242,15 @@ class Exp0001Run:
     model, the teacher and the token counter must be the ones the frozen
     run-start record names."""
 
-    def __init__(self, *, run_dir: Path, run_start: dict, split_manifest: dict, model, teacher,
+    def __init__(self, *, run_dir: Path, run_start: dict, split_manifest: dict,
+                 pilot_manifest: dict, benefit_bank: dict, model, teacher,
                  env_factory: Callable[[str, str], object], token_counter,
                  ledger_clock: Callable[[], float] = time.time,
                  episode_clock: Callable[[], float] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
                  expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
+                 expected_pilot_sha256: str = LOCKED_PILOT_SHA256,
+                 expected_bank_sha256: str = LOCKED_BENEFIT_BANK_SHA256,
                  workers: int = 1, sleep_between_retries: bool = True,
                  session_info: Mapping | None = None,
                  on_ledger_append: Callable[[dict], None] | None = None,
@@ -214,14 +266,29 @@ class Exp0001Run:
         holds longer than the run (the cli: through the last snapshot);
         without it the run takes and releases its own."""
         self.dir = Path(run_dir)
+        self._benefit_bank = benefit_bank
         self._lock, self._owns_lock = lock, lock is None
         self.executor = None
         verify_run_start_record(run_start)
-        # the split manifest must verify, be the pre-registered one, and be
-        # the one the record names
-        verify_pre_run_artifacts(split_manifest, None, expected_split_sha256=expected_split_sha256)
+        # a record of this code's protocol: another schema or threshold version is another run
+        if run_start.get("schema") != RUN_START_SCHEMA \
+                or (run_start.get("gate") or {}).get("threshold_version") != THRESHOLD_VERSION \
+                or not isinstance(run_start.get("benefit_bank"), Mapping):
+            raise ProvenanceError(f"the run-start record is not a {RUN_START_SCHEMA} record of "
+                                  f"thresholds {THRESHOLD_VERSION} with a benefit bank "
+                                  f"(ADR-0012 D1, D10)")
+        # the split, pilot and bank manifests must verify, be the pre-registered
+        # ones, and be the ones the record names (ADR-0012 D1)
+        verify_pre_run_artifacts(split_manifest, pilot_manifest, benefit_bank,
+                                 expected_split_sha256=expected_split_sha256,
+                                 expected_pilot_sha256=expected_pilot_sha256,
+                                 expected_bank_sha256=expected_bank_sha256)
         if run_start["splits"]["manifest_sha256"] != split_manifest["manifest_sha256"]:
             raise ProvenanceError("the run-start record names another split manifest")
+        if run_start["pilot"]["pilot_sha256"] != pilot_manifest["pilot_sha256"]:
+            raise ProvenanceError("the run-start record names another pilot manifest")
+        if run_start["benefit_bank"]["bank_sha256"] != benefit_bank["bank_sha256"]:
+            raise ProvenanceError("the run-start record names another benefit bank")
         for name, adapter in (("model", model), ("teacher", teacher)):
             metadata = adapter.metadata()
             # the backend version too: one serving build for the whole run (ADR-0008 D4)
@@ -257,6 +324,7 @@ class Exp0001Run:
         freeze_json(self.dir / "run-start.json", run_start)
         self.run_start = run_start
         self.splits = split_manifest
+        self.bank = self._benefit_bank
         self.teacher = teacher
         self.token_counter = token_counter
         self.g0_config = compile_runtime_config(self.g0, self.registry)
@@ -275,6 +343,7 @@ class Exp0001Run:
         self.t_mine = t_mine_tasks(split_manifest)
         self._final_cells: dict | None = None
         self._gate_summaries: dict[str, dict] = {}  # per seed, as each gate is decided
+        self._gates: dict[str, dict] = {}  # per seed, the frozen gate artifact
         self._sensitivity: dict[str, dict] = {}  # per seed, from its frozen gate artifact
 
     def close(self) -> None:
@@ -347,12 +416,24 @@ class Exp0001Run:
             if (bound.get("gene_id"), bound.get("version"), bound.get("artifact")) != \
                     (gene, genes[gene]["version"], genes[gene]["artifact"]):
                 raise RunError(f"seed {seed}: {gene!r} was not gated on its frozen artifact")
-        # the ablation bounds recompute from the stored deltas (ADR-0005; ADR-0009 D5)
-        for child_id, child in sorted(gate["children"].items()):
-            if child.get("stage") == "ablation":
-                issues = ablation_evidence_issues(child["measurements"])
-                if issues:
-                    raise RunError(f"seed {seed}: {child_id} does not recompute: {issues}")
+        # the stored records verify as a record store: every bundle, its
+        # artifact and base genome, and both copies of each pair (ADR-0010 B4)
+        issues = _record_store_issues(gate["aggregates"], gate["children"])
+        if issues:
+            raise RunError(f"seed {seed}: gate.json's CIG records do not verify: {issues}")
+        # stage 1's expression rule (ADR-0012 D3) and stage 2's decision (D4)
+        # recompute from their records, every comparison read its own round's
+        # cell (D2), the in-scope child is stage 2's record by reference (D5),
+        # and a candidate's out-of-scope, 4A and 4C parts ran iff its stage-2
+        # alpha was met (D7)
+        try:
+            families = {c["candidate"]["gene_id"]: resolve_frozen_applicability(c, self.registry)
+                        for c in candidates}
+            issues = self._gate_record_issues(seed, gate, families)
+        except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+            issues = [f"a record is malformed ({exc!r})"]
+        if issues:
+            raise RunError(f"seed {seed}: gate.json does not recompute: {issues}")
         # the frozen tau_c/tau_r grid is the pre-planned analysis-only one, per gated
         # candidate. The check is structural: the cells' contents are not re-derived, since
         # no verdict, arm or statistic reads them (the report carries them, secondary)
@@ -371,11 +452,79 @@ class Exp0001Run:
                     or not isinstance(grid.get("cells"), Mapping) or set(grid["cells"]) != cells:
                 raise RunError(f"seed {seed}: gate.json's sensitivity grid for {gene!r} is not "
                                f"the pre-planned analysis-only grid")
-        # the stored records verify as a record store: every bundle, its
-        # artifact and base genome, and both copies of each pair (ADR-0010 B4)
-        issues = _record_store_issues(gate["aggregates"], gate["children"])
-        if issues:
-            raise RunError(f"seed {seed}: gate.json's CIG records do not verify: {issues}")
+
+    def _cell_trajectory(self, seed: int, gate_round: int, task_id: str) -> str:
+        """The trajectory id of the (seed, round) G0 cell of a game."""
+        key = f"gate/{seed}/R{gate_round}/cell/{task_id}/{config_fingerprint(self.g0_config)}"
+        return trajectory_id_for(self.run_start["run_id"], key)
+
+    def _gate_record_issues(self, seed: int, gate: Mapping, families: Mapping) -> list[str]:
+        """What in a frozen gate artifact does not recompute; ``families`` is
+        each candidate's frozen applicability, from its stored artifact."""
+        issues: list[str] = []
+        by_aggregate: dict[str, dict] = {}
+        for child_id, child in gate["children"].items():
+            by_aggregate.setdefault(child.get("parent_cig_id"), {})[child.get("stage")] = child
+        genes = {aggregate_id: gene for gene, aggregate_id in gate["aggregate_ids"].items()}
+        for aggregate_id, stages in sorted(by_aggregate.items()):
+            replay = stages.get("replay")
+            found = (["has no stage-1 record"] if replay is None else
+                     replay_evidence_issues(replay["measurements"], genes.get(aggregate_id)))
+            issues.extend(f"{aggregate_id}: {issue}" for issue in found)
+            ablation = stages.get("ablation")
+            if ablation is None:
+                issues.append(f"{aggregate_id} has no stage-2 record")
+                continue
+            m = ablation["measurements"]
+            found = ablation_evidence_issues(m, mining_seed=seed,
+                                             families=families.get(genes.get(aggregate_id), ()))
+            if m["allocation"].get("bank_sha256") != self.bank["bank_sha256"]:
+                found.append("stage 2 was not drawn from this run's benefit bank (ADR-0012 D1)")
+            if found:
+                issues.extend(f"{aggregate_id}: {issue}" for issue in found)
+                continue
+            for outcome in m["paired_outcomes"]:
+                if outcome["cell"]["trajectory_id"] != \
+                        self._cell_trajectory(seed, outcome["round"], outcome["task_id"]):
+                    issues.append(f"{aggregate_id}: stage 2's game {outcome['task_id']!r} did not "
+                                  f"read its round-R{outcome['round']} cell (ADR-0012 D2)")
+                    break
+            in_scope = stages.get("generalization_in_scope", {}).get("measurements", {})
+            reference = in_scope.get("by_reference") or {}
+            if reference.get("child_id") != ablation["cig_id"] or \
+                    reference.get("paired_outcomes_sha256") != \
+                    paired_outcomes_sha256(m["paired_outcomes"]):
+                issues.append(f"{aggregate_id}: the in-scope child is not stage 2's record by "
+                              f"reference (ADR-0012 D5)")
+            out = stages.get("generalization_out_of_scope", {}).get("measurements", {})
+            stage4 = stages.get("interaction_regression", {}).get("measurements", {})
+            ran = m["alpha_met"] is True
+            if (out.get("not_run") is True) == ran or (stage4.get("not_run") is True) == ran:
+                issues.append(f"{aggregate_id}: its out-of-scope check and 4A must run iff stage "
+                              f"2 met alpha ({ran}) (ADR-0012 D7)")
+            if (out.get("allocation") or {}).get("bank_sha256") != self.bank["bank_sha256"]:
+                issues.append(f"{aggregate_id}: the out-of-scope games were not drawn from this "
+                              f"run's benefit bank (ADR-0012 D1)")
+            for outcome in out.get("paired_outcomes", ()):
+                if outcome["cell"]["trajectory_id"] != \
+                        self._cell_trajectory(seed, 5, outcome["task_id"]):
+                    issues.append(f"{aggregate_id}: out-of-scope game {outcome['task_id']!r} did "
+                                  f"not read its R5 cell (ADR-0012 D2)")
+                    break
+            baseline = (stage4.get("regression") or {}).get("paired_g0_run") or {}
+            for episode in baseline.get("episodes", ()):
+                if episode["trajectory_id"] != self._cell_trajectory(seed, 5, episode["task_id"]):
+                    issues.append(f"{aggregate_id}: T_reg task {episode['task_id']!r} was not "
+                                  f"paired with its R5 cell (ADR-0012 D2)")
+                    break
+            for pair in (stage4.get("interaction") or {}).get("pair_evidence", ()):
+                for outcome in pair["canonical_evidence"]["paired_outcomes"]:
+                    if outcome["condition"] == "neither" and outcome["trajectory_id"] != \
+                            self._cell_trajectory(seed, 6, outcome["task_id"]):
+                        issues.append(f"{aggregate_id}: a pair's neither side on "
+                                      f"{outcome['task_id']!r} is not its R6 cell (ADR-0012 D2)")
+                        break
+        return issues
 
     def _apply_decisions(self, seed: int, candidates, gate: Mapping) -> None:
         """The gate artifact is written first; the somatic journal then takes
@@ -416,39 +565,41 @@ class Exp0001Run:
                                f"seed {seed}'s lifetime")
             source_task = evaluation_task({"game_id": source.task_id, "family": source.family,
                                            "content_sha256": content[source.task_id]}, "t_mine")
-            plans.append((rank, envelope, replay_allocation(self.splits, source_task),
-                          generalization_allocation(self.splits, envelope, self.registry)))
-        ablation, interaction = ablation_allocation(self.splits), interaction_allocation(self.splits)
+            plans.append((rank, envelope, replay_allocation(source_task),
+                          stage2_allocation(self.bank, envelope, self.registry),
+                          out_of_scope_allocation(self.bank, envelope, self.registry)))
+        interaction = interaction_allocation(self.splits)
         self._somatic(seed, candidates).close()  # the persistent journal holds the candidates
 
-        requested: list[str] = []  # every key the real pass asks for
-
-        def runner(scope: str, dry=None):
-            if dry is None:
-                return LedgerGateRunner(self.executor, scope, self.budgets, requested=requested)
-            return PrefetchGateRunner(self.executor, scope, self.budgets, collected=dry[0],
-                                      collect=dry[1])
-
-        def stages12(dry=None) -> list[GateCandidateInput]:
-            inputs = []
-            for rank, envelope, replay_plan, generalization_plan in plans:
+        def gate_code(gate_pass: GatePass):
+            """The whole gate of the seed, round by round (ADR-0012 D2)."""
+            replays, stage1, stage2 = {}, {}, {}
+            # every evaluator is built, and fails closed, before the first request
+            for rank, envelope, replay_plan, stage2_plan, _ in plans:
                 gene = envelope["candidate"]["gene_id"]
                 common = dict(candidate_envelope=envelope, registry=self.registry,
                               base_config=self.g0_config, budgets=self.budgets,
                               parent_cig_id=cig_id(seed, rank), mining_seed=seed)
-                replay = ReplayEvaluator(runner=runner(f"gate/{seed}/{gene}/replay", dry),
-                                         **common).evaluate(replay_plan)
-                ablated = AblationEvaluator(runner=runner(f"gate/{seed}/{gene}/ablation", dry),
-                                            **common).evaluate(ablation)
+                replays[gene] = (ReplayEvaluator(runner=gate_pass.runner(1, f"{gene}/replay"),
+                                                 **common), replay_plan)
+                stage2[gene] = AblationEvaluator(allocation=stage2_plan, **common)
+            # R1: stage 1 (ADR-0012 D3)
+            for gene, (evaluator, replay_plan) in replays.items():
+                stage1[gene] = evaluator.evaluate(replay_plan)
+            # R1-R4: stage 2's looks for every candidate still running (D4)
+            for look in range(1, len(LOOKS) + 1):
+                for gene, evaluator in stage2.items():
+                    if evaluator.next_look == look:
+                        evaluator.play_look(look, gate_pass.runner(look, f"{gene}/ablation"))
+            inputs = []
+            for rank, envelope, _, _, out_plan in plans:
+                gene = envelope["candidate"]["gene_id"]
                 inputs.append(GateCandidateInput(
-                    candidate_envelope=envelope, frozen_rank=rank, replay_evaluation=replay,
-                    ablation_evaluation=ablated, generalization_allocation=generalization_plan,
-                    regression_allocation=t_reg, parent_cig_id=cig_id(seed, rank),
-                    mining_seed=seed))
-            return inputs
-
-        def orchestrate(inputs, dry=None):
-            # the gate commits into an in-memory mirror of the journal; its
+                    candidate_envelope=envelope, frozen_rank=rank,
+                    replay_evaluation=stage1[gene], ablation_evaluation=stage2[gene].evaluation(),
+                    generalization_allocation=out_plan, regression_allocation=t_reg,
+                    parent_cig_id=cig_id(seed, rank), mining_seed=seed))
+            # R5-R6: the gate commits into an in-memory mirror of the journal; its
             # artifact is frozen before the persistent journal takes the decisions
             mirror = SomaticStore.create(None, self.registry)
             for envelope in candidates:
@@ -456,28 +607,52 @@ class Exp0001Run:
             records = CigRecordStore()
             gate = CigGateOrchestrator(
                 registry=self.registry, base_config=self.g0_config,
-                runner=runner(f"gate/{seed}/stage3-4", dry),
+                runner=lambda gate_round: gate_pass.runner(
+                    gate_round, "stage3-4" if gate_round == 5 else "pairs"),
                 budgets=self.budgets, parent_cig_id=cig_id(seed, None), mining_seed=seed,
                 token_counter=self.token_counter, interaction_allocation=interaction,
                 somatic_store=mirror, cig_record_store=records)
             return gate.run(inputs), records, gate
 
-        parallel = self.executor.workers > 1
-        if parallel:  # stretch 1: replay and ablation of every candidate
-            self._prefetch(stages12, lambda condition: True)
-        inputs = stages12()
-        if parallel:
-            # stretch 2: generalization and regression of every candidate (the
-            # pass ends at the first unrecorded interaction episode)
-            self._prefetch(lambda dry: orchestrate(inputs, dry),
-                           lambda condition: condition in ("with_trait", "without_trait"))
-            # stretch 3: the interaction pairs of the now-recorded eligible set
-            self._prefetch(lambda dry: orchestrate(inputs, dry),
-                           lambda condition: condition in ("both", "neither"))
-        outcome, records, gate = orchestrate(inputs)
+        def gate_pass(**options) -> GatePass:
+            return GatePass(self.executor, seed=seed, g0_config=self.g0_config,
+                            budgets=self.budgets, **options)
+
+        def dry(gate_round: int) -> list[EpisodeSpec]:
+            collector = gate_pass(mode="dry", collect_round=gate_round)
+            try:
+                gate_code(collector)
+            except PrefetchStop:
+                pass  # the round's last request has been reached
+            except Exception:  # noqa: BLE001
+                if not collector.collected:
+                    raise  # no placeholder was answered, so the error is real: fail here
+                # a placeholder can lead the dry pass astray only after the
+                # round's requests (rounds are sequential); the completeness
+                # pass below, which answers none, meets any real error
+            return collector.collected
+
+        for gate_round in range(1, GATE_ROUNDS + 1):
+            queue = dry(gate_round)
+            if not queue:
+                continue
+            # ADR-0012 D9: room for the round and the final evaluation, or stop
+            self.ledger.check_reserve(f"gate/{seed}/R{gate_round}", round_episodes=len(queue),
+                                      final_reserve=FINAL_EVALUATION_RESERVE)
+            self.executor.run_many(sorted(queue, key=queue_order))
+            left = dry(gate_round)
+            if left:
+                raise RunError(f"seed {seed}: round R{gate_round} needed {len(left)} more "
+                               f"episodes after its queue ran (first {left[0].key!r}); a round "
+                               f"must be one queue (ADR-0012 D2)")
+        reader = gate_pass(mode="read")
+        try:
+            outcome, records, gate = gate_code(reader)
+        except GateQueueError as exc:
+            raise RunError(f"seed {seed}: {exc}") from exc
         # every recorded gate episode of this seed must be one the gate asked
         # for; checked against the ledger, so a resumed run fails closed too
-        unrequested = sorted(set(self.ledger.done_keys(f"gate/{seed}/")) - set(requested))
+        unrequested = sorted(set(self.ledger.done_keys(f"gate/{seed}/")) - set(reader.requested))
         if unrequested:
             raise RunError(f"seed {seed}: {len(unrequested)} recorded gate episodes were not "
                            f"requested by the gate (first {unrequested[0]!r}); the run left the "
@@ -491,25 +666,13 @@ class Exp0001Run:
             "aggregate_ids": {r.gene_id: r.aggregate_cig_id for r in outcome.results},
             "eliminated_by_interaction": {r.gene_id: r.eliminated_by for r in outcome.results},
             "aggregates": records.aggregates, "children": records.children,
+            # what each round ran and which cells its readers shared (ADR-0012 D2); the
+            # reserve checks (D9) stay in the ledger, which also holds a resumed session's
+            "rounds": _round_summary(reader),
             # the pre-planned tau_c/tau_r grid (manifest sensitivity_secondary): a pure
-            # recomputation over the stage evidence above, frozen with it
+            # recomputation over the stage evidence above, frozen with it (ADR-0012 D7)
             "sensitivity": {r.gene_id: gate.sensitivity_recomputation(r.gene_id)
                             for r in outcome.results}})
-
-    def _prefetch(self, dry_pass, collect) -> None:
-        """One parallel stretch of the gate: the dry pass runs no episode,
-        and ends at PrefetchStop; the episodes it collected run in parallel."""
-        collected: list[EpisodeSpec] = []
-        try:
-            dry_pass((collected, collect))
-        except PrefetchStop:
-            pass  # the end of the stretch
-        except Exception:  # noqa: BLE001
-            # a placeholder led the dry pass into an error after it had
-            # collected; the real pass meets any real error on its own
-            pass
-        if collected:
-            self.executor.run_many(collected)
 
     def _arms(self, seed: int, candidates, gate: Mapping) -> dict:
         genomes = arm_genomes(self.g0, candidates, gate["verdicts"], gate["aggregate_ids"],
@@ -600,6 +763,8 @@ class Exp0001Run:
                 "episodes": self.ledger.episodes, "model_calls": self.ledger.model_calls,
                 "aborted_attempts": self.ledger.aborted_attempts,
                 "gates": dict(self._gate_summaries),
+                # descriptive backend-noise references from the G0 cells (ADR-0012 D8)
+                "cell_disagreement": cell_disagreement(self._gates) if self._gates else None,
                 # restores and repairs: work after a restored snapshot ran twice, and
                 # its calls and time are not counted (ADR-0008 D5)
                 "ledger_notes": [dict(note) for note in self.ledger.notes], **content}
@@ -643,6 +808,7 @@ class Exp0001Run:
                 stage = f"gate/{seed}"
                 gate = self._gate(seed, candidates, t_reg, lifetimes[seed])
                 self._gate_summaries[str(seed)] = gate_summary(gate)
+                self._gates[str(seed)] = gate
                 self._sensitivity[str(seed)] = gate["sensitivity"]
                 arms = self._arms(seed, candidates, gate)
                 genomes[("B", seed)], genomes[("C", seed)] = arms["B"], arms["C"]

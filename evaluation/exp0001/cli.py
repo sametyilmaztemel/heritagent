@@ -90,7 +90,8 @@ from evaluation.exp0001.pilot_run import (
     project_exp0001,
     run_pilot,
 )
-from evaluation.exp0001.protocol import CAPS
+from evaluation.exp0001.benefit_bank import bank_content_index
+from evaluation.exp0001.protocol import PILOT_CAPS
 from evaluation.exp0001.provenance import (
     ProvenanceError,
     build_run_start_record,
@@ -116,6 +117,7 @@ from runtime.model_adapters.openai_server import VLLMServerAdapter
 
 MANIFESTS = Path("experiments") / "manifests"
 SPLITS_FILE, PILOT_FILE = "EXP-0001-splits.json", "EXP-0001-pilot.json"
+BANK_FILE = "EXP-0001-benefit-bank.json"  # ADR-0012 D1
 
 
 class CliError(RuntimeError):
@@ -145,10 +147,11 @@ def git_state(repo: Path) -> tuple[str, bool]:
     return git("rev-parse", "HEAD"), bool(git("status", "--porcelain"))
 
 
-def _manifests(repo: Path) -> tuple[dict, dict]:
+def _manifests(repo: Path) -> tuple[dict, dict, dict]:
     splits, pilot = _json(repo / MANIFESTS / SPLITS_FILE), _json(repo / MANIFESTS / PILOT_FILE)
-    verify_pre_run_artifacts(splits, pilot)  # the pre-registered ones, verified
-    return splits, pilot
+    bank = _json(repo / MANIFESTS / BANK_FILE)
+    verify_pre_run_artifacts(splits, pilot, bank)  # the pre-registered ones, verified
+    return splits, pilot, bank
 
 
 def _server_version(url: str) -> str | None:
@@ -232,8 +235,8 @@ def cmd_fetch_data(args) -> int:
 
 
 def cmd_verify_data(args) -> int:
-    splits, pilot = _manifests(Path(args.repo))
-    print(json.dumps(verify_data(args.data_root, splits, pilot)))
+    splits, pilot, bank = _manifests(Path(args.repo))
+    print(json.dumps(verify_data(args.data_root, splits, pilot, bank)))
     return 0
 
 
@@ -504,8 +507,8 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
     commit, dirty = git_state(repo)
     if dirty:
         raise CliError(f"the checkout at {repo} has changes; the pilot report names a clean commit")
-    splits, pilot = _manifests(repo)
-    verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
+    splits, pilot, bank = _manifests(repo)
+    verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     out = Path(args.out_dir)
     _restore_if_missing(out, args.mirror_dir)
     report_path = out / report_name
@@ -530,7 +533,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
         if not started.exists():
             _write_json(started, identity)
         mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
-        ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=CAPS,
+        ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=PILOT_CAPS,
                            session_info=_session_info(gpu, adapter, args.workers,
                                                       args.server_info),
                            on_append=Progress(mirror, args.progress_every))
@@ -627,8 +630,8 @@ def cmd_rehearse(args) -> int:
     commit, dirty = git_state(repo)
     if dirty:
         raise CliError(f"the checkout at {repo} has changes; the pilot report names a clean commit")
-    splits, pilot = _manifests(repo)
-    verify_data(args.data_root, splits, pilot)
+    splits, pilot, bank = _manifests(repo)
+    verify_data(args.data_root, splits, pilot, bank)
     revision = resolve_revision(args.model, args.revision)
     counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
     _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python {sys.version.split()[0]}")
@@ -723,7 +726,7 @@ def cmd_rehearse(args) -> int:
     keys = sorted(spec.key for kind in specs.values() for spec in kind)
     recorded = [r["key"] for r in lines if r.get("type") == "episode"]
     ledger = RunLedger(out / "ledger.jsonl", run_id=rehearsal.REHEARSAL_RUN_ID, clock=time.time,
-                       caps=CAPS, readonly=True).summary()
+                       caps=PILOT_CAPS, readonly=True).summary()
     m = report["measures"]
     checks.update({
         "every pilot episode recorded once": sorted(recorded) == keys,
@@ -796,7 +799,8 @@ def cmd_rehearsal_check(args) -> int:
 
 
 def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
-               pilot: dict, commit: str, dirty: bool, tokenizer: str, environment: dict) -> dict:
+               pilot: dict, bank: dict, commit: str, dirty: bool, tokenizer: str,
+               environment: dict) -> dict:
     path = local / "run-start.json"
     if path.exists():  # a resumed run: the same code, model and weights, or nothing
         record = _json(path)
@@ -807,6 +811,8 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
                            f"is {commit}{' (dirty)' if dirty else ''}. Check out that commit.")
         if record["weights"]["sha256"] != prepared["weights"]["sha256"]:
             raise CliError("the prepared weights differ from the ones the run started with")
+        if (record.get("benefit_bank") or {}).get("bank_sha256") != bank["bank_sha256"]:
+            raise CliError("the run started with another benefit bank (ADR-0012 D1)")
         started_with = (record.get("environment") or {}).get("software")
         if started_with is not None and started_with != environment["software"]:
             changed = {name: (started_with.get(name), version)
@@ -825,7 +831,8 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
     return build_run_start_record(
         code_commit=commit, code_dirty=dirty, model={**model, "tokenizer": tokenizer},
         teacher=model, weights=prepared["weights"], split_manifest=splits,
-        pilot_manifest=pilot, g0_genome=build_g0_seed_genome(TraitRegistry(local / "registry")),
+        pilot_manifest=pilot, bank_manifest=bank,
+        g0_genome=build_g0_seed_genome(TraitRegistry(local / "registry")),
         run_id=args.run_id, started_at=_now(), environment=environment)
 
 
@@ -836,20 +843,23 @@ def cmd_run(args) -> int:
     prepared = load_prepared(args.prepared)
     repo, local = Path(args.repo), Path(args.local_dir)
     commit, dirty = git_state(repo)
-    splits, pilot = _manifests(repo)
-    verified = verify_data(args.data_root, splits, pilot)  # seconds; before any episode
+    splits, pilot, bank = _manifests(repo)
+    verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     _restore_if_missing(local, args.mirror_dir)
     adapter = _adapter(args, prepared)
     counter = hf_token_counter(prepared["model_id"], prepared["revision"],
                                path=Path(prepared["path"]))
-    record = _run_start(args, local, prepared, adapter, splits, pilot, commit, dirty,
+    record = _run_start(args, local, prepared, adapter, splits, pilot, bank, commit, dirty,
                         counter.identity, _environment(verified))
     with _run_dir_lock(local) as lock:  # one writer, before the mirror is taken over
         mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
         started = time.monotonic()
         budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
-        run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits, model=adapter,
-                         teacher=adapter, env_factory=AlfworldEnvFactory(args.data_root, splits),
+        run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits,
+                         pilot_manifest=pilot, benefit_bank=bank, model=adapter,
+                         teacher=adapter,
+                         env_factory=AlfworldEnvFactory(args.data_root, splits,
+                                                        extra_games=bank_content_index(bank)),
                          token_counter=counter, workers=args.workers,
                          session_info=_session_info(gpu, adapter, args.workers,
                                                     args.server_info),
@@ -894,8 +904,8 @@ def cmd_status(args) -> int:
     if record.exists():
         start = _json(record)
         run_id, caps = start["run_id"], start["protocol"]["caps"]
-    else:  # a pilot directory
-        run_id, caps = PILOT_RUN_ID, CAPS
+    else:  # a pilot directory: its ledger was opened with the pilot's caps
+        run_id, caps = PILOT_RUN_ID, PILOT_CAPS
     ledger = RunLedger(run_dir / "ledger.jsonl", run_id=run_id, clock=time.time, caps=caps,
                        readonly=True)
     summary = {"run_id": run_id, **ledger.summary()}

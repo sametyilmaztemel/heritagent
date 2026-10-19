@@ -145,8 +145,13 @@ def test_the_manifest_points_at_the_committed_artifacts(splits):
     assert re.search(r"t_reg: \{eligible: solved-in-any-lifetime-episode, size: 40, seed: 0,", body)
     assert re.search(r"budgets: \{max_steps: 50, max_total_retries: 10, max_tokens_per_request: 512\}",
                      body)
-    assert re.search(r"generalization_allocation: \{split: even-over-families, .*"
-                     r"all_family_applicability: vacuous-out-of-scope\}", body)
+    bank = load("EXP-0001-benefit-bank.json")  # ADR-0012 D1
+    assert re.search(rf"benefit_bank: \{{file: EXP-0001-benefit-bank.json, sha256: "
+                     rf"{bank['bank_sha256']}, per_family: 192, seed: 0\}}", body)
+    assert re.search(r"generalization_allocation: \{in_scope: stage-2-games-by-reference, "
+                     r"out_of_scope: 24-benefit-bank-games-round-robin-over-omitted-families-in-"
+                     r"name-order, per_family: first-in-bank-order, round: R5, "
+                     r"all_family_applicability: vacuous-out-of-scope\}", body)  # ADR-0012 D5
     assert "pending" not in block.group(0)  # E1-E8 are owner decisions
 
 
@@ -169,9 +174,23 @@ def test_the_manifest_stage_lines_name_the_codes_rules():
     out_of_scope = re.search(r"^      out_of_scope: +\{(.*)\}", stages.group(1), re.MULTILINE)
     assert out_of_scope, "the out-of-scope stage line is missing"
     assert out_of_scope.group(1) == (
-        f"tasks: {OUT_SCOPE_COUNT}, source: families-outside-frozen-applicability, "
+        f"tasks: {OUT_SCOPE_COUNT}, source: benefit-bank-families-outside-frozen-applicability, "
         f"runs_per_condition: 1, pass: \"delta>={OUT_SCOPE_MIN_DELTA}\", "
         "all_family_applicability: vacuous-pass")
+    # ADR-0012 D4: the stage-2 line names the code's looks, alphas, tau_c and bank
+    from inheritance.ablation import ALLOCATION_SIZE, ALPHAS, FUTILITY_DIVISOR, LOOKS, TAU_C
+    ablation = re.search(r"^    ablation: +\{(.*?)\}\s+#", stages.group(1),
+                         re.MULTILINE | re.DOTALL)
+    assert ablation, "the stage-2 line is missing"
+    line = ablation.group(1)
+    assert f"pool: benefit_bank, games: {ALLOCATION_SIZE}," in line
+    assert f"looks: {list(LOOKS)}," in line
+    assert "alpha: [" + ", ".join(str(float(a)) for a in ALPHAS) + "]," in line
+    assert f"tau_c: {float(TAU_C)}," in line and f"floor(n_k/{FUTILITY_DIVISOR})" in line
+    assert "test: exact-paired-sign-test" in line and "reference: round-cell" in line
+    replay = re.search(r"^    replay: +\{(.*?)\}\s+#", stages.group(1), re.MULTILINE | re.DOTALL)
+    assert "tasks: 1, source: source-task-of-the-mining-pair-success, conditions: [with-trait]" \
+        in replay.group(1)  # ADR-0012 D3
     run_protocol = re.search(r"^run_protocol:[^\n]*\n((?:  .*\n)+)", text, re.MULTILINE)
     final = re.search(r"^  final_evaluation: \{(.*)\}", run_protocol.group(1), re.MULTILINE)
     assert final.group(1) == ("temperature: 0.0, sampling_seed: none, arm_a: once, "

@@ -11,6 +11,10 @@ statistics — locked implementation).
 
 This is stage-level paired intervention evidence. It is NOT global causal
 utility, inheritance, or H2 support (those require #12 + EXP-0001).
+
+``sign_test_p`` is the exact one-sided sign test of the recalibrated
+stage 2 (ADR-0012 D4), computed with integers and ``Fraction``; the
+bootstrap stays as the descriptive interval every stage-2 record carries.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
+from fractions import Fraction
 
 N_RESAMPLES = 10_000  # ADR-0002 locked
 CONFIDENCE = 0.95
@@ -78,8 +83,15 @@ def paired_cluster_bootstrap(deltas: list[float], *, seed: int,
                             n_resamples=n_resamples, seed=seed)
 
 
-def stage_passes(point_estimate: float, lower_bound: float, *,
-                 tau_c: float = 0.05) -> bool:
-    """Locked stage-2 pass rule: point estimate >= tau_c AND bootstrap 95%
-    lower bound > 0."""
-    return point_estimate >= tau_c and lower_bound > 0.0
+def sign_test_p(n_plus: int, n_minus: int) -> Fraction:
+    """One-sided exact sign test (ADR-0012 D4): P(Bin(n_plus + n_minus, 1/2)
+    >= n_plus), where n_plus counts the games the with-trait execution solved
+    and its cell failed, n_minus the reverse. Exact (integers and
+    ``Fraction``); 1 when no game is discordant."""
+    for value in (n_plus, n_minus):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"discordant counts must be non-negative ints, got {value!r}")
+    n = n_plus + n_minus
+    if n == 0:
+        return Fraction(1)
+    return Fraction(sum(math.comb(n, i) for i in range(n_plus, n + 1)), 2 ** n)

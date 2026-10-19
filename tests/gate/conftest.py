@@ -7,8 +7,8 @@ from tests.gate.helpers import (  # noqa: F401
     MINING_SEED,
     PARENT_CIG,
     ScriptedGateRunner,
-    coherent_stage11_children,
     interaction_tasks,
     mint_envelope,
     proposal,
+    stage12_evidence,
 )

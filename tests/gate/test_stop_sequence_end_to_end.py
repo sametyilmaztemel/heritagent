@@ -6,24 +6,18 @@ gate requiring stop == [] and regression running without the stop; the
 suite stayed green because the gate tests hand-build their children.
 These tests feed real evaluator output through the gate."""
 
-from inheritance.ablation import AblationEvaluator
 from inheritance.gate import CigGateOrchestrator, GateCandidateInput
 from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionEvaluator
-from inheritance.replay import ReplayEvaluator
 from runtime.loop import run_agent
 from runtime.model_adapters import ScriptedAdapter
 from runtime.policies.planner_react import STOP_SEQUENCES
 from runtime.seed_g0 import g0_runtime_config
-from tests.gate.helpers import BUDGETS
+from tests.gate.helpers import BUDGETS, stage12_evidence
 from tests.gate.test_gate_orchestrator import build_world
 from tests.inheritance.conftest import MINING_SEED, PARENT_CIG
 from tests.inheritance.conftest import base_config, envelope, registry  # noqa: F401 (fixtures)
 from tests.inheritance.scripted_runner import ScriptedRunner
-from tests.inheritance.test_ablation import make_allocation as ablation_allocation
-from tests.inheritance.test_ablation import with_gene
-from tests.inheritance.test_replay import make_allocation as replay_allocation
-from tests.inheritance.test_replay import outcomes_for
 from tests.runtime.conftest import ScriptedEnv, react_final
 
 LOCKED = evaluation_settings(max_tokens=BUDGETS.max_tokens_per_request, seed=MINING_SEED)
@@ -31,21 +25,7 @@ LOCKED = evaluation_settings(max_tokens=BUDGETS.max_tokens_per_request, seed=MIN
 
 def test_real_replay_and_ablation_children_pass_the_gate_check(tmp_path, registry,
                                                               base_config, envelope):
-    replay_evaluator = ReplayEvaluator(
-        candidate_envelope=envelope, registry=registry, base_config=base_config,
-        runner=ScriptedRunner(), budgets=BUDGETS, parent_cig_id=PARENT_CIG,
-        mining_seed=MINING_SEED)
-    replay_evaluator._runner.outcomes = outcomes_for([True] * 5, [False] * 5)
-    replay = replay_evaluator.evaluate(replay_allocation(tmp_path, registry))
-    ablation_evaluator = AblationEvaluator(
-        candidate_envelope=envelope, registry=registry, base_config=base_config,
-        runner=ScriptedRunner(), budgets=BUDGETS, parent_cig_id=PARENT_CIG,
-        mining_seed=MINING_SEED)
-    ablation_evaluator._runner.outcomes = {
-        (f"abl-{i}", condition): (condition == "with_trait" or i % 2 == 0,
-                                  with_gene(condition == "with_trait"))
-        for i in range(20) for condition in ("with_trait", "without_trait")}
-    ablation = ablation_evaluator.evaluate(ablation_allocation(tmp_path, registry))
+    replay, ablation = stage12_evidence(registry, base_config, envelope)
     for evaluation in (replay, ablation):
         recorded = evaluation.child_record["measurements"]["eval_generation_settings"]
         assert recorded["stop"] == list(STOP_SEQUENCES)

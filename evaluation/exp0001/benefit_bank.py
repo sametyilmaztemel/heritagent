@@ -211,6 +211,13 @@ def _verify_bank(bank: Mapping, split_manifest: dict, pilot_manifest: dict) -> N
                              f"included) or the pilot: {overlap[:5]}")
 
 
+def bank_content_index(bank: Mapping) -> dict[tuple[str, str], str]:
+    """(split, game_id) -> content_sha256 of every bank game, for the
+    environment factory and the data check."""
+    return {("train", g["game_id"]): g["content_sha256"]
+            for games in bank["families"].values() for g in games}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the EXP-0001 benefit bank (ADR-0012 D1).")
     parser.add_argument("--data-root", type=Path, required=True,

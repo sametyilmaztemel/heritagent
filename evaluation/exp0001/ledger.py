@@ -29,6 +29,12 @@ Time between sessions (a disconnected notebook, say) is not counted, and
 neither is the time between a crashed session's last record and the
 crash: that gap is at most the time between two records.
 
+Before each gate round the pipeline asks for a ``reserve`` check (ADR-0012
+D9): the round's unrecorded episodes plus the final evaluation's largest
+count must fit under the episode cap, and, at the run's mean calls per
+recorded episode, under the call cap; otherwise the run stops before the
+round, marked incomplete. Each check is a record with its numbers.
+
 Notes (``repair``, ``restore``) record a torn tail cut off on purpose or a
 restore from a mirror snapshot. They change no count, carry no clock, and
 may follow a terminal record (a finished run can be restored). A
@@ -41,17 +47,20 @@ import hashlib
 import json
 import math
 from collections.abc import Callable, Mapping
+from fractions import Fraction
 from pathlib import Path
 
 from evaluation.exp0001.protocol import CAPS, max_model_calls_per_episode
 from trajectory.storage.jsonl import finite_float, jsonl_lines
 
-LEDGER_SCHEMA = "heritagent/exp0001-ledger/0.2"
+LEDGER_SCHEMA = "heritagent/exp0001-ledger/0.3"  # 0.3 adds the reserve record (ADR-0012 D9)
+READABLE_SCHEMAS = ("heritagent/exp0001-ledger/0.2", LEDGER_SCHEMA)
 WALL_CLOCK_BASIS = "active-run-time"  # ADR-0008
 TERMINAL = ("complete", "incomplete")
 NOTES = ("repair", "restore")
 EPISODE, CALLS = "episode", "calls"
 HEARTBEAT = "heartbeat"
+RESERVE = "reserve"
 
 
 class LedgerError(ValueError):
@@ -106,6 +115,7 @@ class RunLedger:
         self._reason: str | None = None
         self._sessions: list[dict] = []  # index, start, last, info
         self._notes: list[dict] = []
+        self._reserve_checks: list[dict] = []
         self._session_start: float | None = None  # this process's session
         if self._path.exists():
             self._load(run_id)
@@ -141,7 +151,7 @@ class RunLedger:
                 raise LedgerError(f"{self._path}: line {index + 1} is not an object")
             records.append(record)
         if not records or records[0].get("type") != "header" \
-                or records[0].get("schema") != LEDGER_SCHEMA:
+                or records[0].get("schema") not in READABLE_SCHEMAS:
             raise LedgerError(f"{self._path}: missing ledger header")
         header = records[0]
         if header.get("run_id") != run_id:
@@ -187,6 +197,9 @@ class RunLedger:
                     open_attempts[key].pop()  # the attempt this record finished
             elif kind in TERMINAL:
                 self._state, self._reason = kind, record.get("reason")
+            elif kind == RESERVE:
+                # as this session's checks hold them: the clock is the session's, not the check's
+                self._reserve_checks.append({k: v for k, v in record.items() if k != "clock"})
             elif kind != HEARTBEAT:
                 raise LedgerError(f"{self._path}: unknown record type {kind!r}")
             if not self._sessions:
@@ -249,6 +262,57 @@ class RunLedger:
     @property
     def notes(self) -> tuple[dict, ...]:
         return tuple(dict(n) for n in self._notes)
+
+    @property
+    def reserve_checks(self) -> tuple[dict, ...]:
+        return tuple(dict(r) for r in self._reserve_checks)
+
+    def mean_calls_per_episode(self) -> Fraction | None:
+        """The run's mean model calls per recorded episode so far (episode
+        records only: teacher calls and aborted reservations are not
+        episodes), or None before the first episode."""
+        if not self._done:
+            return None
+        return Fraction(sum(r["model_calls"] for r in self._done.values()), len(self._done))
+
+    def check_reserve(self, label: str, *, round_episodes: int, final_reserve: int) -> dict:
+        """ADR-0012 D9's pre-round check, with nothing in flight: room for the
+        round's unrecorded episodes plus the final evaluation's largest count,
+        under the episode cap and, at the run's mean calls per recorded
+        episode, under the call cap. Records the check; stops the run as
+        incomplete (CapExceeded) when it fails."""
+        if self._state != "running":
+            raise LedgerError(f"the run is {self._state}; nothing can start")
+        if self._open:
+            raise LedgerError("a reserve check needs no episode in flight")
+        for name, value in (("round_episodes", round_episodes), ("final_reserve", final_reserve)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise LedgerError(f"{name} must be a non-negative int, got {value!r}")
+        ahead = round_episodes + final_reserve
+        mean = self.mean_calls_per_episode()
+        # before any episode the worst case stands in for the mean
+        per_episode = Fraction(max_model_calls_per_episode()) if mean is None else mean
+        calls_ahead = math.ceil(per_episode * ahead)
+        episodes_ok = self.episodes + ahead <= self._caps["episodes_max"]
+        calls_ok = self._model_calls + calls_ahead <= self._caps["model_calls_max"]
+        record = {"type": RESERVE, "label": label, "round_episodes": round_episodes,
+                  "final_reserve": final_reserve, "episodes": self.episodes,
+                  "model_calls": self._model_calls,
+                  "mean_calls_per_episode": None if mean is None else {
+                      "exact": f"{mean.numerator}/{mean.denominator}", "float": float(mean)},
+                  "calls_ahead": calls_ahead, "passed": episodes_ok and calls_ok}
+        self._append(record)
+        self._reserve_checks.append(record)
+        if not episodes_ok:
+            self._stop(f"reserve: before {label}, {self.episodes} episodes + {round_episodes} "
+                       f"in the round + {final_reserve} for the final evaluation would exceed "
+                       f"episodes_max {self._caps['episodes_max']} (ADR-0012 D9)")
+        if not calls_ok:
+            self._stop(f"reserve: before {label}, {self._model_calls} model calls + "
+                       f"{calls_ahead} ahead ({ahead} episodes at {float(per_episode):.2f} "
+                       f"calls each) would exceed model_calls_max "
+                       f"{self._caps['model_calls_max']} (ADR-0012 D9)")
+        return dict(record)
 
     def active_hours(self) -> float:
         """Active run time so far: every session's span, this one up to now."""

@@ -70,3 +70,7 @@ analysis-only recomputation over existing stage evidence.
 ## ADR-0011 — the model and the determinism policy (2026-10-16, owner)
 
 EXP-0001 runs on Qwen3.8-27B (ADR-0011 D1), at the owner's request for a current model family. Reason (a) above, the same base model as SkillRL, no longer holds (ADR-0011 D8). The determinism policy keeps one execution per (task instance, condition), but the server runs without batch-invariant kernels, so a temperature-0 reply may depend on what else is in the batch: never averaged, measured by the pilot, disclosed (ADR-0011 D2).
+
+## ADR-0012 — the gate recalibration (2026-10-19, owner)
+
+The stage rules above are replaced by ADR-0012 D1–D11 and kept as historical records. Stage 1 is an expression check on the source task (D3); stage 2 is a pooled group-sequential exact paired sign test over up to 192 benefit-bank games, whose bootstrap is descriptive (D1, D4); the in-scope child records stage 2 by reference, and the out-of-scope check plays 24 bank games at the locked −0.05 (D5); stage 4 keeps its rules (D6). τ_c, τ_r, the out-of-scope tolerance and τ_k are unchanged. A1's contribution for a harmful pair is the stage-2 point estimate at the stopping look; an exact tie keeps the earlier frozen rank (D6). Every candidate still gets all five stage records, but the out-of-scope check, 4A and 4C run only for candidates whose stage-2 test met α at some look; the others' records say not run (D7). Caps: 14,500 episodes and 507,500 calls (D9).

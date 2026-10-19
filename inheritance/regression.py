@@ -7,8 +7,10 @@ successful G0 trajectory id, baseline_success == True). Since ADR-0009 D1
 (owner, 2026-10-15) the stage is paired: G0 without the trait plays every
 T_reg task once per mining seed at the gate's locked settings, shared by
 every candidate of that seed (``run_regression_baseline``), and each
-candidate runs T_reg
-with ``genome ∪ trait`` at the same settings. Locked threshold:
+candidate runs T_reg with ``genome ∪ trait`` at the same settings. Since
+ADR-0012 D2 that G0 run is the seed's round-R5 cells of the T_reg tasks,
+played only when some candidate reaches R5 (its stage-2 p_k met α_k), and
+4A runs only for those candidates (D7). Locked threshold:
 ``regression_drop = (success_without - success_with) / 40 <= 0.03`` (tau_r;
 with 40 binary tasks a net loss of at most one task; a net gain passes).
 The lifetime success at temperature 0.7 selects T_reg (ADR-0007 E3); it is
@@ -37,6 +39,7 @@ from inheritance.overlay import (
     evaluation_settings,
 )
 from inheritance.runner import (
+    EvaluationIntegrityError,
     EvaluationTask,
     GateEpisodeRunner,
     RunnerContractError,
@@ -45,8 +48,10 @@ from inheritance.runner import (
 
 REGRESSION_TASK_COUNT = 40
 TAU_R = 0.03
+REGRESSION_ROUND = 5  # ADR-0012 D2
 REGRESSION_THRESHOLD_TEXT = ("regression_drop = (success_without - success_with) / 40 <= 0.03 "
-                             "(tau_r), paired against one shared G0 run (ADR-0009 D1)")
+                             "(tau_r), paired against the seed's R5 G0 cells (ADR-0009 D1; "
+                             "ADR-0012 D2)")
 TAU_K_TOKENS = 512
 OVERHEAD_THRESHOLD_TEXT = "expression_tokens <= 512 (tau_k)"
 
@@ -188,7 +193,8 @@ class RegressionBaseline:
         return sum(1 for e in self.episodes if e["success"])
 
     def record(self) -> dict:
-        return {"condition": "without_trait", "shared_across_candidates": True,
+        return {"condition": "g0_cell", "round": REGRESSION_ROUND,
+                "shared_across_candidates": True,
                 "episodes": copy.deepcopy(list(self.episodes)),
                 "successes_without": self.successes,
                 "eval_generation_settings": copy.deepcopy(self.locked_settings)}
@@ -205,7 +211,10 @@ def run_regression_baseline(*, base_config: RuntimeConfig, runner: GateEpisodeRu
             base_config, budgets, "without_trait", settings)
         validate_outcome(outcome, task.task_id, "without_trait", settings=settings)
         episodes.append({"task_id": task.task_id, "family": task.family,
-                         "success": outcome.success, "trajectory_id": outcome.trajectory_id})
+                         "seed": mining_seed, "round": REGRESSION_ROUND,
+                         "success": outcome.success,
+                         "expressed_gene_ids": list(outcome.expressed_gene_ids),
+                         "status": outcome.status, "trajectory_id": outcome.trajectory_id})
     return RegressionBaseline(
         episodes=tuple(episodes),
         locked_settings={"temperature": settings.temperature, "max_tokens": settings.max_tokens,
@@ -302,6 +311,12 @@ class RegressionEvaluator:
         if baseline.locked_settings != self._locked:
             raise RunnerContractError(f"the shared G0 run used settings {baseline.locked_settings}, "
                                       f"the stage locks {self._locked}")
+        leaked = [e["task_id"] for e in baseline.episodes
+                  if self._candidate_gene_id in e.get("expressed_gene_ids", ())]
+        if leaked:
+            raise EvaluationIntegrityError(
+                f"the G0 cells of {leaked} expressed the target gene "
+                f"{self._candidate_gene_id!r}: contaminated intervention, no child record")
         episodes: list[dict] = []
         successes_with = 0
         for task in allocation.tasks:
@@ -316,7 +331,8 @@ class RegressionEvaluator:
                 successes_with += 1
             episodes.append({
                 "task_id": task.task_id, "family": task.family,
-                "success": outcome.success,
+                "round": REGRESSION_ROUND, "success": outcome.success,
+                "expressed_gene_ids": list(outcome.expressed_gene_ids),
                 "baseline_trajectory_id": task.baseline_trajectory_id,
                 "trajectory_id": outcome.trajectory_id,
             })

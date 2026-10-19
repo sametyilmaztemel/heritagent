@@ -1,6 +1,7 @@
 """EXP-0001 run-start provenance and the cap ledger (issue #13 Phase A;
 design section 8 hard caps; ADR-0007)."""
 
+import copy
 import json
 
 import pytest
@@ -50,6 +51,7 @@ def make_record(registry, **overrides):  # noqa: F811
                 weights={"sha256": "b" * 64, "files": {"model.safetensors": "c" * 64}},
                 split_manifest=load("EXP-0001-splits.json"),
                 pilot_manifest=load("EXP-0001-pilot.json"),
+                bank_manifest=load("EXP-0001-benefit-bank.json"),
                 g0_genome=build_g0_seed_genome(registry), run_id="EXP-0001-run-1",
                 started_at="2026-10-20T09:00:00Z")
     args.update(overrides)
@@ -70,7 +72,10 @@ def test_the_record_names_everything_a_result_must_carry(registry):  # noqa: F81
                                                     "cluster_order": "task_id"}
     assert record["final_statistics"]["t_reg"] == "one-set-shared-across-seeds"
     assert record["protocol"]["lifetime_attempts_per_task"] == 3
-    assert record["protocol"]["caps"]["model_calls_max"] == 225_000
+    assert record["protocol"]["caps"] == {"episodes_max": 14_500, "model_calls_max": 507_500,
+                                          "wall_clock_hours_max": 96,
+                                          "accelerator_nodes_max": 1}  # ADR-0012 D9
+    assert record["protocol"]["final_evaluation_reserve"] == 1358
     assert record["environment"] is None  # the CLI names it; see the next test
 
 
@@ -238,7 +243,6 @@ def test_a_protocol_stop_marks_the_run_incomplete_with_its_reason(tmp_path):
 
 
 def test_the_record_binds_the_pre_registered_artifacts(registry):  # noqa: F811
-    import copy
     splits, pilot = load("EXP-0001-splits.json"), load("EXP-0001-pilot.json")
     tampered = copy.deepcopy(splits)  # a T_eval game swapped into T_mine, hashes left as they were
     tampered["pools"]["t_mine"]["games"][0], tampered["pools"]["t_eval"]["games"][0] = \
@@ -253,6 +257,18 @@ def test_the_record_binds_the_pre_registered_artifacts(registry):  # noqa: F811
         make_record(registry, expected_split_sha256="0" * 64)
     with pytest.raises(ProvenanceError, match="not the pre-registered one"):
         make_record(registry, expected_pilot_sha256="0" * 64)
+    bank = load("EXP-0001-benefit-bank.json")  # ADR-0012 D1
+    swapped = copy.deepcopy(bank)
+    families = swapped["families"]
+    first, second = sorted(families)[:2]
+    families[first][0], families[second][0] = families[second][0], families[first][0]
+    with pytest.raises(ProvenanceError, match="does not verify"):
+        make_record(registry, bank_manifest=swapped)
+    with pytest.raises(ProvenanceError, match="benefit bank .* is not the pre-registered one"):
+        make_record(registry, expected_bank_sha256="0" * 64)
+    with pytest.raises(ProvenanceError, match="verifies against the pilot manifest too"):
+        from evaluation.exp0001.provenance import verify_pre_run_artifacts
+        verify_pre_run_artifacts(splits, None, bank)
     record = make_record(registry)
     assert record["teacher"]["model_id"] == "Qwen/Qwen2.5-7B-Instruct"
     assert record["model"]["revision"] == "abc"
@@ -261,14 +277,21 @@ def test_the_record_binds_the_pre_registered_artifacts(registry):  # noqa: F811
 def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
     record = make_record(registry)
     assert set(record) == {"schema", "experiment", "run_id", "started_at", "code", "model",
-                           "teacher", "weights", "splits", "pilot", "miner", "g0", "candidate_set",
+                           "teacher", "weights", "splits", "pilot", "benefit_bank", "miner", "g0",
+                           "candidate_set",
                            "gate", "final_statistics", "generation", "protocol",
                            "required_at_run_time", "environment", "record_sha256"}
     assert record["pilot"]["pilot_sha256"] == load("EXP-0001-pilot.json")["pilot_sha256"]
     assert len(record["miner"]["prompt_sha256"]) == 64 == len(record["miner"]["output_schema_sha256"])
     assert record["candidate_set"] == {"cap": 10, "ranking": ["miner-estimated-generality",
                                                              "discovery-order"]}
-    assert record["gate"]["threshold_version"] == "EXP-0001-CIG-M0-v1"
+    assert record["gate"]["threshold_version"] == "EXP-0001-CIG-M0-v2"  # ADR-0012 D10
+    bank = load("EXP-0001-benefit-bank.json")
+    assert record["benefit_bank"] == {
+        "bank_sha256": bank["bank_sha256"], "games_sha256": bank["games_sha256"],
+        "split_manifest_sha256": record["splits"]["manifest_sha256"],
+        "pilot_sha256": record["pilot"]["pilot_sha256"], "per_family": 192}
+    assert "benefit-bank-hash" in record["required_at_run_time"]
     assert record["splits"]["plan"]["seed"] == 0
     assert record["weights"]["sha256"] == "b" * 64
     assert record["protocol"]["budgets"] == {"max_steps": 50, "max_total_retries": 10,
@@ -287,14 +310,15 @@ def test_a_frozen_artifact_is_never_replaced(tmp_path):
 def test_the_keyed_hash_rules_match_the_adr_literally():
     """Golden values computed with hashlib from the ADR-0007 formulas, not
     with the production functions (E1, E3, E6)."""
-    from evaluation.exp0001.allocations import generalization_rank
+    from evaluation.exp0001.benefit_bank import bank_rank
     from evaluation.exp0001.lifetime import t_reg_rank
     game = "pick_and_place_simple-Box-None-ArmChair-212/trial_T20190908_214946_567644"
     assert attempt_sampling_seed(11, game, 0) == 1009155567
     assert attempt_sampling_seed(41, "x", 2) == 1584960060
     assert t_reg_rank("x") == "6aea84556f329decfc95454ae28e8dee42de8490eb7b51cd383673e094221847"
-    assert generalization_rank("pick_and_place_simple", "x") == \
-        "fc7c49b643c2ae28764d98b3ad381f09f9394b29555f219bddaece3505e405ce"
+    # ADR-0012 D1: sha256("heritagent-split|0|benefit_bank|<family>|<game_id>")
+    assert bank_rank("pick_and_place_simple", "x") == \
+        "4dd26dc60550bc68da4f70496be51d08234b6cb5febf8989bec0feaf58512d9a"
 
 
 def test_the_protocol_constants_are_the_manifests():
@@ -302,6 +326,7 @@ def test_the_protocol_constants_are_the_manifests():
     import re
     from evaluation.exp0001.protocol import (
         CANDIDATE_CAP,
+        LOCKED_BENEFIT_BANK_SHA256,
         LOCKED_PILOT_SHA256,
         LOCKED_SPLIT_MANIFEST_SHA256,
         MINING_SEEDS,
@@ -314,9 +339,10 @@ def test_the_protocol_constants_are_the_manifests():
     assert MINING_SEEDS == (11, 23, 41)
     assert int(re.search(r"^\s+cap: (\d+)\s+# K", text, re.MULTILINE).group(1)) == CANDIDATE_CAP
     assert f"sha256: {LOCKED_SPLIT_MANIFEST_SHA256}" in text and \
-        f"sha256: {LOCKED_PILOT_SHA256}" in text
+        f"sha256: {LOCKED_PILOT_SHA256}" in text and f"sha256: {LOCKED_BENEFIT_BANK_SHA256}" in text
     assert load("EXP-0001-splits.json")["manifest_sha256"] == LOCKED_SPLIT_MANIFEST_SHA256
     assert load("EXP-0001-pilot.json")["pilot_sha256"] == LOCKED_PILOT_SHA256
+    assert load("EXP-0001-benefit-bank.json")["bank_sha256"] == LOCKED_BENEFIT_BANK_SHA256
 
 
 def test_an_aborted_attempt_is_charged_its_reservation(tmp_path):
@@ -569,3 +595,112 @@ def test_one_step_budget_and_the_context_window_are_pre_registered():
     assert PROTOCOL["budgets"]["max_steps"] == EPISODE_MAX_STEPS == 50
     assert PROTOCOL["context_window"] == CONTEXT_WINDOW == DEFAULT_MAX_MODEL_LEN == 32768
     assert "never truncated" in PROTOCOL["context_overflow"]
+
+
+# -- the pre-round reserve (ADR-0012 D9) -------------------------------------------------
+def reserve_ledger(tmp_path, *, episodes_max=100, model_calls_max=10_000, done=10, calls=3):
+    caps = {**CAPS, "episodes_max": episodes_max, "model_calls_max": model_calls_max}
+    ledger = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock(), caps=caps)
+    ledger.admit_calls("mining/11", 7)
+    ledger.record_calls("mining/11", model_calls=7)  # teacher calls: not in the mean
+    for index in range(done):
+        ledger.admit(f"e{index}")
+        ledger.record(f"e{index}", model_calls=calls, outcome={})
+    return ledger, caps
+
+
+def test_the_reserve_check_is_recorded_and_survives_a_reopen(tmp_path):
+    ledger, caps = reserve_ledger(tmp_path)
+    from fractions import Fraction
+    assert ledger.mean_calls_per_episode() == Fraction(3)
+    check = ledger.check_reserve("gate/11/R1", round_episodes=40, final_reserve=50)
+    assert check == {"type": "reserve", "label": "gate/11/R1", "round_episodes": 40,
+                     "final_reserve": 50, "episodes": 10, "model_calls": 37,
+                     "mean_calls_per_episode": {"exact": "3/1", "float": 3.0},
+                     "calls_ahead": 270, "passed": True}  # 10 + 90 = the cap: room
+    reopened = RunLedger(tmp_path / "ledger.jsonl", run_id="r", clock=Clock(), caps=caps)
+    assert reopened.reserve_checks == (check,) and reopened.state == "running"
+    header = json.loads((tmp_path / "ledger.jsonl").read_text().splitlines()[0])
+    assert header["schema"] == "heritagent/exp0001-ledger/0.3"
+
+
+@pytest.mark.parametrize("caps,message", [
+    ({"episodes_max": 99}, r"10 episodes \+ 40 in the round \+ 50 for the final evaluation "
+                           r"would exceed episodes_max 99"),
+    ({"model_calls_max": 37 + 269}, r"37 model calls \+ 270 ahead \(90 episodes at 3.00 calls "
+                                    r"each\) would exceed model_calls_max 306"),
+])
+def test_the_reserve_stops_the_run_before_a_round_that_would_not_fit(tmp_path, caps, message):
+    ledger, _ = reserve_ledger(tmp_path, **caps)
+    with pytest.raises(CapExceeded, match=message):
+        ledger.check_reserve("gate/11/R1", round_episodes=40, final_reserve=50)
+    assert ledger.state == "incomplete" and ledger.reason.startswith("reserve: before gate/11/R1")
+    lines = [json.loads(line) for line in (tmp_path / "ledger.jsonl").read_text().splitlines()]
+    assert [r["type"] for r in lines[-2:]] == ["reserve", "incomplete"]
+    assert lines[-2]["passed"] is False
+    with pytest.raises(LedgerError, match="incomplete"):
+        ledger.admit("e99")
+
+
+def test_before_any_episode_the_reserve_uses_the_worst_case(tmp_path):
+    ledger, _ = reserve_ledger(tmp_path, done=0, model_calls_max=10 ** 7)
+    assert ledger.mean_calls_per_episode() is None
+    check = ledger.check_reserve("gate/11/R1", round_episodes=4, final_reserve=6)
+    assert check["mean_calls_per_episode"] is None
+    assert check["calls_ahead"] == 10 * max_model_calls_per_episode()
+
+
+def test_a_reserve_check_needs_a_quiet_running_ledger(tmp_path):
+    ledger, _ = reserve_ledger(tmp_path)
+    for name, value in (("round_episodes", -1), ("round_episodes", True),
+                        ("final_reserve", 1.5)):
+        arguments = {"round_episodes": 1, "final_reserve": 1, name: value}
+        with pytest.raises(LedgerError, match=f"{name} must be a non-negative int"):
+            ledger.check_reserve("gate/11/R1", **arguments)
+    ledger.admit("e-open")
+    with pytest.raises(LedgerError, match="no episode in flight"):
+        ledger.check_reserve("gate/11/R1", round_episodes=1, final_reserve=1)
+    ledger.record("e-open", model_calls=1, outcome={})
+    ledger.complete()
+    with pytest.raises(LedgerError, match="complete"):
+        ledger.check_reserve("gate/11/R1", round_episodes=1, final_reserve=1)
+
+
+def test_a_ledger_written_before_the_reserve_record_still_reads(tmp_path):
+    """Schema 0.2 (the calibration pilot's ledgers) reads; any other does not."""
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id="r", clock=Clock())
+    ledger.admit("e0")
+    ledger.record("e0", model_calls=2, outcome={})
+    lines = path.read_text().splitlines()
+    for schema, readable in (("heritagent/exp0001-ledger/0.2", True),
+                             ("heritagent/exp0001-ledger/0.1", False)):
+        header = {**json.loads(lines[0]), "schema": schema}
+        path.write_text("\n".join([json.dumps(header)] + lines[1:]) + "\n")
+        if readable:
+            assert RunLedger(path, run_id="r", clock=Clock()).episodes == 1
+        else:
+            with pytest.raises(LedgerError, match="missing ledger header"):
+                RunLedger(path, run_id="r", clock=Clock())
+
+
+@pytest.mark.parametrize("cap,passed", [(37 + 270, True), (37 + 269, False)])
+def test_the_call_reserve_is_exact_at_its_cap(tmp_path, cap, passed):
+    ledger, _ = reserve_ledger(tmp_path, model_calls_max=cap)
+    if passed:
+        assert ledger.check_reserve("gate/11/R1", round_episodes=40, final_reserve=50)["passed"]
+    else:
+        with pytest.raises(CapExceeded, match="model_calls_max"):
+            ledger.check_reserve("gate/11/R1", round_episodes=40, final_reserve=50)
+
+
+def test_the_calls_ahead_round_up(tmp_path):
+    """A fractional mean (7/2) times 3 episodes ahead is 10.5 calls: the
+    check reserves 11."""
+    ledger, _ = reserve_ledger(tmp_path, done=0)
+    for index, calls in enumerate((3, 4)):
+        ledger.admit(f"e{index}")
+        ledger.record(f"e{index}", model_calls=calls, outcome={})
+    check = ledger.check_reserve("gate/11/R1", round_episodes=1, final_reserve=2)
+    assert check["mean_calls_per_episode"] == {"exact": "7/2", "float": 3.5}
+    assert check["calls_ahead"] == 11

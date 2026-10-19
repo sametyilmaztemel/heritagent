@@ -48,7 +48,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 
 **Reason.**
 - **D1** matches "cluster bootstrap over tasks" literally. It uses all three seeds' data without counting one task's three runs as three independent clusters (pseudo-replication), and keeps the seeds' role in the separate 2/3 rule. Three seeds are too few to resample (10 distinct multisets).
-- **D2** reuses the rule already pre-registered for stage 2, so the experiment has one bootstrap convention. Exact arithmetic follows the repo's precedent for strict boundaries (`inheritance/regression.py` compares the stage-4 drop with `Fraction` for the same reason).
+- **D2** reuses the rule already pre-registered for stage 2, so the experiment has one bootstrap convention. (Note under ADR-0012 D4, owner, 2026-10-19: the stage-2 decision is now an exact paired sign test; this convention stays for every reported interval, stage 2's descriptive one included.) Exact arithmetic follows the repo's precedent for strict boundaries (`inheritance/regression.py` compares the stage-4 drop with `Fraction` for the same reason).
 - **D3** is the literal reading of "the C−B direction holds" and the conservative one: a seed in which the gate changed nothing does not count as support.
 - **D4** is the stage-4 gate's own definition (`regression_drop = 1 - success_with`). (Note under ADR-0009 D1: the gate's drop is now paired, `(success_without − success_with) / 40` against one G0 run at the gate's settings; reg(arm) stays the fraction of T_reg tasks the arm fails.)
 - **D5** follows the cap rule's "stop, mark incomplete" and removes any choice of imputation after the data are in.

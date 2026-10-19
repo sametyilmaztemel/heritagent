@@ -1,51 +1,47 @@
-"""Frozen CIG allocations for EXP-0001 from the split manifest (issue #13
-Phase A; manifest ``inheritance.stages``; ADR-0007 E6).
+"""Frozen CIG allocations for EXP-0001 (issue #13 Phase A; manifest
+``inheritance.stages``; ADR-0007 E6; recalibrated by ADR-0012, owner-accepted
+2026-10-19).
 
-- Replay (design section 4 stage 1): the candidate's source task, the
-  T_mine task of its source trajectory, and the 4 games of
-  ``replay_bank[family of the source task]``.
-- Ablation: the 20-game ablation pool, stratified as the manifest froze it.
-- Generalization (E6): 10 in-scope games split as evenly as
-  possible over the candidate's frozen applicability families, and 10
-  out-of-scope games split the same way over the other families. A
-  family's games are taken in the order of a keyed hash, so every
-  candidate that needs n games of a family gets the same n (cross-trait
-  reuse is allowed and logged; within a trait there is no replacement).
-  A candidate whose applicability names every family has no out-of-scope
-  family: its out-of-scope stage is vacuous (E6, owner decision), and its
-  10 in-scope games cover every family.
+- Stage 1 (ADR-0012 D3): the candidate's source task, the T_mine task of
+  its source trajectory, alone.
+- Stage 2 (D4): 192 benefit-bank games over the candidate's frozen
+  applicability families in name order: allocation game j is the
+  ⌊j/m⌋-th game, in bank order, of the (j mod m)-th family. Every candidate
+  that needs n games of a family gets the same first n (cross-trait reuse
+  is allowed and logged; within a trait there is no replacement).
+- Stage 3 (D5): the in-scope child records stage 2's games by reference;
+  out of scope, 24 benefit-bank games over the families the applicability
+  omits, round-robin in name order, each family's first games in bank
+  order. A candidate whose applicability names every family has no
+  out-of-scope family: its out-of-scope stage is vacuous (ADR-0007 E6).
 - Interaction: the 10-game interaction pool, shared by every pair.
-- Regression: the one shared T_reg (ADR-0006 D8; ADR-0007 E3)."""
+- Regression: the one shared T_reg (ADR-0006 D8; ADR-0007 E3).
+
+The bank's order is the manifest's list order (ascending by the bank's
+selection hash); it is never re-sorted. ``replay_bank``,
+``generalization_bank`` and the ablation pool stay in the split manifest,
+unused by the gate (ADR-0012 D1); the ablation pool is the final
+evaluation's transfer subset (ADR-0007 E4)."""
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 
 from evaluation.benchmarks.alfworld.splits import ALFWORLD_TASK_TYPES
-from inheritance.ablation import AblationAllocation
+from inheritance.ablation import ALLOCATION_SIZE, AblationAllocation
 from inheritance.generalization import (
-    IN_SCOPE_COUNT,
     OUT_SCOPE_COUNT,
-    GeneralizationAllocation,
+    OutOfScopeAllocation,
     resolve_frozen_applicability,
 )
 from inheritance.interaction import InteractionAllocation
 from inheritance.replay import ReplayAllocation
 from inheritance.runner import EvaluationTask
 
-GENERALIZATION_DRAW_SEED = 0
-GENERALIZATION_RULE = {
-    "split": "10 per scope, as even as possible over the scope's families; the remainder "
-             "goes one game each to the first families in name order",
-    "draw": "per family, the games with the smallest "
-            "sha256('heritagent-gen|<seed>|<family>|<game_id>'), seed 0",
-    "no_out_of_scope_family": "a vacuous out-of-scope stage; the in-scope games cover every "
-                              "family",
-}
-BANKED_POOLS = ("replay_bank", "generalization_bank")
+BANKED_POOLS = ("replay_bank", "generalization_bank", "benefit_bank")
 POOL_SPLITS = {"t_mine": "train", "ablation": "train", "interaction": "train",
-               "replay_bank": "train", "generalization_bank": "train", "t_eval": "valid_unseen"}
+               "replay_bank": "train", "generalization_bank": "train",
+               "benefit_bank": "train", "t_eval": "valid_unseen"}
 
 
 class AllocationError(ValueError):
@@ -67,26 +63,9 @@ def pool_tasks(split_manifest: Mapping, pool: str) -> tuple[EvaluationTask, ...]
     return tuple(evaluation_task(g, pool) for g in games)
 
 
-def _family_games(split_manifest: Mapping, pool: str, family: str) -> list[Mapping]:
-    return sorted((g for g in split_manifest["pools"][pool]["games"] if g["family"] == family),
-                  key=lambda g: g["game_id"])
-
-
-def replay_allocation(split_manifest: Mapping, source_task: EvaluationTask) -> ReplayAllocation:
-    family = source_task.family
-    games = _family_games(split_manifest, "replay_bank", family)
-    if len(games) != 4:
-        raise AllocationError(f"replay_bank[{family}] holds {len(games)} games, the replay stage "
-                              f"needs 4")
-    return ReplayAllocation(source_task=source_task,
-                            bank_variants=tuple(evaluation_task(g, "replay_bank") for g in games),
-                            source_family=family, replay_bank_id=f"replay_bank[{family}]")
-
-
-def ablation_allocation(split_manifest: Mapping) -> AblationAllocation:
-    pool = split_manifest["pools"]["ablation"]
-    return AblationAllocation(tasks=pool_tasks(split_manifest, "ablation"),
-                              frozen_strata=dict(pool["family_counts"]))
+def replay_allocation(source_task: EvaluationTask) -> ReplayAllocation:
+    """Stage 1: the source task only (ADR-0012 D3)."""
+    return ReplayAllocation(source_task=source_task)
 
 
 def interaction_allocation(split_manifest: Mapping) -> InteractionAllocation:
@@ -94,6 +73,8 @@ def interaction_allocation(split_manifest: Mapping) -> InteractionAllocation:
 
 
 def even_split(total: int, families: Sequence[str]) -> dict[str, int]:
+    """``total`` over ``families`` in name order, the remainder one each to
+    the first families: what a round-robin over them takes per family."""
     families = sorted(families)
     if not families:
         raise AllocationError("no family to split over")
@@ -102,33 +83,41 @@ def even_split(total: int, families: Sequence[str]) -> dict[str, int]:
             if base + (1 if i < remainder else 0) > 0}
 
 
-def generalization_rank(family: str, game_id: str, seed: int = GENERALIZATION_DRAW_SEED) -> str:
-    return hashlib.sha256(f"heritagent-gen|{seed}|{family}|{game_id}".encode("utf-8")).hexdigest()
+def interleave(bank: Mapping, families: Sequence[str], total: int) -> tuple[EvaluationTask, ...]:
+    """``total`` bank games round-robin over ``families`` in name order: game
+    j is the ⌊j/m⌋-th game, in bank order, of the (j mod m)-th family."""
+    families = sorted(families)
+    need = even_split(total, families)
+    for family in families:
+        held = len(bank["families"].get(family, ()))
+        if held < need[family]:
+            raise AllocationError(f"benefit_bank[{family}] holds {held} games, {need[family]} "
+                                  f"are needed")
+    m = len(families)
+    return tuple(evaluation_task(bank["families"][families[j % m]][j // m], "benefit_bank")
+                 for j in range(total))
 
 
-def _draw(split_manifest: Mapping, plan: Mapping[str, int]) -> tuple[EvaluationTask, ...]:
-    tasks = []
-    for family in sorted(plan):
-        games = sorted(_family_games(split_manifest, "generalization_bank", family),
-                       key=lambda g: (generalization_rank(family, g["game_id"]), g["game_id"]))
-        if len(games) < plan[family]:
-            raise AllocationError(f"generalization_bank[{family}] holds {len(games)} games, "
-                                  f"{plan[family]} are needed")
-        tasks.extend(evaluation_task(g, "generalization_bank") for g in games[:plan[family]])
-    return tuple(tasks)
-
-
-def generalization_allocation(split_manifest: Mapping, envelope: dict,
-                              registry) -> GeneralizationAllocation:
+def _applicability(envelope: dict, registry) -> tuple[str, ...]:
     applicability = resolve_frozen_applicability(envelope, registry)
     unknown = sorted(set(applicability) - set(ALFWORLD_TASK_TYPES))
     if unknown:
         raise AllocationError(f"applicability names families outside ALFWorld: {unknown}")
-    outside = [f for f in ALFWORLD_TASK_TYPES if f not in applicability]
-    in_plan = even_split(IN_SCOPE_COUNT, applicability)
-    out_plan = even_split(OUT_SCOPE_COUNT, outside) if outside else {}  # empty: vacuous
-    return GeneralizationAllocation(
-        in_scope_tasks=_draw(split_manifest, in_plan), out_scope_tasks=_draw(split_manifest, out_plan),
-        frozen_in_scope_plan=in_plan, frozen_out_scope_plan=out_plan,
-        declared_frozen_applicability=tuple(applicability),
-        family_universe=ALFWORLD_TASK_TYPES)
+    return tuple(sorted(applicability))
+
+
+def stage2_allocation(bank: Mapping, envelope: dict, registry) -> AblationAllocation:
+    """ADR-0012 D4: 192 bank games over the frozen applicability."""
+    families = _applicability(envelope, registry)
+    return AblationAllocation(tasks=interleave(bank, families, ALLOCATION_SIZE),
+                              families=families, bank_sha256=bank["bank_sha256"])
+
+
+def out_of_scope_allocation(bank: Mapping, envelope: dict, registry) -> OutOfScopeAllocation:
+    """ADR-0012 D5: 24 bank games over the omitted families, or none (vacuous)."""
+    families = _applicability(envelope, registry)
+    omitted = [f for f in sorted(ALFWORLD_TASK_TYPES) if f not in families]
+    tasks = interleave(bank, omitted, OUT_SCOPE_COUNT) if omitted else ()
+    return OutOfScopeAllocation(tasks=tasks, applicability=families,
+                                family_universe=tuple(ALFWORLD_TASK_TYPES),
+                                bank_sha256=bank["bank_sha256"])

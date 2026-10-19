@@ -1,10 +1,14 @@
-"""Deterministic paired cluster bootstrap tests (issue #11 criterion 9)."""
+"""Deterministic paired cluster bootstrap tests (issue #11 criterion 9; the
+bootstrap is descriptive under ADR-0012 D4) and the exact sign test of the
+recalibrated stage 2."""
 
+import math
 import random
+from fractions import Fraction
 
 import pytest
 
-from inheritance.bootstrap import paired_cluster_bootstrap, stage_passes
+from inheritance.bootstrap import paired_cluster_bootstrap, sign_test_p
 
 
 def test_known_vector_all_positive_small_effect():
@@ -13,7 +17,6 @@ def test_known_vector_all_positive_small_effect():
     assert result.point_estimate == pytest.approx(0.1)
     assert result.lower_bound == pytest.approx(0.1)
     assert result.upper_bound == pytest.approx(0.1)
-    assert stage_passes(result.point_estimate, result.lower_bound)
 
 
 def test_known_vector_mixed_effect_lower_bound_negative():
@@ -22,7 +25,6 @@ def test_known_vector_mixed_effect_lower_bound_negative():
     result = paired_cluster_bootstrap(deltas, seed=11)
     assert result.point_estimate == 0.0
     assert result.lower_bound < 0
-    assert not stage_passes(result.point_estimate, result.lower_bound)
 
 
 def test_fixed_seed_deterministic():
@@ -51,13 +53,34 @@ def test_task_pair_bootstrap_not_call_level_pseudo_replication():
     assert result.lower_bound * 20 == pytest.approx(round(result.lower_bound * 20))
 
 
-def test_tau_c_boundary():
-    # point estimate exactly at tau_c with positive LB -> pass
-    assert stage_passes(0.05, 0.01)
-    # below tau_c -> fail even with positive LB
-    assert not stage_passes(0.049, 0.01)
-    # at tau_c but LB == 0 -> fail (LB must be strictly > 0)
-    assert not stage_passes(0.05, 0.0)
+@pytest.mark.parametrize("n_plus,n_minus,p", [
+    (0, 0, Fraction(1)),            # no discordant game: nothing against the null
+    (1, 0, Fraction(1, 2)),
+    (0, 1, Fraction(1)),
+    (3, 0, Fraction(1, 8)),
+    (9, 0, Fraction(1, 512)),       # ADR-0012 D4's look-4 alpha 3/1000 is met
+    (11, 0, Fraction(1, 2048)),     # look 1's alpha 1/2000 is met at net 11
+    (10, 0, Fraction(1, 1024)),     # and missed at net 10
+    (5, 2, Fraction(29, 128)),
+])
+def test_sign_test_known_values(n_plus, n_minus, p):
+    assert sign_test_p(n_plus, n_minus) == p
+
+
+def test_sign_test_is_the_binomial_upper_tail():
+    for n in range(0, 25):
+        for n_plus in range(n + 1):
+            expected = Fraction(sum(math.comb(n, i) for i in range(n_plus, n + 1)), 2 ** n)
+            assert sign_test_p(n_plus, n - n_plus) == expected
+            assert isinstance(sign_test_p(n_plus, n - n_plus), Fraction)
+
+
+@pytest.mark.parametrize("bad", [-1, True, 1.0, "1", None])
+def test_sign_test_counts_must_be_non_negative_ints(bad):
+    with pytest.raises(ValueError, match="non-negative ints"):
+        sign_test_p(bad, 0)
+    with pytest.raises(ValueError, match="non-negative ints"):
+        sign_test_p(0, bad)
 
 
 def test_empty_and_invalid_inputs_rejected():
