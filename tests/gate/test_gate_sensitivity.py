@@ -277,3 +277,51 @@ def test_an_ineligible_candidate_does_not_make_a_cell_unidentifiable(tmp_path):
     for tau_r in (0.02, 0.03, 0.05):
         cell = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
         assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]
+
+
+class _OverheadOfA:
+    identity = "scripted-overhead-of-a-v1"
+
+    def count_tokens(self, text: str) -> int:
+        return 600 if "principle of a" in text else 10
+
+
+def _fails_out_of_scope(orch, runner, inputs):
+    for task in inputs[0].generalization_allocation.tasks:
+        runner.set(task.task_id, "with_trait", False, ("a",))
+
+
+def _fails_overhead(orch, runner, inputs):
+    orch._token_counter = _OverheadOfA()
+
+
+@pytest.mark.parametrize("make_a_fail", [_fails_out_of_scope, _fails_overhead])
+def test_a_candidate_failing_another_stage_does_not_make_a_cell_unidentifiable(tmp_path,
+                                                                              make_a_fail):
+    world = build_world(tmp_path, candidates=("a", "b"), stage2={"a": "pass_look3"},
+                        ablation_deltas={"b": 0.9})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    make_a_fail(orch, runner, inputs)
+    assert orch.run(inputs).verdicts == {"a": "reject", "b": "promote"}
+    grid = orch.sensitivity_recomputation("b")
+    for tau_r in (0.02, 0.03, 0.05):
+        cell = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
+        assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]
+
+
+def test_the_cell_tau_r_decides_whether_a_4a_failure_makes_a_cell_unidentifiable(tmp_path):
+    """a loses 2 of its 40 T_reg tasks (drop 0.05): it fails 4A at tau_r 0.02
+    and 0.03, where the tau_c 0.08 cells stay identifiable, and passes at
+    0.05, where a could be eligible and the 0.08 cell is not identifiable."""
+    world = build_world(tmp_path, candidates=("a", "b"), stage2={"a": "pass_look3"},
+                        ablation_deltas={"b": 0.9})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    for i in (38, 39):
+        runner.set(f"treg-a-{i}", "with_trait", False, ("a",))
+    assert orch.run(inputs).verdicts == {"a": "reject", "b": "promote"}
+    grid = orch.sensitivity_recomputation("b")
+    for tau_r in (0.02, 0.03):
+        cell = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
+        assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]
+    loose = grid["cells"]["tau_c=0.08|tau_r=0.05"]
+    assert loose["identifiable"] is False and loose["unidentified_stage2"] == ["a"]

@@ -482,8 +482,8 @@ def stage2_evidence_issues(measurements: Mapping, *, mining_seed: int | None = N
         return ["stage 2: the allocation's games are not distinct string ids (no replacement "
                 "within a candidate, ADR-0012 D4)"]
     slots = allocation.get("families")
-    if not isinstance(slots, list) or not slots or slots != sorted(set(slots)) \
-            or not all(isinstance(f, str) for f in slots):
+    if not isinstance(slots, list) or not slots or not all(isinstance(f, str) for f in slots) \
+            or slots != sorted(set(slots)):
         return ["stage 2: the allocation's families are not distinct names in name order"]
     if families is not None and slots != sorted(families):
         issues.append(f"stage 2: the allocation is over {slots}, the candidate's frozen "

@@ -464,3 +464,21 @@ def test_a_not_run_all_family_candidate_counts_as_naming_every_family(clean):
             child["measurements"]["all_family_applicability"] = True
     rows = {r["stage"]: r for r in figures.gate_rows({11: gate})}
     assert rows["generalization_out_of_scope"]["all_family"] == 1
+
+
+def test_the_v2_disclosure_follows_the_threshold_version(clean, tmp_path):
+    """ADR-0012 D11: the disclosure is the v2 gate's; a record of another
+    version gets none."""
+    assert "in ADR-0012's model (M), rarely binds" in figures.V2_DISCLOSURE
+    run_dir = copy_run(clean, tmp_path)
+
+    def to_v1(gate):
+        for aggregate in gate["aggregates"].values():
+            aggregate["thresholds_used"]["version"] = "EXP-0001-CIG-M0-v1"
+
+    for seed in MINING_SEEDS:
+        edit(run_dir / f"seed-{seed}" / "gate.json", to_v1)
+    out = tmp_path / "figures"
+    make_figures(run_dir=run_dir, out_dir=out)
+    captions = (out / "captions.md").read_text(encoding="utf-8")
+    assert "EXP-0001-CIG-M0-v1" in captions and figures.V2_DISCLOSURE not in captions

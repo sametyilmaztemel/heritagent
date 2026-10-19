@@ -140,10 +140,10 @@ OUT_SCOPE_STAGE_TEXT = (f"delta_out >= {OUT_SCOPE_MIN_DELTA} over {OUT_SCOPE_COU
                         f"exact: net loss <= {-int(OUT_SCOPE_MIN_DELTA_EXACT * OUT_SCOPE_COUNT)} "
                         f"(ADR-0012 D5)")
 VACUOUS_OUT_SCOPE_STAGE_TEXT = "vacuous: no out-of-scope family (ADR-0007 E6)"
-STAGE4_TEXT = ("paired regression drop <= 0.03 against the R5 cells (ADR-0009 D1; ADR-0012 D2), "
-               "overhead <= 512 tokens, not eliminated")
-STAGE4_NOT_RUN_TEXT = ("4A and 4C not run: stage 2 never met alpha_k (ADR-0012 D7); overhead "
-                       "<= 512 tokens")
+STAGE4_TEXT = (f"paired regression drop <= {TAU_R} against the R5 cells (ADR-0009 D1; "
+               f"ADR-0012 D2), overhead <= {TAU_K_TOKENS} tokens, not eliminated")
+STAGE4_NOT_RUN_TEXT = (f"4A and 4C not run: stage 2 never met alpha_k (ADR-0012 D7); overhead "
+                       f"<= {TAU_K_TOKENS} tokens")
 VACUOUS_INTERACTION_REASON = (
     "vacuous: fewer than two preliminary-eligible candidates, so no "
     "both-vs-neither interaction contrast is defined for this candidate")

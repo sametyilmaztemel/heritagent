@@ -175,7 +175,8 @@ def test_an_evaluation_that_disagrees_with_its_record_is_rejected(tmp_path):
         outcome["with_trait"]["success"] = False
     looks = copy.deepcopy(ablation.looks)
     looks[0]["n_plus"] = 23
-    for change in ({"_alpha_met": False}, {"_contribution": Fraction(1, 3)},  # the record: 1/2
+    for change in ({"_passed": False}, {"_alpha_met": False},
+                   {"_contribution": Fraction(1, 3)},  # the record: 1/2
                    {"_paired_outcomes": tuple(outcomes)}, {"_looks": tuple(looks)},
                    {"_stop": {**ablation.stop, "reason": "futility"}}):
         bad = dataclasses.replace(inputs[0],
@@ -223,6 +224,39 @@ def test_a_candidate_failing_the_overhead_is_not_eligible_and_eliminates_nobody(
     assert by_gene["b"].stage_results["overhead"] is True
     assert by_gene["b"].verdict == "promote" and by_gene["b"].eliminated_by is None
     assert _pair_calls(runner) == []
+
+
+def test_a_candidate_failing_4a_is_not_eligible_and_eliminates_nobody(tmp_path):
+    world = build_world(tmp_path, candidates=("a", "b"), ablation_deltas={"a": 0.9, "b": 0.1},
+                        interaction=_harmful())
+    orch, somatic, cig_store, runner, inputs, registry = world
+    for i in range(10):  # a loses 10 of its 40 T_reg tasks: drop 0.25 > tau_r
+        runner.set(f"treg-a-{i}", "with_trait", False, ("a",))
+    by_gene = {r.gene_id: r for r in orch.run(inputs).results}
+    assert by_gene["a"].stage_results["regression"] is False and by_gene["a"].verdict == "reject"
+    assert by_gene["b"].verdict == "promote" and by_gene["b"].eliminated_by is None
+    assert _pair_calls(runner) == []
+
+
+@pytest.mark.parametrize("change,message", [
+    (lambda m: (m["allocation"].update(families=["navigate"]),
+                [o.update(family="navigate") for o in m["paired_outcomes"]]),
+     "frozen applicability"),
+    (lambda m: m["paired_outcomes"][0]["cell"].update(seed=99), "a cell of seed 99"),
+])
+def test_the_gate_binds_stage_2_to_the_applicability_and_the_seed(tmp_path, change, message):
+    """The gate passes the candidate's frozen applicability and its mining
+    seed into the stage-2 recompute (ADR-0012 D2, D4)."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    ablation = inputs[0].ablation_evaluation
+    child = copy.deepcopy(ablation.child_record)
+    change(child["measurements"])
+    bad = dataclasses.replace(inputs[0],
+                              ablation_evaluation=_ablation_with_child(ablation, child))
+    with pytest.raises(EvidenceCoherenceError, match=message):
+        orch.run([bad])
+    assert runner.calls == []
 
 
 def test_a_failed_unexpressed_source_episode_passes_stage_1(tmp_path):
@@ -293,6 +327,31 @@ def test_the_primary_thresholds_are_adr_0012_d10s():
     assert "floor(n/40)" in ABLATION_STAGE_TEXT
     assert IN_SCOPE_STAGE_TEXT.startswith("delta_in >= 0.0 ")
     assert OUT_SCOPE_STAGE_TEXT.startswith("delta_out >= -0.05 over 24 games, exact: net loss <= 1")
+    # the prose every record carries, pinned literally
+    from inheritance.ablation import ABLATION_THRESHOLD_TEXT, ALLOCATION_RULE, thresholds_record
+    from inheritance.gate import STAGE4_NOT_RUN_TEXT, STAGE4_TEXT
+    from inheritance.generalization import OUT_SCOPE_RULE
+    assert (PRIMARY_THRESHOLDS["replay_rule"], PRIMARY_THRESHOLDS["in_scope_rule"],
+            PRIMARY_THRESHOLDS["rounds"]) == (
+        "source task once with the trait: gene expressed or episode failed (D3)",
+        "by reference to stage 2's games (D5)",
+        "R1 stage 1 and look 1; R2-R4 looks 2-4; R5 out-of-scope and 4A; R6 4C; one G0 cell "
+        "per (seed, round, game), read only in its round (D2)")
+    assert ABLATION_THRESHOLD_TEXT == (
+        "exact one-sided paired sign test at looks 48/96/144/192: pass at look k iff p_k <= "
+        "alpha_k (1/2000, 1/2000, 1/1000, 3/1000) and net/n_k >= 0.05; at looks 1-3 stop and "
+        "fail iff net <= floor(n_k/40); no efficacy at look 4 fails (ADR-0012 D4)")
+    assert thresholds_record()["futility"] == "net <= floor(n_k / 40) at looks 1-3"
+    assert ALLOCATION_RULE == (
+        "192 benefit_bank games over the frozen applicability families in name order: game j "
+        "is the floor(j/m)-th game, in bank order, of the (j mod m)-th family")
+    assert OUT_SCOPE_RULE == (
+        "24 benefit_bank games over the omitted families in name order, round-robin: game j "
+        "is the floor(j/m)-th game, in bank order, of the (j mod m)-th omitted family")
+    assert STAGE4_TEXT == ("paired regression drop <= 0.03 against the R5 cells (ADR-0009 D1; "
+                           "ADR-0012 D2), overhead <= 512 tokens, not eliminated")
+    assert STAGE4_NOT_RUN_TEXT == ("4A and 4C not run: stage 2 never met alpha_k (ADR-0012 D7); "
+                                   "overhead <= 512 tokens")
 
 
 def test_a_replay_record_off_the_expression_rule_is_rejected(tmp_path):

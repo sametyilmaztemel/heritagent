@@ -87,6 +87,8 @@ def test_the_cross_round_and_cross_seed_measures():
     assert measures["cross_seed"]["pairs"] == 2 and measures["cross_seed"]["disagreements"] == 1
     assert measures["cross_seed"]["rate"] == {"exact": "1/2", "float": 0.5}
     assert "lower references" in measures["basis"]
+    assert measures["interval_note"].startswith(
+        "exact (Clopper-Pearson) 95 % intervals over the pairs as if independent")
 
 
 def test_no_pair_gives_no_rate():

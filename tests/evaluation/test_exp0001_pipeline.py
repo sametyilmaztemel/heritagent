@@ -1445,6 +1445,18 @@ def _neither_off_its_cell(canonical):
             return
 
 
+def _over_another_family(gate, run_dir):
+    """MARK2's stage 2 rewritten consistently onto another family, its
+    in-scope reference re-derived: only the frozen applicability objects."""
+    from inheritance.generalization import paired_outcomes_sha256
+    stage2 = _child_of(gate, run_dir, MARK2, "ablation")
+    stage2["allocation"]["families"] = [F[1]]
+    for outcome in stage2["paired_outcomes"]:
+        outcome["family"] = F[1]
+    _child_of(gate, run_dir, MARK2, "generalization_in_scope")["by_reference"][
+        "paired_outcomes_sha256"] = paired_outcomes_sha256(stage2["paired_outcomes"])
+
+
 def _child_of(gate, run_dir, mark, stage):
     marker = by_marker(gate, run_dir)
     gene = next(g for g, m in marker.items() if m == mark)
@@ -1463,6 +1475,7 @@ def _child_of(gate, run_dir, mark, stage):
         child_id="CIG-1104/S11-ablation"), "by reference"),
     (lambda g, d: _child_of(g, d, MARK2, "ablation")["allocation"].update(
         bank_sha256="0" * 64), "benefit bank"),
+    (lambda g, d: _over_another_family(g, d), "frozen applicability"),
     (lambda g, d: _child_of(g, d, MARK4, "generalization_out_of_scope")["allocation"].update(
         bank_sha256="0" * 64), "benefit bank"),
 ])
