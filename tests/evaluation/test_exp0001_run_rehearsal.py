@@ -179,11 +179,11 @@ def world(request, expected):
     locked manifests (which ``rehearse-run`` plays on Colab)."""
     if request.param == "synthetic":
         return expected
-    splits, pilot, bank = locked()
-    script = rr.load_script()
-    rr.validate_script(script, splits, pilot, bank)
-    assert script["generator"]["planner"].startswith("TextWorld policy_commands")
-    return rr.expected_outcome(script, splits, bank)
+    split_manifest, pilot, bank = locked()
+    committed = rr.load_script()
+    rr.validate_script(committed, split_manifest, pilot, bank)
+    assert committed["generator"]["planner"].startswith("TextWorld policy_commands")
+    return rr.expected_outcome(committed, split_manifest, bank)
 
 
 def test_the_scripted_world_reaches_every_gate_path(world):
