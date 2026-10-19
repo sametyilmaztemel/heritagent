@@ -20,12 +20,7 @@ from pathlib import Path
 from evaluation.benchmarks.alfworld.splits import _content_sha256
 from runtime.model_adapters.vllm_backend import VLLMAdapter
 from runtime.seed_g0 import EPISODE_MAX_STEPS
-from runtime.tool_adapters.alfworld import (
-    AlfworldEnvironment,
-    open_game,
-    planner_environments,
-    release_planner,
-)
+from runtime.tool_adapters.alfworld import AlfworldEnvironment, open_game
 
 GAME_FILE = "game.tw-pddl"
 TRAJ_FILE = "traj_data.json"
@@ -65,11 +60,9 @@ class ClosingEnvironment:
         return self._env.record()
 
     def close(self) -> None:
-        planners = planner_environments(self._session)  # before the session drops them
         close = getattr(self._session, "close", None)
         if callable(close):
             close()
-        release_planner(planners)
 
 
 class AlfworldEnvFactory:

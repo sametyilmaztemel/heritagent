@@ -10,7 +10,6 @@ from evaluation.benchmarks.alfworld.splits import (
 )
 from evaluation.exp0001.backends import (
     BackendError,
-    ClosingEnvironment,
     TokenizerCounter,
     alfworld_env_factory,
     pinned_vllm_model,
@@ -94,56 +93,3 @@ def test_the_model_revision_must_be_pinned():
         pinned_vllm_model("Qwen/Qwen2.5-7B-Instruct", "")
     adapter = pinned_vllm_model("Qwen/Qwen2.5-7B-Instruct", "abc123")
     assert adapter.metadata().revision == "abc123"  # no engine is created
-
-
-class Library:
-    def __init__(self, name):
-        self.name = name
-
-
-class Pddl:  # TextWorld's PddlEnv: its own copy of fast-downward's library
-    def __init__(self, name):
-        self.downward_lib = Library(name)
-
-
-class Wrapper:  # TextWorld's Wrapper forwards attribute reads to the wrapped environment
-    def __init__(self, wrapped):
-        self._wrapped_env = wrapped
-
-    def __getattr__(self, name):
-        return getattr(self._wrapped_env, name)
-
-
-class GymSession:  # textworld.gym's environment: closing drops its batch environment
-    def __init__(self, *envs):
-        self.batch_env = type("Batch", (), {})()
-        self.batch_env.envs = list(envs)
-        self.closed = []
-
-    def close(self):
-        self.closed.append(True)
-        self.batch_env = None
-
-
-def test_closing_a_game_unloads_its_planner_library_once(monkeypatch):
-    """TextWorld loads a 32 MB copy of fast-downward's library per opened
-    game and never unloads it; the run's environment unloads it on close,
-    after the game, once per copy (a wrapper forwards the attribute, so it
-    is no copy of its own)."""
-    import sys
-    import types
-    unloaded = []
-    session = GymSession(Wrapper(Wrapper(Pddl("a"))), Wrapper(Pddl("b")))
-    monkeypatch.setitem(sys.modules, "fast_downward", types.SimpleNamespace(
-        close_lib=lambda library: unloaded.append((library.name, list(session.closed)))))
-    environment = ClosingEnvironment(session, "g")
-    environment.close()
-    assert sorted(unloaded) == [("a", [True]), ("b", [True])]  # after the session closed
-    environment.close()  # nothing left to unload
-    assert len(unloaded) == 2
-
-
-def test_closing_a_scripted_game_needs_no_planner():
-    from runtime.tool_adapters.alfworld import planner_environments, release_planner
-    assert planner_environments(Game("g")) == [] and release_planner([]) == 0
-    ClosingEnvironment(Game("g"), "g").close()
