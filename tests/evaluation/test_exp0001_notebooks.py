@@ -151,6 +151,8 @@ def test_the_rehearsal_writes_the_records_the_a100_notebooks_read():
         assert f"run-{marker}" not in "".join(code_cells(name)), name
     run_rehearsal = "".join(code_cells(RUN_REHEARSAL))
     assert 'shutil.copy(f"{OUT}/run-rehearsal-passed.json", target)' in run_rehearsal
+    # its release waits for a rehearsal that still stops, too
+    assert 'b"rehearse-run"' in code_cells(RUN_REHEARSAL)[1]
     rehearsal = "".join(code_cells(REHEARSAL))
     assert "rehearsal-passed.json" in rehearsal and "shutil.copy(" in rehearsal
     pilot = "".join(code_cells(NAMES[0]))

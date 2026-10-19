@@ -797,9 +797,11 @@ def cmd_rehearse(args) -> int:
 
 def cmd_rehearsal_check(args) -> int:
     """Whether a passed rehearsal covers this machine: the same clean commit,
-    model and revision, Python and pinned software (``--kind run``: also the
-    tokenizer and the protocol, as ``run`` checks them). The notebooks
-    rehearse again before the model download when it does not."""
+    model and revision, Python and pinned software (``--kind run``: the
+    check ``run`` makes, with the revision, tokenizer, protocol, worker
+    count and the committed script; it needs --revision and --workers). The
+    pilot notebook rehearses again before the model download when it does
+    not; the run notebook stops."""
     from evaluation.exp0001 import rehearsal
     if args.kind == "run":
         return _run_rehearsal_check(args)
@@ -1482,7 +1484,8 @@ def parser() -> argparse.ArgumentParser:
                    help="with --kind run: the run's workers, which the rehearsal's must equal")
     p.add_argument("--repo", type=Path, default=Path("."))
     p.add_argument("--model", default=DEFAULT_MODEL)
-    p.add_argument("--revision", default=None, help="the revision the run will pin, if known")
+    p.add_argument("--revision", default=None, help="the revision the run will pin, if known "
+                   "(required with --kind run)")
     p.set_defaults(func=cmd_rehearsal_check)
 
     p = sub.add_parser("status")
