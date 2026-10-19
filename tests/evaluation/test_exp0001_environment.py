@@ -190,7 +190,7 @@ def test_env_check_passes_only_in_the_locked_environment(tmp_path, monkeypatch, 
 
 def test_the_installed_versions_list_a_name_on_every_path_entry_in_order(tmp_path, monkeypatch):
     import importlib
-    for entry, version in (("first", "1.0"), ("second", "2.0")):
+    for entry, version in (("first", "2.0"), ("second", "1.0")):  # not the sorted order
         dist = tmp_path / entry / f"heritagent_probe-{version}.dist-info"
         dist.mkdir(parents=True)
         (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: Heritagent.Probe\n"
@@ -198,7 +198,7 @@ def test_the_installed_versions_list_a_name_on_every_path_entry_in_order(tmp_pat
     monkeypatch.syspath_prepend(str(tmp_path / "second"))
     monkeypatch.syspath_prepend(str(tmp_path / "first"))
     importlib.invalidate_caches()
-    assert environment.installed_versions()["heritagent-probe"] == ["1.0", "2.0"]
+    assert environment.installed_versions()["heritagent-probe"] == ["2.0", "1.0"]
 
 
 @pytest.mark.parametrize("line, pin", [
