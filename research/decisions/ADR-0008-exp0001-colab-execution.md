@@ -18,7 +18,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** for its three decisions (S
   - A worker process is replaced after 50 games (TextWorld's caches grow with every game a process opens).
   - Episodes run in parallel only in batches whose episodes do not depend on each other's outcomes:
     - the lifetimes of all seeds at once, and the final evaluation at once;
-    - the gate in three stretches: replay and ablation of every candidate; generalization and regression of every candidate; then the interaction pairs of the eligible set.
+    - the gate in three stretches: replay and ablation of every candidate; generalization and regression of every candidate; then the interaction pairs of the eligible set. (Amended by ADR-0012 D2, owner, 2026-10-19: per seed, six rounds R1–R6, each one stretch whose G0 cells and with-trait executions form one queue in ascending sha256 of their ledger keys; a round starts after the previous round's episodes are recorded.)
   - A dry pass of the real gate code collects each stretch's episodes; it answers an unrecorded episode with a placeholder and runs none. A recorded gate episode that the gate's real pass does not request fails the run closed. The check reads the ledger, so it also stops every later session of that run.
   - The episodes, their keys, their settings and the decisions are the sequential run's. Only their order and concurrency differ. The scripted end-to-end tests check this: the same report and the same ledger keys, with and without interaction pairs.
 - **D4 Serving (builder-2; no threshold or protocol value changes).**

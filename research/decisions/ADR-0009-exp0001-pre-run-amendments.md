@@ -41,6 +41,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
   - A candidate's drop is `(success_without − success_with) / 40`, and it passes if `drop ≤ τ_r = 0.03`, in exact arithmetic. With 40 tasks that is a net loss of at most one task; a net gain passes.
   - The τ_r sensitivity grid uses the same paired drop.
   - T_reg's selection (E3) and its frozen baseline provenance stay as they are.
+  - (Extended by ADR-0012 D2, owner, 2026-10-19: one G0 execution per (seed, round, task) for every gate game, shared by that round's candidates and read only in its round. T_reg is read only in R5, so its cells are this single run per seed and task.)
   - A gate that promotes nothing in a seed leaves arm C = G0 for that seed. The report says so, and the H1/H2 rules are computed unchanged: C − A is then exactly 0 and supports nothing.
 - **D2 Identical genomes share their final-evaluation cells (owner).**
   - The final evaluation runs each distinct G1 genome once per task set and task, keyed by its genome id. Every (arm, seed) whose genome is that genome reads those cells.
@@ -70,7 +71,7 @@ Date: 2026-10-15 · Status: **ACCEPTED by the owner** (Samet, 2026-10-15, explic
   - Before the run:
     - ADR-0005 names the method, confidence and generator, and the gate recomputes the bound;
     - ADR-0006 states that the H2 regression clause is measured on the gate's own regression suite;
-    - ADR-0007's stage-3 manifest line carries E6's all-family exception, and the report counts such candidates and labels the H3 preview as measured on the stage-2 selection pool.
+    - ADR-0007's stage-3 manifest line carries E6's all-family exception, and the report counts such candidates and labels the H3 preview as measured on the stage-2 selection pool. (ADR-0012 D1: the gate no longer reads that pool; the label is "measured on the 20-task ablation pool".)
 - **D6 Engineering under ADR-0003 (builder-2).**
   - `won` fails closed when a game's infos lack a boolean `won`.
   - New tests: the offline backend forwards the ReAct stop, and a reply that runs on into an invented observation is reprompted.
