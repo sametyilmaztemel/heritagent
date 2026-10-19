@@ -5,12 +5,13 @@ Frozen before the first real episode and written once: a second write with
 different content fails closed. It names everything a result must be
 reported with (SPEC: seed, model revision, genome revision, dataset split,
 code commit): the code commit, the model identity and weights hash, the
-split, pilot and pool hashes, the miner prompt and schema hashes, G0's
+split, pilot, benefit-bank and pool hashes, the miner prompt and schema hashes, G0's
 canonical genome id and digest, the candidate cap and ranking rule, the CIG
 threshold version and values, both bootstrap rules, the generation settings
 and stop, the episode budget, the hard caps and the mining seeds, and the
-miner's teacher model. The split and pilot manifests must verify from
-their own hashes and equal the pre-registered ones."""
+miner's teacher model. The split, pilot and benefit-bank manifests must
+verify from their own hashes and equal the pre-registered ones (ADR-0012
+D1)."""
 
 from __future__ import annotations
 
@@ -20,15 +21,17 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from evaluation.exp0001.protocol import (
+    LOCKED_BENEFIT_BANK_SHA256,
     LOCKED_PILOT_SHA256,
     LOCKED_SPLIT_MANIFEST_SHA256,
     PROTOCOL,
 )
 from evaluation.metrics.final_statistics import FINAL_RULE
 
-RUN_START_SCHEMA = "heritagent/exp0001-run-start/0.1"
-REQUIRED_AT_RUN_TIME = ("model-weights-hash", "code-commit", "split-hashes", "miner-prompt-hash",
-                        "frozen-candidate-set-artifact", "gate-thresholds", "run-log")
+RUN_START_SCHEMA = "heritagent/exp0001-run-start/0.2"  # 0.2 binds the benefit bank (ADR-0012)
+REQUIRED_AT_RUN_TIME = ("model-weights-hash", "code-commit", "split-hashes", "benefit-bank-hash",
+                        "miner-prompt-hash", "frozen-candidate-set-artifact", "gate-thresholds",
+                        "run-log")
 
 
 class ProvenanceError(ValueError):
@@ -83,20 +86,31 @@ def _is_hex(value, length: int) -> bool:
         all(c in "0123456789abcdef" for c in value)
 
 
-def verify_pre_run_artifacts(split_manifest: dict, pilot_manifest: dict | None, *,
+def verify_pre_run_artifacts(split_manifest: dict, pilot_manifest: dict | None,
+                             bank_manifest: dict | None = None, *,
                              expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
-                             expected_pilot_sha256: str = LOCKED_PILOT_SHA256) -> None:
-    """The split (and pilot) manifest must verify from its own hashes and be
-    the committed one (manifest run_protocol); anything else is another
-    experiment."""
+                             expected_pilot_sha256: str = LOCKED_PILOT_SHA256,
+                             expected_bank_sha256: str = LOCKED_BENEFIT_BANK_SHA256) -> None:
+    """The split (and pilot, and benefit-bank) manifest must verify from its
+    own hashes and be the committed one (manifest run_protocol); anything
+    else is another experiment. The bank verifies against the split and
+    pilot manifests it was drawn for, so it needs the pilot manifest."""
     from evaluation.benchmarks.alfworld.splits import SplitError, verify_manifest
+    from evaluation.exp0001.benefit_bank import verify_benefit_bank
     from evaluation.exp0001.pilot import verify_pilot_manifest
+    if bank_manifest is not None and pilot_manifest is None:
+        raise ProvenanceError("the benefit bank verifies against the pilot manifest too")
     try:
         verify_manifest(split_manifest)
         if pilot_manifest is not None:
             verify_pilot_manifest(pilot_manifest, split_manifest)
+        if bank_manifest is not None:
+            verify_benefit_bank(bank_manifest, split_manifest, pilot_manifest)
     except SplitError as exc:
         raise ProvenanceError(f"a pre-run artifact does not verify: {exc}") from exc
+    if bank_manifest is not None and bank_manifest["bank_sha256"] != expected_bank_sha256:
+        raise ProvenanceError(f"benefit bank {bank_manifest['bank_sha256']} is not the "
+                              f"pre-registered one ({expected_bank_sha256})")
     if split_manifest["manifest_sha256"] != expected_split_sha256:
         raise ProvenanceError(f"split manifest {split_manifest['manifest_sha256']} is not the "
                               f"pre-registered one ({expected_split_sha256})")
@@ -115,17 +129,18 @@ def _model_block(model: Mapping, name: str, *, tokenizer: bool) -> dict:
 
 def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping,
                            teacher: Mapping, weights: Mapping, split_manifest: dict,
-                           pilot_manifest: dict, g0_genome: dict, run_id: str,
-                           started_at: str, environment: Mapping | None = None,
+                           pilot_manifest: dict, bank_manifest: dict, g0_genome: dict,
+                           run_id: str, started_at: str, environment: Mapping | None = None,
                            expected_split_sha256: str = LOCKED_SPLIT_MANIFEST_SHA256,
-                           expected_pilot_sha256: str = LOCKED_PILOT_SHA256) -> dict:
+                           expected_pilot_sha256: str = LOCKED_PILOT_SHA256,
+                           expected_bank_sha256: str = LOCKED_BENEFIT_BANK_SHA256) -> dict:
     """Assemble the record. ``model`` is the agent adapter's metadata
     (model_id, revision, backend, backend_version) plus the identity of the
     token counter's tokenizer; ``teacher`` is the miner's adapter metadata;
     ``weights`` is ``sha256_files`` output for the served weights;
     ``environment`` names the installed software stack and the verified data
-    (ADR-0008 D4, D6). The split and pilot manifests must verify and be the
-    pre-registered ones."""
+    (ADR-0008 D4, D6). The split, pilot and benefit-bank manifests must
+    verify and be the pre-registered ones (ADR-0012 D1)."""
     from genome.validation.identity import compute_genome_id
     from inheritance.ablation import BOOTSTRAP_CLUSTER_ORDER, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_SEED
     from inheritance.gate import PRIMARY_THRESHOLDS, THRESHOLD_VERSION
@@ -144,9 +159,10 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
     teacher_block = _model_block(teacher, "teacher", tokenizer=False)
     if not isinstance(weights, Mapping) or not _is_hex(weights.get("sha256"), 64):
         raise ProvenanceError("weights must carry the sha256 (64 hex) of the served weights")
-    verify_pre_run_artifacts(split_manifest, pilot_manifest,
+    verify_pre_run_artifacts(split_manifest, pilot_manifest, bank_manifest,
                              expected_split_sha256=expected_split_sha256,
-                             expected_pilot_sha256=expected_pilot_sha256)
+                             expected_pilot_sha256=expected_pilot_sha256,
+                             expected_bank_sha256=expected_bank_sha256)
     _require_str(run_id, "run_id")
     _require_str(started_at, "started_at")
     if g0_genome.get("genome_id") != compute_genome_id(g0_genome):
@@ -165,12 +181,18 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
                    "plan": split_manifest["plan"],
                    "pools": {name: pool["sha256"] for name, pool in split_manifest["pools"].items()}},
         "pilot": {"pilot_sha256": pilot_manifest["pilot_sha256"]},
+        "benefit_bank": {"bank_sha256": bank_manifest["bank_sha256"],
+                         "games_sha256": bank_manifest["games_sha256"],
+                         "split_manifest_sha256": bank_manifest["split_manifest_sha256"],
+                         "pilot_sha256": bank_manifest["pilot_sha256"],
+                         "per_family": bank_manifest["selection"]["per_family"]},
         "miner": {"prompt_sha256": prompt_template_sha256(),
                   "output_schema_sha256": output_schema_sha256()},
         "g0": {"genome_id": g0_genome["genome_id"], "genome_sha256": canonical_sha256(g0_genome)},
         "candidate_set": {"cap": PROTOCOL["candidate_cap"],
                           "ranking": list(PROTOCOL["candidate_ranking"])},
-        "gate": {"threshold_version": THRESHOLD_VERSION, "thresholds": dict(PRIMARY_THRESHOLDS),
+        "gate": {"threshold_version": THRESHOLD_VERSION, "thresholds": plain(PRIMARY_THRESHOLDS),
+                 # descriptive since ADR-0012 D4
                  "ablation_bootstrap": {"seed": BOOTSTRAP_SEED, "resamples": BOOTSTRAP_N_RESAMPLES,
                                         "cluster_order": BOOTSTRAP_CLUSTER_ORDER}},
         "final_statistics": plain(FINAL_RULE),

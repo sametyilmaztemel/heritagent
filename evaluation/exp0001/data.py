@@ -7,7 +7,8 @@ differ from the ones the split and pilot manifests hash, so no game of
 either manifest would open. The manifests were built from release 0.2.2.
 ``fetch_data`` downloads exactly that release's two archives, checks each
 against its sha256, and extracts them. ``verify_data`` then hashes every
-game of both manifests, before the model download and any episode."""
+game of the split, pilot and benefit-bank manifests (ADR-0012 D1), before
+the model download and any episode."""
 
 from __future__ import annotations
 
@@ -67,12 +68,20 @@ def fetch_data(target: Path, *, download: Callable[[str, Path], None] = _downloa
     return target / DATA_DIR
 
 
-def verify_data(data_root: Path, split_manifest: Mapping, pilot_manifest: Mapping) -> dict:
-    """Hash every game of the split and pilot manifests under ``data_root``
-    (ALFWorld's ``json_2.1.1``); any missing or different game fails closed."""
+def verify_data(data_root: Path, split_manifest: Mapping, pilot_manifest: Mapping,
+                bank_manifest: Mapping | None = None) -> dict:
+    """Hash every game of the split, pilot and benefit-bank manifests under
+    ``data_root`` (ALFWorld's ``json_2.1.1``); any missing or different game
+    fails closed, and so does a game two manifests record differently."""
     root = Path(data_root)
     index = manifest_content_index(split_manifest)
-    index.update({("train", g["game_id"]): g["content_sha256"] for g in pilot_manifest["games"]})
+    extra = [("train", g["game_id"], g["content_sha256"]) for g in pilot_manifest["games"]]
+    if bank_manifest is not None:
+        extra += [("train", g["game_id"], g["content_sha256"])
+                  for games in bank_manifest["families"].values() for g in games]
+    for split, game_id, digest in extra:
+        if index.setdefault((split, game_id), digest) != digest:
+            raise BackendError(f"{split}/{game_id} is recorded with two content hashes")
     missing, mismatched = [], []
     for (split, game_id), expected in sorted(index.items()):
         trial = root / split / game_id
@@ -89,5 +98,8 @@ def verify_data(data_root: Path, split_manifest: Mapping, pilot_manifest: Mappin
                            f"from their frozen content hash under {root} (first: "
                            f"{(missing + mismatched)[0]}); fetch ALFWorld release "
                            f"{ALFWORLD_RELEASE} with `cli fetch-data`, not `alfworld-download`")
-    return {"games": len(index), "release": ALFWORLD_RELEASE, "archives": dict(ARCHIVES),
-            "data_root": str(root)}
+    verified = {"games": len(index), "release": ALFWORLD_RELEASE, "archives": dict(ARCHIVES),
+                "data_root": str(root)}
+    if bank_manifest is not None:
+        verified["benefit_bank_sha256"] = bank_manifest["bank_sha256"]
+    return verified

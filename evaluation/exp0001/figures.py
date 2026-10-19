@@ -53,7 +53,7 @@ ARM_MARKERS = {"A": "^", "B": "s", "C": "o"}
 INK, INK_2, MUTED, GRID, AXIS = "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
 STAGES = ("replay", "ablation", "generalization_in_scope", "generalization_out_of_scope",
           "interaction_regression")
-STAGE_LABELS = {"replay": "1 replay", "ablation": "2 ablation",
+STAGE_LABELS = {"replay": "1 replay", "ablation": "2 ablation",  # their record keys
                 "generalization_in_scope": "3 in scope",
                 "generalization_out_of_scope": "3 out of scope",
                 "interaction_regression": "4 regression,\ninteraction"}
@@ -251,18 +251,26 @@ def _child(gate: Mapping, aggregate: Mapping, stage: str) -> Mapping:
 
 def gate_rows(gates: Mapping[int, Mapping]) -> list[dict]:
     """Per seed and stage, how many candidates passed, failed, were not run
-    (a record that says ``not_run``; ADR-0012 D7, if accepted) or passed
-    vacuously (ADR-0007 E6), and how many stage records lack their child."""
+    (a record that says ``not_run``; ADR-0012 D7) or passed vacuously
+    (ADR-0007 E6), how many named every family (the out-of-scope row: a
+    vacuous pass, or a not-run record of an all-family candidate), and how
+    many stage records lack their child."""
     rows = []
     for seed, gate in sorted(gates.items()):
         aggregates = gate["aggregates"]
         for stage in STAGES:
             counts = {"passed": 0, "failed": 0, "not_run": 0, "vacuous": 0,
-                      "missing_child": 0}
+                      "all_family": 0, "missing_child": 0}
             for aggregate in aggregates.values():
                 result, child = aggregate["stages"][stage], _child(gate, aggregate, stage)
                 counts["missing_child"] += not child
                 measurements = child.get("measurements") or {}
+                # a vacuous pass (also as the aggregate's own threshold records it), or a
+                # not-run record of an all-family candidate
+                counts["all_family"] += measurements.get("vacuous") is True or \
+                    measurements.get("all_family_applicability") is True or \
+                    (result["pass"] is True
+                     and str(result.get("threshold", "")).startswith("vacuous:"))
                 if measurements.get("not_run"):
                     counts["not_run"] += 1
                 elif result["pass"]:
@@ -276,7 +284,7 @@ def gate_rows(gates: Mapping[int, Mapping]) -> list[dict]:
         promoted = sum(v == "promote" for v in gate["verdicts"].values())
         rows.append({"seed": seed, "stage": "promoted", "candidates": len(aggregates),
                      "passed": promoted, "failed": len(aggregates) - promoted,
-                     "not_run": 0, "vacuous": 0, "missing_child": 0})
+                     "not_run": 0, "vacuous": 0, "all_family": 0, "missing_child": 0})
     return rows
 
 
@@ -655,12 +663,29 @@ def _sharing(data: Mapping) -> str:
     return "; ".join(parts) + "." if parts else ""
 
 
+V2_DISCLOSURE = (
+    "Thresholds v2 (ADR-0012): stage 1 checks only that a successful replay of the source task "
+    "expresses the gene, and the in-scope record is stage 2's games by reference, so neither "
+    "tests what SPEC §9 named on its own; stage 2 is a sequential sign test whose tau_c rule "
+    "rarely binds, so true effects below 0.05 can be promoted; the seeds' gates read the same "
+    "benefit-bank games, which weakens the two-of-three-seeds clause as replication; and H2 "
+    "can hold only if arm B carries candidates that harm (ADR-0012 D11).")
+
+
+def _disagreement(measure) -> str:
+    if not measure or not measure.get("pairs"):
+        return "no pair was recorded"
+    interval = measure.get("interval_95") or [None, None]
+    return (f"{measure['disagreements']} of {measure['pairs']} pairs (exact 95 % interval "
+            f"{interval[0]:.3f}–{interval[1]:.3f})")
+
+
 def _vacuous_mismatch(rows: list[dict], all_family: Mapping) -> list[tuple]:
     """Seeds whose report count of all-family candidates differs from the gate record."""
-    vacuous = {str(r["seed"]): r["vacuous"] for r in rows
-               if r["stage"] == "generalization_out_of_scope"}
-    return [(s, all_family[s], vacuous[s]) for s in sorted(vacuous)
-            if s in all_family and all_family[s] != vacuous[s]]
+    recorded = {str(r["seed"]): r["all_family"] for r in rows
+                if r["stage"] == "generalization_out_of_scope"}
+    return [(s, all_family[s], recorded[s]) for s in sorted(recorded)
+            if s in all_family and all_family[s] != recorded[s]]
 
 
 def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
@@ -678,12 +703,21 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
              f"{run_start['code']['commit']}.",
              "Every figure shows quantities the run recorded; nothing is re-estimated."]
     if run_start["model"].get("backend") != "scripted":
+        noise = report.get("cell_disagreement")
         lines.append(
             "Under ADR-0011 D2 the serving uses no batch-invariant kernels, so a temperature-0 "
             "reply may depend on the batch; the calibration pilot's temperature-0 repeat "
             "measure (the pilot of manifest "
-            f"{run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]}) is the only evidence "
-            "of its size.")
+            f"{run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]})"
+            + (" is the only evidence of its size." if not noise else
+               "; and, descriptively (ADR-0012 D8; lower references, not estimates of the "
+               "changed-prompt disagreement a gate contrast carries): "
+               + "; ".join(f"{label} {_disagreement(noise.get(key))}"
+                           for key, label in (("cross_round", "a seed's cells of one game in "
+                                                              "two rounds disagree in"),
+                                              ("cross_seed", "two seeds' cells of one game "
+                                                             "disagree in")))
+               + "."))
     lines += [f"Note: {note}." for note in data["notes"]]
     lines.append("")
     # rule outcomes only where the run completed (ADR-0006 D5)
@@ -751,8 +785,9 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
                "record; their vacuous and not-run marks may be missing."
                if any(r["missing_child"] for r in rows) else "")
             + "".join(f" Seed {s}: the report counts {n} candidates naming every family, the "
-                      f"gate record {v} vacuous out-of-scope passes."
-                      for s, n, v in _vacuous_mismatch(rows, all_family))),
+                      f"gate records {v}."
+                      for s, n, v in _vacuous_mismatch(rows, all_family))
+            + (" " + V2_DISCLOSURE if any(v.endswith("-v2") for v in versions) else "")),
         "fig6_genome_size": (
             "Genome size per arm: skill genes and the token count of the rendered skill block "
             f"({(report.get('genome_sizes') or {}).get('token_counter', 'the run tokenizer')}"

@@ -32,7 +32,7 @@ from evaluation.exp0001.episodes import EpisodeExecutor, EpisodeResult, EpisodeS
 from evaluation.exp0001.pilot import PILOT_MEASURES
 from evaluation.exp0001.protocol import (
     CANDIDATE_CAP,
-    CAPS,
+    PILOT_CAPS,
     CONTEXT_WINDOW,
     LIFETIME_ATTEMPTS_PER_TASK,
     MAX_TOKENS_PER_REQUEST,
@@ -63,9 +63,10 @@ SMOKE_SKILL = {"name": "search likely places first",
                "when_to_apply": "household tasks that need an object you cannot see yet",
                "procedure": []}
 
-# gate episodes per candidate (inheritance.stages): replay 1 + 4 tasks, ablation
-# 20, generalization 10 + 10, each with and without the trait; regression 40
-# with it only; interaction 10 tasks per eligible pair, both and neither
+# gate episodes per candidate under the locked gate the pilot projected (thresholds v1,
+# before ADR-0012): replay 1 + 4 tasks, ablation 20, generalization 10 + 10, each with
+# and without the trait; regression 40 with it only; interaction 10 tasks per eligible
+# pair, both and neither. ADR-0012's projections are its own (M), not this function's.
 GATE_EPISODES_PER_CANDIDATE = 2 * 5 + 2 * 20 + 2 * 20 + T_REG_SIZE
 # without it, G0 plays T_reg once per gate that has a candidate (ADR-0009 D1)
 SHARED_G0_EPISODES_PER_GATE = T_REG_SIZE
@@ -278,10 +279,11 @@ def measure(runs: Sequence[EpisodeResult], repeats: Sequence[EpisodeResult],
 
 def project_exp0001(measured: Mapping, *, t_mine_size: int, t_eval_size: int,
                     transfer_size: int, candidates_per_seed: Sequence[int] = (0, 2, 5, CANDIDATE_CAP),
-                    caps: Mapping = CAPS) -> dict:
+                    caps: Mapping = PILOT_CAPS) -> dict:
     """The EXP-0001 episode count per number of candidates per seed (none
     eligible for an interaction pair, and every pair eligible), with the
-    calls and active hours at the pilot's means. A model estimate (M)."""
+    calls and active hours at the pilot's means, under the locked gate and
+    caps the pilot was run against (before ADR-0012). A model estimate (M)."""
     seeds = len(MINING_SEEDS)
     lifetime = seeds * t_mine_size * LIFETIME_ATTEMPTS_PER_TASK
     # at most G0 and a distinct B and C genome per seed; identical genomes share
