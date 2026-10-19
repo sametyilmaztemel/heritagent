@@ -65,8 +65,10 @@ def out_of_scope_allocation(name: str, applicability=(FAMILY,), universe=UNIVERS
 def stage2_pairs(shape: str, net: int = 24) -> list:
     """(with-trait success, cell success) per allocation game for a stage-2
     path: ``pass`` (efficacy at look 1 with ``net`` rescues, contribution
-    net/48), ``futility`` (net 0 at look 1, alpha never met) or
-    ``alpha_only`` ((9, 0) at look 4: alpha met, the point rule fails)."""
+    net/48), ``futility`` (net 0 at look 1, alpha never met), ``alpha_only``
+    ((9, 0) at look 4: alpha met, the point rule fails) or ``pass_look3``
+    ((10, 0): efficacy at look 3 with contribution 10/144, which tau_c 0.08
+    would have continued past)."""
     pairs = [(False, False)] * 192
     if shape == "pass":
         assert net >= 11, "efficacy at look 1 needs a net of at least 11"
@@ -75,6 +77,9 @@ def stage2_pairs(shape: str, net: int = 24) -> list:
     elif shape == "alpha_only":
         for index in (0, 1, 2, 50, 60, 100, 110, 150, 160):
             pairs[index] = (True, False)
+    elif shape == "pass_look3":
+        for index in range(10):
+            pairs[index] = (True, False)
     elif shape != "futility":
         raise ValueError(shape)
     return pairs
@@ -82,22 +87,25 @@ def stage2_pairs(shape: str, net: int = 24) -> list:
 
 def stage12_evidence(registry, base_config, envelope, *, parent: str = PARENT_CIG,
                      seed: int = MINING_SEED, replay_pass: bool = True,
-                     stage2: str = "pass", net: int = 24, families=(FAMILY,)):
+                     stage2: str = "pass", net: int = 24, families=(FAMILY,), source=None):
     """Real stage-1 and stage-2 evaluations (ADR-0012 D3, D4) of one
     candidate, driven by scripted outcomes: the evidence rounds R1-R4 hand
-    to the orchestrator."""
+    to the orchestrator. ``source`` = (success, expressed) scripts the
+    source episode directly; by default it succeeds and expresses the gene
+    iff ``replay_pass``."""
     from inheritance.ablation import AblationEvaluator
     from inheritance.replay import ReplayAllocation, ReplayEvaluator
     from inheritance.runner import EvaluationTask
     gene_id = envelope["candidate"]["gene_id"]
     runner = ScriptedGateRunner()
-    source = EvaluationTask(task_id=f"src-{gene_id}", family=families[0], payload={"goal": "g"},
-                            bank_id="t_mine")
+    source_task = EvaluationTask(task_id=f"src-{gene_id}", family=families[0],
+                                 payload={"goal": "g"}, bank_id="t_mine")
     # a failing stage 1 is a successful replay that never expressed the gene
-    runner.set(source.task_id, "with_trait", True, (gene_id,) if replay_pass else ())
+    success, expressed = (True, replay_pass) if source is None else source
+    runner.set(source_task.task_id, "with_trait", success, (gene_id,) if expressed else ())
     common = dict(candidate_envelope=envelope, registry=registry, base_config=base_config,
                   budgets=BUDGETS, parent_cig_id=parent, mining_seed=seed)
-    replay = ReplayEvaluator(runner=runner, **common).evaluate(ReplayAllocation(source))
+    replay = ReplayEvaluator(runner=runner, **common).evaluate(ReplayAllocation(source_task))
     allocation = stage2_allocation(gene_id, families)
     for task, (with_success, cell_success) in zip(allocation.tasks, stage2_pairs(stage2, net)):
         runner.set(task.task_id, "with_trait", with_success, (gene_id,) if with_success else ())

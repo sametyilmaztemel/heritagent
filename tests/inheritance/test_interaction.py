@@ -138,3 +138,26 @@ def test_shared_gene_id_pair_rejected(world):
         world["evaluator"].evaluate_pair(env, deepcopy(env),
                                           world["allocation"],
                                           evaluation_settings(max_tokens=64))
+
+
+@pytest.mark.parametrize("both_losses,neither_losses,delta,harmful", [
+    (1, 0, -0.1, True),     # one net loss of 10 games is harmful (delta < -0.05, ADR-0002 A1)
+    (2, 1, -0.1, True),
+    (0, 0, 0.0, False),
+    (0, 1, 0.1, False),
+    (1, 1, 0.0, False),
+])
+def test_the_harmful_pair_boundary(world, both_losses, neither_losses, delta, harmful):
+    """delta_pair moves in steps of 0.1 over the 10 games, so the locked rule
+    'harmful iff delta_pair < -0.05' makes one net loss harmful (ADR-0012 D6
+    keeps it)."""
+    for i in range(both_losses):
+        world["runner"].set(f"ix-{i}", "both", False, ("a_pair", "z_pair"))
+    for i in range(neither_losses):
+        world["runner"].set(f"ix-{9 - i}", "neither", False, ())
+    locked = evaluation_settings(max_tokens=64, seed=MINING_SEED)
+    evidence = world["evaluator"].evaluate_pair(world["env_a"], world["env_z"],
+                                                world["allocation"], locked)
+    assert evidence.delta_pair == pytest.approx(delta)
+    assert evidence.harmful is harmful
+    assert evidence.canonical_evidence["harmful"] is harmful

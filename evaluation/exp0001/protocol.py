@@ -84,7 +84,10 @@ PROTOCOL = MappingProxyType({
                     "round's unrecorded episodes + final_evaluation_reserve > episodes_max, or "
                     "if model_calls + (the round's unrecorded episodes + "
                     "final_evaluation_reserve) x the run's mean calls per recorded episode > "
-                    "model_calls_max; each check is a ledger record",
+                    "model_calls_max; each check is a ledger record. The round's unrecorded "
+                    "episodes are its largest possible count given the candidates still in it "
+                    "(no request of a round depends on that round's own outcomes) less those "
+                    "already recorded, which episodes counts",
     "final_evaluation_reserve": FINAL_EVALUATION_RESERVE,
     "gate_rounds": {"count": GATE_ROUNDS,
                     "R1": "stage 1 and stage-2 look 1", "R2-R4": "stage-2 looks 2-4",

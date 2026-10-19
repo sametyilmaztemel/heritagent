@@ -189,8 +189,11 @@ def test_a_candidate_that_never_met_alpha_gets_a_not_run_child(registry, base_co
     assert "ADR-0012 D7" in m["not_run_reason"]
     assert result.out_scope_state == "not_run" and result.delta_out is None
     assert result.passed is False
-    # the in-scope child is still written, by reference
-    assert result.in_scope_child["measurements"]["by_reference"]["games"] == 48
+    # the in-scope child is still written, by reference; delta 0 passes the locked
+    # in-scope rule (delta >= 0)
+    in_scope = result.in_scope_child["measurements"]
+    assert in_scope["by_reference"]["games"] == 48 and in_scope["delta"]["exact"] == "0/1"
+    assert in_scope["stage_pass"] is True and result.in_scope_passed is True
 
 
 # -- vacuous (ADR-0007 E6) ----------------------------------------------------------------

@@ -163,18 +163,136 @@ def test_a_stage_pass_the_recomputed_decision_does_not_give_is_rejected(tmp_path
 
 
 def test_an_evaluation_that_disagrees_with_its_record_is_rejected(tmp_path):
-    """The evaluation the gate consumes must carry its record's alpha_met and
-    contribution, not only its pass (ADR-0012 D4, D7)."""
+    """The evaluation the gate consumes must carry its record's alpha_met,
+    contribution, looks, stop and paired outcomes, not only its pass: the
+    in-scope child and the sensitivity grid read them (ADR-0012 D4, D5, D7)."""
     from fractions import Fraction
     world = build_world(tmp_path, candidates=("a",))
     orch, somatic, cig_store, runner, inputs, registry = world
     ablation = inputs[0].ablation_evaluation
-    for change in ({"_alpha_met": False}, {"_contribution": Fraction(1, 3)}):  # the record has 1/2
+    outcomes = copy.deepcopy(ablation.paired_outcomes)
+    for outcome in outcomes:
+        outcome["with_trait"]["success"] = False
+    looks = copy.deepcopy(ablation.looks)
+    looks[0]["n_plus"] = 23
+    for change in ({"_alpha_met": False}, {"_contribution": Fraction(1, 3)},  # the record: 1/2
+                   {"_paired_outcomes": tuple(outcomes)}, {"_looks": tuple(looks)},
+                   {"_stop": {**ablation.stop, "reason": "futility"}}):
         bad = dataclasses.replace(inputs[0],
                                   ablation_evaluation=dataclasses.replace(ablation, **change))
-        with pytest.raises(EvidenceCoherenceError, match="pass, alpha_met or contribution"):
+        with pytest.raises(EvidenceCoherenceError,
+                           match="pass, alpha_met, contribution, looks, stop or paired outcomes"):
             orch.run([bad])
     assert runner.calls == []
+
+
+def _harmful():
+    return {"both": (False, ()), "neither": (True, ())}
+
+
+def _pair_calls(runner):
+    return [c for c in runner.calls if c[1] in ("both", "neither")]
+
+
+def test_a_candidate_failing_stage_1_is_not_eligible_and_eliminates_nobody(tmp_path):
+    """Eligibility needs every stage (design stage 4): a fails stage 1 with the
+    higher contribution, so it enters no pair and cannot eliminate b."""
+    world = build_world(tmp_path, candidates=("a", "b"), replay_pass_for={"a": False},
+                        ablation_deltas={"a": 0.9, "b": 0.1}, interaction=_harmful())
+    orch, somatic, cig_store, runner, inputs, registry = world
+    by_gene = {r.gene_id: r for r in orch.run(inputs).results}
+    assert by_gene["a"].stage_results["replay"] is False and by_gene["a"].verdict == "reject"
+    assert by_gene["b"].verdict == "promote" and by_gene["b"].eliminated_by is None
+    assert _pair_calls(runner) == []
+
+
+class _OverheadOfA:
+    identity = "scripted-overhead-of-a-v1"
+
+    def count_tokens(self, text: str) -> int:
+        return 600 if "principle of a" in text else 10
+
+
+def test_a_candidate_failing_the_overhead_is_not_eligible_and_eliminates_nobody(tmp_path):
+    world = build_world(tmp_path, candidates=("a", "b"), ablation_deltas={"a": 0.9, "b": 0.1},
+                        interaction=_harmful())
+    orch, somatic, cig_store, runner, inputs, registry = world
+    orch._token_counter = _OverheadOfA()
+    by_gene = {r.gene_id: r for r in orch.run(inputs).results}
+    assert by_gene["a"].stage_results["overhead"] is False and by_gene["a"].verdict == "reject"
+    assert by_gene["b"].stage_results["overhead"] is True
+    assert by_gene["b"].verdict == "promote" and by_gene["b"].eliminated_by is None
+    assert _pair_calls(runner) == []
+
+
+def test_a_failed_unexpressed_source_episode_passes_stage_1(tmp_path):
+    """ADR-0012 D3: a failed episode passes, nothing is compared; the gate's
+    recompute of the rule accepts it and the candidate is promoted."""
+    world = build_world(tmp_path, candidates=("a",), source_episode={"a": (False, False)})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    [episode] = inputs[0].replay_evaluation.child_record["measurements"]["episodes"]
+    assert (episode["success"], episode["expressed_gene_ids"]) == (False, [])
+    result = orch.run(inputs).results[0]
+    assert result.stage_results["replay"] is True and result.verdict == "promote"
+
+
+def test_a_one_game_net_loss_in_a_pair_is_harmful(tmp_path):
+    """ADR-0002 A1 (kept by ADR-0012 D6): delta_pair = -1/10 < -0.05, so the
+    lower-contribution member is eliminated."""
+    world = build_world(tmp_path, candidates=("a", "b"), ablation_deltas={"a": 0.9, "b": 0.1})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    runner.set("ix-0", "both", False, ("a", "b"))
+    by_gene = {r.gene_id: r for r in orch.run(inputs).results}
+    assert by_gene["b"].eliminated_by == "a" and by_gene["b"].verdict == "reject"
+    assert by_gene["a"].verdict == "promote"
+
+
+@pytest.mark.parametrize("change", [
+    lambda m: m["episodes"][0].update(round=True),
+    lambda m: m["episodes"][0].update(round=1.0),
+    lambda m: m["episodes"][0].update(round=2),
+    lambda m: m["episodes"][0].update(condition="without_trait"),
+    lambda m: m["episodes"][0].update(task_id="src-other"),
+    lambda m: (m["allocation"].pop("source_task_id"), m["episodes"][0].pop("task_id")),
+])
+def test_a_stage_1_record_off_its_source_task_or_round_is_rejected(tmp_path, change):
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    replay = inputs[0].replay_evaluation
+    child = copy.deepcopy(replay.child_record)
+    change(child["measurements"])
+    bad = dataclasses.replace(inputs[0], replay_evaluation=dataclasses.replace(
+        replay, _child_record=child))
+    with pytest.raises(EvidenceCoherenceError, match="not the source task with the trait"):
+        orch.run([bad])
+    assert runner.calls == []
+
+
+def test_the_primary_thresholds_are_adr_0012_d10s():
+    """The aggregate's thresholds_used states the rule the gate applies
+    (ADR-0012 D10): pinned against the ADR's literal values."""
+    from inheritance.gate import (
+        ABLATION_STAGE_TEXT,
+        IN_SCOPE_STAGE_TEXT,
+        OUT_SCOPE_STAGE_TEXT,
+        PRIMARY_THRESHOLDS,
+        THRESHOLD_VERSION,
+    )
+    assert THRESHOLD_VERSION == "EXP-0001-CIG-M0-v2"
+    expected = {
+        "ablation_looks": [48, 96, 144, 192],
+        "ablation_alphas": ["1/2000", "1/2000", "1/1000", "3/1000"],
+        "tau_c": 0.05, "ablation_futility": "net <= floor(n_k/40) at looks 1-3",
+        "in_scope_min_delta": 0.0, "out_scope_games": 24, "out_scope_min_delta": -0.05,
+        "tau_r": 0.03, "harmful_pair_delta": -0.05, "tau_k_tokens": 512,
+        "bootstrap_confidence": 0.95, "bootstrap_resamples": 10_000, "bootstrap_seed": 0,
+        "bootstrap_cluster_order": "task_id"}
+    assert {k: PRIMARY_THRESHOLDS[k] for k in expected} == expected
+    assert set(PRIMARY_THRESHOLDS) == set(expected) | {"replay_rule", "in_scope_rule", "rounds"}
+    assert "(1/2000, 1/2000, 1/1000, 3/1000) and point >= 0.05" in ABLATION_STAGE_TEXT
+    assert "floor(n/40)" in ABLATION_STAGE_TEXT
+    assert IN_SCOPE_STAGE_TEXT.startswith("delta_in >= 0.0 ")
+    assert OUT_SCOPE_STAGE_TEXT.startswith("delta_out >= -0.05 over 24 games, exact: net loss <= 1")
 
 
 def test_a_replay_record_off_the_expression_rule_is_rejected(tmp_path):
@@ -190,3 +308,19 @@ def test_a_replay_record_off_the_expression_rule_is_rejected(tmp_path):
     with pytest.raises(EvidenceCoherenceError, match="expression rule"):
         orch.run([bad])
     assert runner.calls == []
+
+
+def test_the_t_reg_cells_are_round_5s_and_must_not_express_the_target(tmp_path):
+    """4A pairs T_reg with the seed's R5 cells (ADR-0012 D2, D6); a cell that
+    expressed the target gene is a contaminated intervention."""
+    from inheritance.runner import EvaluationIntegrityError
+    orch, somatic, cig_store, runner, inputs, registry = build_world(tmp_path / "clean",
+                                                                     candidates=("a",))
+    result = orch.run(inputs).results[0]
+    episodes = result.stage4_child["measurements"]["regression"]["paired_g0_run"]["episodes"]
+    assert len(episodes) == 40 and {e["round"] for e in episodes} == {5}
+    orch, somatic, cig_store, runner, inputs, registry = build_world(tmp_path / "leak",
+                                                                     candidates=("a",))
+    runner.set("treg-a-3", "without_trait", True, ("a",))
+    with pytest.raises(EvaluationIntegrityError, match="expressed the target gene"):
+        orch.run(inputs)

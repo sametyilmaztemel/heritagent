@@ -34,7 +34,7 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
                 replay_pass=True, ablation_deltas=None, stage2=None,
                 gen_out_with=True, treg_success_count=40,
                 interaction=None, replay_pass_for=None,
-                commit_stores=True, applicability=None):
+                commit_stores=True, applicability=None, source_episode=None):
     """Build a full scripted world: runner, inputs, orchestrator, stores.
 
     Every candidate carries its OWN aggregate CIG id (CIG-0007, CIG-0008,
@@ -43,7 +43,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
     name to a stage-2 contribution (>= 0.05: efficacy at look 1 with net
     max(11, round(48 * delta)); below: futility at look 1, alpha never
     met), and ``stage2`` maps a name to a path shape ('pass', 'futility',
-    'alpha_only'). Out of scope: 24 games, with-trait success
+    'alpha_only', 'pass_look3'); ``source_episode`` maps a name to its
+    stage-1 episode's (success, expressed). Out of scope: 24 games, with-trait success
     ``gen_out_with``, G0 cells all succeed. Interaction defaults: both and
     neither succeed (delta 0, not harmful). commit_stores=False wires the
     orchestrator WITHOUT stores."""
@@ -74,7 +75,8 @@ def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
             rp = replay_pass_for[name]
         replay, ablation = stage12_evidence(
             registry, base_config, envelope, parent=parent, replay_pass=rp, stage2=shape,
-            net=max(11, round(48 * delta)), families=families)
+            net=max(11, round(48 * delta)), families=families,
+            source=(source_episode or {}).get(name))
         out_plan = out_of_scope_allocation(name, families)
         for task in out_plan.tasks:
             runner.set(task.task_id, "with_trait", gen_out_with, (gene_id,))

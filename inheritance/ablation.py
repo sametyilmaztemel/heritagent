@@ -71,9 +71,10 @@ ALLOCATION_RULE = ("192 benefit_bank games over the frozen applicability familie
                    "order: game j is the floor(j/m)-th game, in bank order, of the "
                    "(j mod m)-th family")
 ABLATION_THRESHOLD_TEXT = (
-    "exact one-sided paired sign test at looks 48/96/144/192: pass at look k iff "
-    "p_k <= alpha_k (1/2000, 1/2000, 1/1000, 3/1000) and net/n_k >= 0.05; at looks 1-3 "
-    "stop and fail iff net <= floor(n_k/40); no efficacy at look 4 fails (ADR-0012 D4)")
+    f"exact one-sided paired sign test at looks {'/'.join(map(str, LOOKS))}: pass at look k "
+    f"iff p_k <= alpha_k ({', '.join(map(str, ALPHAS))}) and net/n_k >= {float(TAU_C)}; at "
+    f"looks 1-{len(LOOKS) - 1} stop and fail iff net <= floor(n_k/{FUTILITY_DIVISOR}); no "
+    f"efficacy at look {len(LOOKS)} fails (ADR-0012 D4)")
 CELL_CONDITION = "without_trait"
 
 
@@ -347,6 +348,7 @@ class AblationEvaluator:
                                       f"{self.next_look} (stage 2 plays its looks in order and "
                                       f"never after its stop)")
         gate_round = look_round(look)
+        played: list[dict] = []  # kept only once the whole look has played
         for task in self._allocation.look_tasks(look):
             with_trait = runner.run_episode(task, self._configs.with_trait, self._budgets,
                                             "with_trait", self._settings)
@@ -360,12 +362,13 @@ class AblationEvaluator:
                     f"the G0 cell of {task.task_id!r} (round {gate_round}) expressed the target "
                     f"gene {self._gene!r}: the paired intervention is contaminated and produced "
                     f"no child CIG record")
-            self._outcomes.append({
+            played.append({
                 "task_id": task.task_id, "family": task.family, "look": look,
                 "round": gate_round,
                 "with_trait": _episode(with_trait),
                 "cell": {"seed": self._mining_seed, "round": gate_round, **_episode(cell)},
                 "fired": self._gene in with_trait.expressed_gene_ids})
+        self._outcomes.extend(played)
         pairs = [(o["with_trait"]["success"], o["cell"]["success"]) for o in self._outcomes]
         n_plus = sum(1 for w, c in pairs if w and not c)
         n_minus = sum(1 for w, c in pairs if c and not w)
@@ -416,10 +419,7 @@ class AblationEvaluator:
                 "paired_delta_task_ids": [task_id for task_id, _ in ordered],
                 "bootstrap": {k: v for k, v in block.items() if k != "point_estimate"},
                 "tau_c": exact(TAU_C),
-                "thresholds": {"rule": ABLATION_THRESHOLD_TEXT, "looks": list(LOOKS),
-                               "alphas": [exact(a) for a in ALPHAS], "tau_c": exact(TAU_C),
-                               "futility": f"net <= floor(n_k / {FUTILITY_DIVISOR}) at looks "
-                                           f"1-{len(LOOKS) - 1}"},
+                "thresholds": thresholds_record(),
                 "deterministic_execution_policy": {
                     "runs_per_task_condition": 1, "eval_temperature": 0.0,
                     "paired_conditions": ["with_trait", "g0_cell"],
@@ -448,12 +448,28 @@ def _episode(outcome) -> dict:
             "trajectory_id": outcome.trajectory_id, "status": outcome.status}
 
 
-def stage2_evidence_issues(measurements: Mapping, *, mining_seed: int | None = None) -> list[str]:
+def thresholds_record() -> dict:
+    """The stage-2 rule as every child records it (ADR-0012 D4, D10)."""
+    return {"rule": ABLATION_THRESHOLD_TEXT, "looks": list(LOOKS),
+            "alphas": [exact(a) for a in ALPHAS], "tau_c": exact(TAU_C),
+            "futility": f"net <= floor(n_k / {FUTILITY_DIVISOR}) at looks 1-{len(LOOKS) - 1}"}
+
+
+def _is_int(value, expected: int) -> bool:
+    """Strict: True == 1 and 1.0 == 1 must not pass."""
+    return type(value) is int and value == expected
+
+
+def stage2_evidence_issues(measurements: Mapping, *, mining_seed: int | None = None,
+                           families: Sequence[str] | None = None) -> list[str]:
     """ADR-0012 D4: recompute the stage-2 decision from the record alone. The
-    paired outcomes must be the allocation's first games in order, each read
-    against the cell of its own look's round (D2); every look's counts, p_k,
-    decision, the stop, ``alpha_met``, the contribution and ``stage_pass``
-    must be the rule's; the descriptive bootstrap must be on the locked
+    allocation must be 192 distinct games interleaved over its families in
+    name order (``families``, when given, the candidate's frozen
+    applicability); the paired outcomes must be its first games in order,
+    each read against the cell of its own look's round (D2), and no cell may
+    have expressed the target gene; every look's counts, p_k, decision, the
+    stop, ``alpha_met``, the contribution, ``stage_pass`` and the recorded
+    rule must be the rule's; the descriptive bootstrap must be on the locked
     ADR-0005 values and recompute. Returns the issues (empty if none)."""
     issues: list[str] = []
     allocation = measurements.get("allocation")
@@ -461,8 +477,23 @@ def stage2_evidence_issues(measurements: Mapping, *, mining_seed: int | None = N
     if not isinstance(allocation, Mapping) or not isinstance(allocation.get("task_ids"), list) \
             or len(allocation["task_ids"]) != ALLOCATION_SIZE:
         return [f"stage 2: the allocation does not list {ALLOCATION_SIZE} games"]
+    task_ids = allocation["task_ids"]
+    if not all(isinstance(t, str) for t in task_ids) or len(set(task_ids)) != len(task_ids):
+        return ["stage 2: the allocation's games are not distinct string ids (no replacement "
+                "within a candidate, ADR-0012 D4)"]
+    slots = allocation.get("families")
+    if not isinstance(slots, list) or not slots or slots != sorted(set(slots)) \
+            or not all(isinstance(f, str) for f in slots):
+        return ["stage 2: the allocation's families are not distinct names in name order"]
+    if families is not None and slots != sorted(families):
+        issues.append(f"stage 2: the allocation is over {slots}, the candidate's frozen "
+                      f"applicability is {sorted(families)} (ADR-0012 D4)")
     if not isinstance(outcomes, list) or not outcomes:
         return ["stage 2: the record holds no paired outcomes"]
+    if len(outcomes) > ALLOCATION_SIZE:
+        return [f"stage 2: the record holds {len(outcomes)} paired outcomes, more than the "
+                f"{ALLOCATION_SIZE} games of the allocation"]
+    gene = measurements.get("candidate_gene_id")
     pairs: list[tuple[bool, bool]] = []
     for index, outcome in enumerate(outcomes):
         if not isinstance(outcome, Mapping):
@@ -470,23 +501,34 @@ def stage2_evidence_issues(measurements: Mapping, *, mining_seed: int | None = N
         with_trait, cell = outcome.get("with_trait"), outcome.get("cell")
         if not isinstance(with_trait, Mapping) or not isinstance(cell, Mapping) \
                 or type(with_trait.get("success")) is not bool \
-                or type(cell.get("success")) is not bool:
-            return [f"stage 2: paired outcome {index} lacks boolean with-trait and cell outcomes"]
-        if outcome.get("task_id") != allocation["task_ids"][index]:
+                or type(cell.get("success")) is not bool \
+                or not isinstance(cell.get("expressed_gene_ids"), list):
+            return [f"stage 2: paired outcome {index} lacks boolean with-trait and cell outcomes "
+                    f"and the cell's expressed genes"]
+        if outcome.get("task_id") != task_ids[index]:
             issues.append(f"stage 2: game {index} is {outcome.get('task_id')!r}, the allocation's "
-                          f"game {index} is {allocation['task_ids'][index]!r}")
+                          f"game {index} is {task_ids[index]!r}")
+        if outcome.get("family") != slots[index % len(slots)]:
+            issues.append(f"stage 2: game {index} is of family {outcome.get('family')!r}, its "
+                          f"slot belongs to {slots[index % len(slots)]!r}")
         look = next(k for k, n_k in enumerate(LOOKS, start=1) if index < n_k)
         expected_round = look_round(look)
-        if outcome.get("look") != look or outcome.get("round") != expected_round \
-                or cell.get("round") != expected_round:
+        if not (_is_int(outcome.get("look"), look) and _is_int(outcome.get("round"), expected_round)
+                and _is_int(cell.get("round"), expected_round)):
             issues.append(f"stage 2: game {index} belongs to look {look} and round "
                           f"{expected_round}; the record says look {outcome.get('look')!r}, "
                           f"round {outcome.get('round')!r}, cell round {cell.get('round')!r} "
                           f"(ADR-0012 D2: a cell is read only in its round)")
-        if mining_seed is not None and cell.get("seed") != mining_seed:
+        if mining_seed is not None and not _is_int(cell.get("seed"), mining_seed):
             issues.append(f"stage 2: game {index} read a cell of seed {cell.get('seed')!r}, not "
                           f"{mining_seed}")
+        if gene is not None and gene in cell["expressed_gene_ids"]:
+            issues.append(f"stage 2: the cell of game {index} expressed the target gene "
+                          f"{gene!r} (a contaminated intervention)")
         pairs.append((with_trait["success"], cell["success"]))
+    if measurements.get("tau_c") != exact(TAU_C) \
+            or measurements.get("thresholds") != thresholds_record():
+        issues.append("stage 2: the recorded rule is not ADR-0012 D4's")
     looks, stop = sequential_path(pairs)
     if stop is None or stop["games"] != len(pairs):
         issues.append(f"stage 2: the rule does not stop after the {len(pairs)} games recorded "
@@ -531,6 +573,9 @@ def _bootstrap_issues(measurements: Mapping, outcomes: list) -> list[str]:
         if type(got) is not type(value) or got != value:  # strict: True == 1 must not pass
             issues.append(f"stage 2 bootstrap.{key} {got!r} != pre-registered {value!r} "
                           f"(ADR-0005)")
+    if not all(isinstance(o.get("task_id"), str) for o in outcomes):
+        return issues + ["stage 2: a paired outcome's task id is not a string (ADR-0005 orders "
+                         "the deltas by task id)"]
     ordered = sorted((o["task_id"], float(o["with_trait"]["success"])
                       - float(o["cell"]["success"])) for o in outcomes)
     if measurements.get("paired_delta_task_ids") != [t for t, _ in ordered] \

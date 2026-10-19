@@ -682,3 +682,25 @@ def test_a_ledger_written_before_the_reserve_record_still_reads(tmp_path):
         else:
             with pytest.raises(LedgerError, match="missing ledger header"):
                 RunLedger(path, run_id="r", clock=Clock())
+
+
+@pytest.mark.parametrize("cap,passed", [(37 + 270, True), (37 + 269, False)])
+def test_the_call_reserve_is_exact_at_its_cap(tmp_path, cap, passed):
+    ledger, _ = reserve_ledger(tmp_path, model_calls_max=cap)
+    if passed:
+        assert ledger.check_reserve("gate/11/R1", round_episodes=40, final_reserve=50)["passed"]
+    else:
+        with pytest.raises(CapExceeded, match="model_calls_max"):
+            ledger.check_reserve("gate/11/R1", round_episodes=40, final_reserve=50)
+
+
+def test_the_calls_ahead_round_up(tmp_path):
+    """A fractional mean (7/2) times 3 episodes ahead is 10.5 calls: the
+    check reserves 11."""
+    ledger, _ = reserve_ledger(tmp_path, done=0)
+    for index, calls in enumerate((3, 4)):
+        ledger.admit(f"e{index}")
+        ledger.record(f"e{index}", model_calls=calls, outcome={})
+    check = ledger.check_reserve("gate/11/R1", round_episodes=1, final_reserve=2)
+    assert check["mean_calls_per_episode"] == {"exact": "7/2", "float": 3.5}
+    assert check["calls_ahead"] == 11

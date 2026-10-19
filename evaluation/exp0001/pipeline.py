@@ -91,6 +91,7 @@ from evaluation.exp0001.protocol import (
     MINING_TEMPERATURE,
 )
 from evaluation.exp0001.provenance import (
+    RUN_START_SCHEMA,
     ProvenanceError,
     freeze_json,
     verify_pre_run_artifacts,
@@ -112,12 +113,13 @@ from inheritance.ablation import LOOKS, AblationEvaluator
 from inheritance.gate import (
     SENSITIVITY_TAU_C_GRID,
     SENSITIVITY_TAU_R_GRID,
+    THRESHOLD_VERSION,
     CigGateOrchestrator,
     GateCandidateInput,
     ablation_evidence_issues,
     replay_evidence_issues,
 )
-from inheritance.generalization import paired_outcomes_sha256
+from inheritance.generalization import paired_outcomes_sha256, resolve_frozen_applicability
 from inheritance.overlay import evaluation_settings
 from inheritance.regression import RegressionAllocation, TRegTask
 from inheritance.replay import ReplayEvaluator
@@ -268,6 +270,13 @@ class Exp0001Run:
         self._lock, self._owns_lock = lock, lock is None
         self.executor = None
         verify_run_start_record(run_start)
+        # a record of this code's protocol: another schema or threshold version is another run
+        if run_start.get("schema") != RUN_START_SCHEMA \
+                or (run_start.get("gate") or {}).get("threshold_version") != THRESHOLD_VERSION \
+                or not isinstance(run_start.get("benefit_bank"), Mapping):
+            raise ProvenanceError(f"the run-start record is not a {RUN_START_SCHEMA} record of "
+                                  f"thresholds {THRESHOLD_VERSION} with a benefit bank "
+                                  f"(ADR-0012 D1, D10)")
         # the split, pilot and bank manifests must verify, be the pre-registered
         # ones, and be the ones the record names (ADR-0012 D1)
         verify_pre_run_artifacts(split_manifest, pilot_manifest, benefit_bank,
@@ -418,8 +427,10 @@ class Exp0001Run:
         # and a candidate's out-of-scope, 4A and 4C parts ran iff its stage-2
         # alpha was met (D7)
         try:
-            issues = self._gate_record_issues(seed, gate)
-        except (KeyError, TypeError, AttributeError, ValueError) as exc:
+            families = {c["candidate"]["gene_id"]: resolve_frozen_applicability(c, self.registry)
+                        for c in candidates}
+            issues = self._gate_record_issues(seed, gate, families)
+        except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
             issues = [f"a record is malformed ({exc!r})"]
         if issues:
             raise RunError(f"seed {seed}: gate.json does not recompute: {issues}")
@@ -447,7 +458,9 @@ class Exp0001Run:
         key = f"gate/{seed}/R{gate_round}/cell/{task_id}/{config_fingerprint(self.g0_config)}"
         return trajectory_id_for(self.run_start["run_id"], key)
 
-    def _gate_record_issues(self, seed: int, gate: Mapping) -> list[str]:
+    def _gate_record_issues(self, seed: int, gate: Mapping, families: Mapping) -> list[str]:
+        """What in a frozen gate artifact does not recompute; ``families`` is
+        each candidate's frozen applicability, from its stored artifact."""
         issues: list[str] = []
         by_aggregate: dict[str, dict] = {}
         for child_id, child in gate["children"].items():
@@ -463,7 +476,10 @@ class Exp0001Run:
                 issues.append(f"{aggregate_id} has no stage-2 record")
                 continue
             m = ablation["measurements"]
-            found = ablation_evidence_issues(m, mining_seed=seed)
+            found = ablation_evidence_issues(m, mining_seed=seed,
+                                             families=families.get(genes.get(aggregate_id), ()))
+            if m["allocation"].get("bank_sha256") != self.bank["bank_sha256"]:
+                found.append("stage 2 was not drawn from this run's benefit bank (ADR-0012 D1)")
             if found:
                 issues.extend(f"{aggregate_id}: {issue}" for issue in found)
                 continue
@@ -486,6 +502,9 @@ class Exp0001Run:
             if (out.get("not_run") is True) == ran or (stage4.get("not_run") is True) == ran:
                 issues.append(f"{aggregate_id}: its out-of-scope check and 4A must run iff stage "
                               f"2 met alpha ({ran}) (ADR-0012 D7)")
+            if (out.get("allocation") or {}).get("bank_sha256") != self.bank["bank_sha256"]:
+                issues.append(f"{aggregate_id}: the out-of-scope games were not drawn from this "
+                              f"run's benefit bank (ADR-0012 D1)")
             for outcome in out.get("paired_outcomes", ()):
                 if outcome["cell"]["trajectory_id"] != \
                         self._cell_trajectory(seed, 5, outcome["task_id"]):
@@ -554,16 +573,19 @@ class Exp0001Run:
 
         def gate_code(gate_pass: GatePass):
             """The whole gate of the seed, round by round (ADR-0012 D2)."""
-            stage1, stage2 = {}, {}
+            replays, stage1, stage2 = {}, {}, {}
+            # every evaluator is built, and fails closed, before the first request
             for rank, envelope, replay_plan, stage2_plan, _ in plans:
                 gene = envelope["candidate"]["gene_id"]
                 common = dict(candidate_envelope=envelope, registry=self.registry,
                               base_config=self.g0_config, budgets=self.budgets,
                               parent_cig_id=cig_id(seed, rank), mining_seed=seed)
-                # R1: stage 1 (ADR-0012 D3)
-                stage1[gene] = ReplayEvaluator(runner=gate_pass.runner(1, f"{gene}/replay"),
-                                               **common).evaluate(replay_plan)
+                replays[gene] = (ReplayEvaluator(runner=gate_pass.runner(1, f"{gene}/replay"),
+                                                 **common), replay_plan)
                 stage2[gene] = AblationEvaluator(allocation=stage2_plan, **common)
+            # R1: stage 1 (ADR-0012 D3)
+            for gene, (evaluator, replay_plan) in replays.items():
+                stage1[gene] = evaluator.evaluate(replay_plan)
             # R1-R4: stage 2's looks for every candidate still running (D4)
             for look in range(1, len(LOOKS) + 1):
                 for gene, evaluator in stage2.items():
@@ -603,10 +625,11 @@ class Exp0001Run:
             except PrefetchStop:
                 pass  # the round's last request has been reached
             except Exception:  # noqa: BLE001
+                if not collector.collected:
+                    raise  # no placeholder was answered, so the error is real: fail here
                 # a placeholder can lead the dry pass astray only after the
                 # round's requests (rounds are sequential); the completeness
-                # pass below and the read pass meet any real error
-                pass
+                # pass below, which answers none, meets any real error
             return collector.collected
 
         for gate_round in range(1, GATE_ROUNDS + 1):
@@ -643,10 +666,9 @@ class Exp0001Run:
             "aggregate_ids": {r.gene_id: r.aggregate_cig_id for r in outcome.results},
             "eliminated_by_interaction": {r.gene_id: r.eliminated_by for r in outcome.results},
             "aggregates": records.aggregates, "children": records.children,
-            # what each round ran and which cells its readers shared (ADR-0012 D2)
+            # what each round ran and which cells its readers shared (ADR-0012 D2); the
+            # reserve checks (D9) stay in the ledger, which also holds a resumed session's
             "rounds": _round_summary(reader),
-            "reserve_checks": [c for c in self.ledger.reserve_checks
-                               if c["label"].startswith(f"gate/{seed}/")],
             # the pre-planned tau_c/tau_r grid (manifest sensitivity_secondary): a pure
             # recomputation over the stage evidence above, frozen with it (ADR-0012 D7)
             "sensitivity": {r.gene_id: gate.sensitivity_recomputation(r.gene_id)

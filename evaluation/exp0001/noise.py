@@ -13,7 +13,10 @@ two lower references for that disagreement, at no episode's cost:
 
 They decide nothing. They are lower references for the changed-prompt
 disagreement a with/without contrast carries, not estimates of it. Each
-comes with an exact (Clopper-Pearson) 95 % interval."""
+comes with an exact (Clopper-Pearson) 95 % interval, computed as if the
+pairs were independent: they are not where a game has three or more cells
+(its pairs share them), so the intervals are narrower than the data
+support."""
 
 from __future__ import annotations
 
@@ -121,5 +124,8 @@ def cell_disagreement(gates: Mapping[str, Mapping]) -> dict:
     return {"descriptive_only": True,
             "basis": "the gate's G0 cells (ADR-0012 D8): lower references for the "
                      "changed-prompt disagreement a gate contrast carries, not estimates of it",
+            "interval_note": "exact (Clopper-Pearson) 95 % intervals over the pairs as if "
+                             "independent; pairs that share a cell are not, so the intervals "
+                             "are too narrow where a game has three or more cells",
             "cross_round": _measure(cross_round), "cross_seed": _measure(cross_seed),
             "cells": len(cells)}

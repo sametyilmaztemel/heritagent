@@ -666,8 +666,9 @@ def _sharing(data: Mapping) -> str:
 V2_DISCLOSURE = (
     "Thresholds v2 (ADR-0012): stage 1 checks only that a successful replay of the source task "
     "expresses the gene, and the in-scope record is stage 2's games by reference, so neither "
-    "tests what SPEC §9 named on its own; stage 2 is a sequential sign test whose tau_c rule "
-    "rarely binds, so true effects below 0.05 can be promoted; the seeds' gates read the same "
+    "tests what SPEC §9 named on its own; stage 2 is a sequential sign test whose tau_c rule, "
+    "in ADR-0012's model (M), rarely binds, so true effects below 0.05 can be promoted (this "
+    "run's own tau_c grid is in the gate records); the seeds' gates read the same "
     "benefit-bank games, which weakens the two-of-three-seeds clause as replication; and H2 "
     "can hold only if arm B carries candidates that harm (ADR-0012 D11).")
 

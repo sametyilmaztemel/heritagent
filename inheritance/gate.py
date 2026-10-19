@@ -69,6 +69,7 @@ from inheritance.ablation import (
     BOOTSTRAP_SEED,
     FUTILITY_DIVISOR,
     LOOKS,
+    TAU_C,
     AblationEvaluation,
     exact,
     stage2_evidence_issues,
@@ -76,11 +77,15 @@ from inheritance.ablation import (
 )
 from inheritance.bootstrap import CONFIDENCE
 from inheritance.generalization import (
+    IN_SCOPE_MIN_DELTA,
     NOT_RUN_REASON,
     NOT_RUN_THRESHOLD_TEXT,
     OUT_SCOPE_COUNT,
+    OUT_SCOPE_MIN_DELTA,
+    OUT_SCOPE_MIN_DELTA_EXACT,
     GeneralizationEvaluation,
     GeneralizationEvaluator,
+    resolve_frozen_applicability,
 )
 from inheritance.interaction import HARMFUL_PAIR_DELTA, InteractionEvaluator
 from inheritance.overlay import (
@@ -107,12 +112,12 @@ PRIMARY_THRESHOLDS = {
     "replay_rule": "source task once with the trait: gene expressed or episode failed (D3)",
     "ablation_looks": list(LOOKS),
     "ablation_alphas": [f"{a.numerator}/{a.denominator}" for a in ALPHAS],
-    "tau_c": 0.05,
+    "tau_c": float(TAU_C),
     "ablation_futility": f"net <= floor(n_k/{FUTILITY_DIVISOR}) at looks 1-{len(LOOKS) - 1}",
-    "in_scope_min_delta": 0.0,
+    "in_scope_min_delta": IN_SCOPE_MIN_DELTA,
     "in_scope_rule": "by reference to stage 2's games (D5)",
     "out_scope_games": OUT_SCOPE_COUNT,
-    "out_scope_min_delta": -0.05,
+    "out_scope_min_delta": OUT_SCOPE_MIN_DELTA,
     "tau_r": TAU_R,
     "harmful_pair_delta": HARMFUL_PAIR_DELTA,
     "tau_k_tokens": TAU_K_TOKENS,
@@ -126,11 +131,14 @@ PRIMARY_THRESHOLDS = {
 SENSITIVITY_TAU_C_GRID = (0.03, 0.05, 0.08)
 SENSITIVITY_TAU_R_GRID = (0.02, 0.03, 0.05)
 REPLAY_STAGE_TEXT = REPLAY_THRESHOLD_TEXT
-ABLATION_STAGE_TEXT = ("exact paired sign test at looks 48/96/144/192: p_k <= alpha_k (1/2000, "
-                       "1/2000, 1/1000, 3/1000) and point >= 0.05; futility net <= floor(n/40) "
-                       "(ADR-0012 D4)")
-IN_SCOPE_STAGE_TEXT = "delta_in >= 0.0 over stage 2's games (by reference, ADR-0012 D5)"
-OUT_SCOPE_STAGE_TEXT = "delta_out >= -0.05 over 24 games, exact: net loss <= 1 (ADR-0012 D5)"
+ABLATION_STAGE_TEXT = (f"exact paired sign test at looks {'/'.join(map(str, LOOKS))}: p_k <= "
+                       f"alpha_k ({', '.join(map(str, ALPHAS))}) and point >= {float(TAU_C)}; "
+                       f"futility net <= floor(n/{FUTILITY_DIVISOR}) (ADR-0012 D4)")
+IN_SCOPE_STAGE_TEXT = (f"delta_in >= {IN_SCOPE_MIN_DELTA} over stage 2's games (by reference, "
+                       f"ADR-0012 D5)")
+OUT_SCOPE_STAGE_TEXT = (f"delta_out >= {OUT_SCOPE_MIN_DELTA} over {OUT_SCOPE_COUNT} games, "
+                        f"exact: net loss <= {-int(OUT_SCOPE_MIN_DELTA_EXACT * OUT_SCOPE_COUNT)} "
+                        f"(ADR-0012 D5)")
 VACUOUS_OUT_SCOPE_STAGE_TEXT = "vacuous: no out-of-scope family (ADR-0007 E6)"
 STAGE4_TEXT = ("paired regression drop <= 0.03 against the R5 cells (ADR-0009 D1; ADR-0012 D2), "
                "overhead <= 512 tokens, not eliminated")
@@ -154,23 +162,29 @@ class EvidenceCoherenceError(ValueError):
 
 
 def ablation_evidence_issues(measurements: dict, evaluated: AblationEvaluation | None = None,
-                             *, mining_seed: int | None = None) -> list[str]:
+                             *, mining_seed: int | None = None,
+                             families=None) -> list[str]:
     """ADR-0012 D4 (as ADR-0009 D5 did for the bootstrap): a stage-2 verdict
     is evidence only if it recomputes from its record. The sequential
     decision (per-look counts, exact p_k, efficacy and futility, the stop,
     ``alpha_met``, the contribution and ``stage_pass``) is recomputed from
     the paired outcomes, each of which must read the cell of its own look's
-    round; the descriptive bootstrap must be on the locked ADR-0005 values
-    and recompute. ``evaluated`` is the evaluation the gate consumes, whose
-    pass, ``alpha_met`` and contribution must be the record's; a resumed run
-    passes None."""
-    issues = stage2_evidence_issues(measurements, mining_seed=mining_seed)
+    round; the allocation must be over ``families`` (the candidate's frozen
+    applicability, when given); the descriptive bootstrap must be on the
+    locked ADR-0005 values and recompute. ``evaluated`` is the evaluation the
+    gate consumes, whose pass, ``alpha_met``, contribution, looks, stop and
+    paired outcomes (which the in-scope child and the sensitivity grid read)
+    must be the record's; a resumed run passes None."""
+    issues = stage2_evidence_issues(measurements, mining_seed=mining_seed, families=families)
     if evaluated is not None and not issues:
         if evaluated.passed is not measurements.get("stage_pass") \
                 or evaluated.alpha_met is not measurements.get("alpha_met") \
-                or exact(evaluated.contribution) != measurements.get("contribution"):
-            issues.append("the stage-2 evaluation's pass, alpha_met or contribution is not its "
-                          "record's (ADR-0012 D4)")
+                or exact(evaluated.contribution) != measurements.get("contribution") \
+                or evaluated.looks != measurements.get("looks") \
+                or evaluated.stop != measurements.get("stop") \
+                or evaluated.paired_outcomes != measurements.get("paired_outcomes"):
+            issues.append("the stage-2 evaluation's pass, alpha_met, contribution, looks, stop "
+                          "or paired outcomes are not its record's (ADR-0012 D4)")
     return issues
 
 
@@ -599,10 +613,16 @@ class CigGateOrchestrator:
                         inp.frozen_rank for inp in run.inputs}
         cells: dict[str, dict] = {}
         for tau_c in SENSITIVITY_TAU_C_GRID:
-            unidentified = sorted(gid for gid in run.gene_ids
-                                  if not stage2[gid][tau_c]["identifiable"])
             for tau_r in SENSITIVITY_TAU_R_GRID:
                 cell: dict = {"tau_c": tau_c, "tau_r": tau_r}
+                # only a candidate whose other stages pass under this cell can be
+                # eligible, so only its stage-2 outcome is needed here
+                unidentified = sorted(
+                    gid for gid in run.gene_ids
+                    if not stage2[gid][tau_c]["identifiable"]
+                    and replay_pass[gid] and gen_out[gid] and overhead_ok[gid]
+                    and reg_counts[gid] is not None
+                    and paired_drop_within(*reg_counts[gid], tau_r))
                 if unidentified:
                     cell.update({
                         "identifiable": False, "not_identifiable": True,
@@ -768,7 +788,10 @@ class CigGateOrchestrator:
             if stage == "replay":
                 issues.extend(replay_evidence_issues(m, gene_id))
             else:
-                issues.extend(ablation_evidence_issues(m, evaluation, mining_seed=seed))
+                issues.extend(ablation_evidence_issues(
+                    m, evaluation, mining_seed=seed,
+                    families=resolve_frozen_applicability(inp.candidate_envelope,
+                                                          self._registry)))
             issues.extend(self._settings_issues(stage, m.get("eval_generation_settings"), seed))
         if issues:
             raise EvidenceCoherenceError(sorted(issues))
@@ -1054,8 +1077,10 @@ def replay_evidence_issues(measurements: dict, gene_id: str) -> list[str]:
         return [f"replay child holds {episodes!r} episodes, not exactly one (ADR-0012 D3)"]
     episode = episodes[0]
     issues = []
-    if episode.get("condition") != "with_trait" or episode.get("round") != 1 \
-            or episode.get("task_id") != allocation.get("source_task_id"):
+    source = allocation.get("source_task_id")
+    if episode.get("condition") != "with_trait" or type(episode.get("round")) is not int \
+            or episode.get("round") != 1 or not isinstance(source, str) \
+            or episode.get("task_id") != source:
         issues.append("replay child's episode is not the source task with the trait in round "
                       "R1 (ADR-0012 D3)")
     success, expressed = episode.get("success"), episode.get("expressed_gene_ids")

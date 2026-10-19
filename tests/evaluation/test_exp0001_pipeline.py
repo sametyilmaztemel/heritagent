@@ -6,6 +6,7 @@ EXP-0001 results."""
 
 import copy
 import dataclasses
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -197,6 +198,12 @@ def manifests(splits, **overrides):
             "expected_bank_sha256": bank["bank_sha256"], **overrides}
 
 
+def reserve_checks(run_dir):
+    return RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock(),
+                     caps=json.loads((run_dir / "run-start.json").read_text())["protocol"][
+                         "caps"]).reserve_checks
+
+
 def ledger_keys(run_dir):
     lines = (run_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
     return [r["key"] for r in map(json.loads, lines) if r.get("type") == "episode"]
@@ -259,8 +266,11 @@ def test_a_scripted_run_goes_end_to_end(clean, splits):
                    "cell_readers": {task: 1 for task in gate["rounds"]["R1"]["cell_readers"]}},
             "R5": {"with_trait": 64, "cells": 64,
                    "cell_readers": {task: 1 for task in gate["rounds"]["R5"]["cell_readers"]}}}
-        assert [(c["label"], c["round_episodes"], c["passed"]) for c in gate["reserve_checks"]] \
+        # ADR-0012 D9: the reserve checks are ledger records, kept out of the gate artifact
+        assert [(c["label"], c["round_episodes"], c["passed"]) for c in reserve_checks(run_dir)
+                if c["label"].startswith(f"gate/{seed}/")] \
             == [(f"gate/{seed}/R1", R1, True), (f"gate/{seed}/R5", R5, True)]
+        assert "reserve_checks" not in gate
         arms = json.loads((run_dir / f"seed-{seed}" / "arms.json").read_text())
         assert [s["gene_id"] for s in arms["B"]["genes"]["skills"]] == [good, bad]
         assert [s["gene_id"] for s in arms["C"]["genes"]["skills"]] == [good]
@@ -309,10 +319,21 @@ def test_each_gate_round_runs_as_one_queue_in_hash_order(clean):
         rounds = [key_round(k) for k in ran]
         assert rounds == sorted(rounds) and set(rounds) == {1, 5}
         for gate_round in (1, 5):
-            queue = [k for k in ran if key_round(k) == gate_round]
-            assert queue == sorted(queue, key=lambda k: queue_order(SimpleNamespace(key=k)))
+            assert_one_hash_ordered_queue([k for k in ran if key_round(k) == gate_round])
     # the seeds' gates run one after another (each after its seed's mining)
     assert [int(k.split("/")[1]) for k in keys] == sorted(int(k.split("/")[1]) for k in keys)
+
+
+def assert_one_hash_ordered_queue(queue):
+    """ascending sha256 of the ledger key, computed here, not with the
+    code's queue_order; cells and with-trait executions interleave rather
+    than run as two blocks (ADR-0012 D2)."""
+    assert queue == sorted(queue, key=lambda k: hashlib.sha256(k.encode("utf-8")).hexdigest())
+    assert [queue_order(SimpleNamespace(key=k)) for k in queue] == \
+        [hashlib.sha256(k.encode("utf-8")).hexdigest() for k in queue]
+    is_cell = ["/cell/" in k for k in queue]
+    assert any(is_cell) and not all(is_cell)
+    assert is_cell != sorted(is_cell) and is_cell != sorted(is_cell, reverse=True)
 
 
 def test_every_cell_is_read_only_in_its_round(clean):
@@ -669,6 +690,9 @@ def test_the_gate_pass_keys_cells_and_contract(tmp_path, registry):  # noqa: F81
     assert first.status == again.status == "prefetch-placeholder" and again.condition == "neither"
     assert [s.key for s in dry.collected] == [f"gate/11/R1/cell/g1/{dry._g0_fingerprint}"]
     assert dry.cell_reads == {(1, "g1"): 2}
+    with pytest.raises(RunnerContractError, match="ran at"):  # one cell, one set of settings
+        dry.runner(1, "c/ablation").run_episode(task, g0, budgets, "without_trait",
+                                                evaluation_settings(max_tokens=100, seed=11))
     r1.run_episode(task, g0, budgets, "with_trait", settings)
     assert dry.collected[-1].key.startswith("gate/11/R1/a/ablation/g1/with_trait/")
     with pytest.raises(RunnerContractError, match="requested twice"):
@@ -993,6 +1017,11 @@ def test_a_pair_sent_in_both_evidence_forms_is_charged_two_calls():
     (lambda r: r.update({"record_sha256": "0" * 64}), "record_sha256"),
     (lambda r: r["g0"].update({"genome_id": "G-0000000000000000"}), "another G0"),
     (lambda r: r["splits"].update({"manifest_sha256": "0" * 64}), "another split manifest"),
+    # ADR-0012 D1, D10: a record of another schema or threshold version is another run
+    (lambda r: r.update({"schema": "heritagent/exp0001-run-start/0.1"}), "not a heritagent"),
+    (lambda r: r["gate"].update({"threshold_version": "EXP-0001-CIG-M0-v1"}), "not a heritagent"),
+    (lambda r: r.pop("benefit_bank"), "with a benefit bank"),
+    (lambda r: r["benefit_bank"].update({"bank_sha256": "0" * 64}), "another benefit bank"),
 ])
 def test_the_run_binds_the_records_identity(tmp_path, splits, change, message):
     record = run_start(tmp_path, splits)
@@ -1096,7 +1125,8 @@ def test_the_gate_rounds_cover_interaction_pairs_and_match_sequential(tmp_path, 
         r6 = gate["rounds"]["R6"]
         assert (r6["with_trait"], r6["cells"]) == (10, 10)
         assert set(r6["cell_readers"].values()) == {1}  # one pair reads each cell once
-        assert gate["reserve_checks"][-1]["label"] == f"gate/{seed}/R6"
+        assert [c["label"] for c in reserve_checks(tmp_path / "par")
+                if c["label"].startswith(f"gate/{seed}/")][-1] == f"gate/{seed}/R6"
 
 
 MARK_A, MARK_B = " Mark alpha.", " Mark beta."
@@ -1168,17 +1198,18 @@ def test_a_harmful_and_a_harmless_pair_bind_their_artifacts_end_to_end(tmp_path,
         make_run(tampered, splits, agent=PairAgent(games), teacher=Teacher(PAIRED)).run()
 
 
+@pytest.mark.parametrize("kind", ["cell", "with_trait"])
 def test_a_recorded_gate_episode_the_gate_never_requests_fails_closed_on_resume(
-        tmp_path, splits, monkeypatch):
-    """A gate episode no request asked for (a defect a dry pass could cause)
-    stops the run, and the check reads the ledger, so the resumed run stops
-    too."""
+        tmp_path, splits, monkeypatch, kind):
+    """A gate episode no request asked for (a defect a dry pass could cause),
+    a cell or a with-trait execution, stops the run, and the check reads the
+    ledger, so the resumed run stops too."""
     original = EpisodeExecutor.run_many
     leaked = []
 
     def leaky(self, specs):
         if not leaked and specs and specs[0].key.startswith("gate/"):
-            spec = specs[0]
+            spec = next(s for s in specs if ("/cell/" in s.key) == (kind == "cell"))
             leaked.append(dataclasses.replace(spec, key=spec.key.rsplit("/", 1)[0] + "/spec-0"))
             specs = list(specs) + leaked
         return original(self, specs)
@@ -1219,3 +1250,254 @@ def test_a_resume_on_another_serving_build_fails_closed(tmp_path, splits):
     other_build = {**SCRIPTED, "backend_version": "0.29.0+cu130", "tokenizer": Words.identity}
     with pytest.raises(ProvenanceError, match="model adapter"):
         make_run(tmp_path / "run", splits, record=run_start(tmp_path, splits, model=other_build))
+
+
+# -- stage 2 beyond look 1, through the real rounds (ADR-0012 D2, D4, D7) ----------------
+MARK2, MARK3, MARK4 = " Pass at look two.", " Pass at look three.", " Alpha at look four."
+LOOKS_PROPOSALS = [proposal("look two", GOOD + MARK2, [F[0]], 0.9),
+                   proposal("look three", GOOD + MARK3, [F[3]], 0.7),
+                   proposal("look four", GOOD + MARK4, [F[4]], 0.6), PROPOSALS[1]]
+
+
+def looks_wins(splits):
+    """Per marked skill, the stage-2 games it wins, by allocation index (a
+    one-family candidate's game j is its family's j-th bank game): 10 + 10
+    pass at look 2 ((20, 0)); 10 pass at look 3 ((10, 0), point 10/144); 9
+    meet alpha at look 4 ((9, 0), point 9/192 < tau_c: the stage fails)."""
+    bank = bank_of(splits)["families"]
+    return {MARK2: {bank[F[0]][j]["game_id"] for j in [*range(10), *range(48, 58)]},
+            MARK3: {bank[F[3]][j]["game_id"] for j in range(10)},
+            MARK4: {bank[F[4]][j]["game_id"] for j in range(9)}}
+
+
+class WinSetAgent(Agent):
+    """As Agent at temperature 0.7. At temperature 0 a marked skill wins only
+    its chosen stage-2 games; G0, the bad skill and every other game lose."""
+
+    def __init__(self, wins, fail_at=None):
+        super().__init__(fail_at=fail_at)
+        self.wins = wins
+
+    def generate(self, messages, settings):
+        if settings.temperature > 0:
+            return super().generate(messages, settings)
+        self.calls += 1
+        self.settings.append(settings)
+        if self.calls == self.fail_at:
+            raise RuntimeError("backend died")
+        text = "\n".join(m.content for m in messages)
+        win = BAD not in text and any(
+            marker in text and any(f"solve {game}." in text for game in games)
+            for marker, games in self.wins.items())
+        return GenerationResult(text=react_action("act", {"command": "win"}) if win
+                                else react_final("Giving up."), finish_reason="stop")
+
+
+@pytest.fixture(scope="module")
+def looks(tmp_path_factory, splits):
+    run_dir = tmp_path_factory.mktemp("looks") / "run"
+    report = make_run(run_dir, splits, agent=WinSetAgent(looks_wins(splits)),
+                      teacher=Teacher(LOOKS_PROPOSALS)).run()
+    return run_dir, report
+
+
+def by_marker(gate, run_dir):
+    """gene id -> its marker (or 'bad'), read from the frozen candidate set."""
+    seed = gate["mining_seed"]
+    candidates = json.loads((run_dir / f"seed-{seed}" / "candidates.json").read_text())
+    store = TraitRegistry(run_dir / "registry")
+    names = {}
+    for envelope in candidates["candidates"]:
+        principle = json.loads(store.resolve(envelope["candidate"]["artifact"]))["principle"]
+        names[envelope["candidate"]["gene_id"]] = next(
+            (m for m in (MARK2, MARK3, MARK4) if m in principle), "bad")
+    return names
+
+
+def test_stage_2_plays_looks_two_to_four_in_their_rounds(looks):
+    run_dir, report = looks
+    assert report["status"] == "complete"
+    keys = [k for k in ledger_keys(run_dir) if k.startswith("gate/")]
+    for seed in MINING_SEEDS:
+        gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
+        marker = by_marker(gate, run_dir)
+        stops, rounds_played = {}, {}
+        for child in gate["children"].values():
+            if child["stage"] != "ablation":
+                continue
+            m = child["measurements"]
+            stops[marker[m["candidate_gene_id"]]] = m["stop"]
+            # every game reads the cell of its own look's round, R1-R4
+            assert [o["round"] for o in m["paired_outcomes"]] == \
+                [o["look"] for o in m["paired_outcomes"]] == \
+                [o["cell"]["round"] for o in m["paired_outcomes"]] == \
+                [k for k, n in zip((1, 2, 3, 4), (48, 48, 48, 48)) for _ in range(n)][
+                    :len(m["paired_outcomes"])]
+            rounds_played[marker[m["candidate_gene_id"]]] = [look["round"] for look in m["looks"]]
+        assert stops == {
+            MARK2: {"look": 2, "round": 2, "games": 96, "decision": "pass", "reason": "efficacy"},
+            MARK3: {"look": 3, "round": 3, "games": 144, "decision": "pass", "reason": "efficacy"},
+            MARK4: {"look": 4, "round": 4, "games": 192, "decision": "fail",
+                    "reason": "no efficacy at the last look"},
+            "bad": {"look": 1, "round": 1, "games": 48, "decision": "fail", "reason": "futility"}}
+        assert rounds_played == {MARK2: [1, 2], MARK3: [1, 2, 3], MARK4: [1, 2, 3, 4], "bad": [1]}
+        assert sorted(gate["rounds"]) == ["R1", "R2", "R3", "R4", "R5", "R6"]
+        assert (gate["rounds"]["R1"]["with_trait"], gate["rounds"]["R1"]["cells"]) == (196, 192)
+        for name, games in (("R2", 144), ("R3", 96), ("R4", 48)):
+            assert (gate["rounds"][name]["with_trait"], gate["rounds"][name]["cells"]) == \
+                (games, games)
+        assert (gate["rounds"]["R6"]["with_trait"], gate["rounds"]["R6"]["cells"]) == (10, 10)
+        verdicts = {marker[g]: v for g, v in gate["verdicts"].items()}
+        assert verdicts == {MARK2: "promote", MARK3: "promote", MARK4: "reject", "bad": "reject"}
+        ran = [k for k in keys if k.startswith(f"gate/{seed}/")]
+        rounds = [key_round(k) for k in ran]
+        assert rounds == sorted(rounds) and set(rounds) == {1, 2, 3, 4, 5, 6}
+        for gate_round in range(1, 7):
+            assert_one_hash_ordered_queue([k for k in ran if key_round(k) == gate_round])
+        assert [c["label"] for c in reserve_checks(run_dir)
+                if c["label"].startswith(f"gate/{seed}/")] == \
+            [f"gate/{seed}/R{r}" for r in range(1, 7)]
+    assert report["gates"]["11"]["stage2_stops"] == {
+        "fail:futility@look1": 1, "fail:no efficacy at the last look@look4": 1,
+        "pass:efficacy@look2": 1, "pass:efficacy@look3": 1}
+
+
+def test_alpha_met_without_a_pass_reaches_round_5(looks):
+    """ADR-0012 D7: (9, 0) at look 4 meets alpha and fails the point rule;
+    its out-of-scope check and 4A run in R5, its stage 2 fails it."""
+    run_dir, report = looks
+    for seed in MINING_SEEDS:
+        gate = json.loads((run_dir / f"seed-{seed}" / "gate.json").read_text())
+        marker = by_marker(gate, run_dir)
+        gene = next(g for g, m in marker.items() if m == MARK4)
+        children = {c["stage"]: c["measurements"] for c in gate["children"].values()
+                    if c["measurements"].get("candidate_gene_id") == gene}
+        assert children["ablation"]["alpha_met"] is True
+        assert children["ablation"]["stage_pass"] is False
+        assert children["generalization_out_of_scope"].get("not_run") is not True
+        assert children["generalization_out_of_scope"]["episodes_run"] == 24
+        assert children["interaction_regression"].get("not_run") is not True
+        assert gate["verdicts"][gene] == "reject"
+        assert report["gates"][str(seed)]["reached_round_5"] == 3
+        assert report["gates"][str(seed)]["promoted"] == 2
+
+
+def test_a_stricter_tau_c_that_would_continue_is_not_identifiable_end_to_end(looks):
+    """ADR-0012 D7 in the frozen grid: the look-3 pass (point 10/144) would
+    have continued under tau_c 0.08; under 0.03 the look-4 candidate becomes
+    eligible and its pairs were never played."""
+    run_dir, _ = looks
+    gate = json.loads((run_dir / "seed-11" / "gate.json").read_text())
+    marker = by_marker(gate, run_dir)
+    look3 = next(g for g, m in marker.items() if m == MARK3)
+    grid = gate["sensitivity"][look3]
+    assert grid["ablation"]["tau_c=0.08"]["identifiable"] is False
+    for tau_r in (0.02, 0.03, 0.05):
+        strict = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
+        assert strict["identifiable"] is False and strict["unidentified_stage2"] == [look3]
+        primary = grid["cells"][f"tau_c=0.05|tau_r={tau_r}"]
+        assert primary["identifiable"] is True
+        assert primary["hypothetical_promote"] == sorted(
+            g for g, m in marker.items() if m in (MARK2, MARK3))
+        loose = grid["cells"][f"tau_c=0.03|tau_r={tau_r}"]
+        assert loose["identifiable"] is False and loose["missing_interaction_pairs"]
+
+
+def test_a_crash_inside_r3_resumes_to_the_same_gate_artifacts(tmp_path, looks, splits):
+    """A crash in seed 11's R3 queue: the resume re-checks R3's remaining
+    queue (one more reserve record) and gives the same report and the same
+    gate artifacts, byte for byte."""
+    run_dir = tmp_path / "run"
+    keys = ledger_keys(looks[0])
+    fail_at = next(i for i, k in enumerate(keys, start=1) if k.startswith("gate/11/R3/")) + 4
+    with pytest.raises(RuntimeError, match="backend died"):
+        make_run(run_dir, splits, agent=WinSetAgent(looks_wins(splits), fail_at=fail_at),
+                 teacher=Teacher(LOOKS_PROPOSALS)).run()
+    assert not any(k.startswith("gate/11/R4/") for k in ledger_keys(run_dir))
+    report = make_run(run_dir, splits, agent=WinSetAgent(looks_wins(splits)),
+                      teacher=Teacher(LOOKS_PROPOSALS)).run()
+    assert report["aborted_attempts"] == 1
+    assert {**report, "aborted_attempts": 0, "model_calls": 0} == \
+        {**looks[1], "aborted_attempts": 0, "model_calls": 0}
+    for seed in MINING_SEEDS:
+        assert (run_dir / f"seed-{seed}" / "gate.json").read_bytes() == \
+            (looks[0] / f"seed-{seed}" / "gate.json").read_bytes()
+    assert [c["label"] for c in reserve_checks(run_dir) if c["label"].startswith("gate/11/")] \
+        == ["gate/11/R1", "gate/11/R2", "gate/11/R3", "gate/11/R3", "gate/11/R4", "gate/11/R5",
+            "gate/11/R6"]
+
+
+def _rehash_pairs(gate, change):
+    """Apply ``change`` to every copy of every pair's canonical evidence and
+    re-derive its evidence hash, so only the pipeline's own checks can object."""
+    from trajectory.storage.canonical import canonical_json, sha256_hex
+    for child in gate["children"].values():
+        for pair in (child["measurements"].get("interaction") or {}).get("pair_evidence", ()):
+            change(pair["canonical_evidence"])
+            pair["evidence_sha256"] = sha256_hex(
+                canonical_json(pair["canonical_evidence"]).encode("utf-8"))
+
+
+def _neither_off_its_cell(canonical):
+    for outcome in canonical["paired_outcomes"]:
+        if outcome["condition"] == "neither":
+            outcome["trajectory_id"] = "T-000000000000"
+            return
+
+
+def _child_of(gate, run_dir, mark, stage):
+    marker = by_marker(gate, run_dir)
+    gene = next(g for g, m in marker.items() if m == mark)
+    return gate["children"][f"{gate['aggregate_ids'][gene]}/S11-{stage}"]["measurements"]
+
+
+@pytest.mark.parametrize("tamper,message", [
+    (lambda g, d: _rehash_pairs(g, _neither_off_its_cell), "is not its R6 cell"),
+    (lambda g, d: _child_of(g, d, MARK4, "generalization_out_of_scope").update(not_run=True),
+     "must run iff stage 2 met alpha"),
+    (lambda g, d: _child_of(g, d, MARK4, "interaction_regression").update(not_run=True),
+     "must run iff stage 2 met alpha"),
+    (lambda g, d: _child_of(g, d, "bad", "generalization_out_of_scope").pop("not_run"),
+     "must run iff stage 2 met alpha"),
+    (lambda g, d: _child_of(g, d, MARK2, "generalization_in_scope")["by_reference"].update(
+        child_id="CIG-1104/S11-ablation"), "by reference"),
+    (lambda g, d: _child_of(g, d, MARK2, "ablation")["allocation"].update(
+        bank_sha256="0" * 64), "benefit bank"),
+    (lambda g, d: _child_of(g, d, MARK4, "generalization_out_of_scope")["allocation"].update(
+        bank_sha256="0" * 64), "benefit bank"),
+])
+def test_a_tampered_looks_gate_artifact_fails_closed_on_resume(tmp_path, looks, splits, tamper,
+                                                              message):
+    run_dir = reopened_copy(looks, tmp_path)
+    edit(run_dir / "seed-11" / "gate.json", lambda gate: tamper(gate, run_dir))
+    with pytest.raises(RunError, match=message):
+        make_run(run_dir, splits, agent=WinSetAgent(looks_wins(splits)),
+                 teacher=Teacher(LOOKS_PROPOSALS)).run()
+
+
+def test_an_honest_resume_of_the_looks_world_gives_its_report(tmp_path, looks, splits):
+    run_dir = reopened_copy(looks, tmp_path)
+    agent = WinSetAgent(looks_wins(splits))
+    assert make_run(run_dir, splits, agent=agent, teacher=Teacher(LOOKS_PROPOSALS)).run() \
+        == looks[1]
+    assert agent.calls == 0  # every gate and final episode is read back
+
+
+def test_an_evaluator_that_cannot_be_built_stops_the_gate_before_its_first_episode(
+        tmp_path, splits, monkeypatch):
+    """Every evaluator is built before the first request, and an error with
+    no placeholder answered is real: the run fails before any gate episode."""
+    import evaluation.exp0001.pipeline as pipeline
+    from inheritance.overlay import EvaluationSetupError
+    real = pipeline.AblationEvaluator
+
+    def refuses_the_bad_skill(**kwargs):
+        if kwargs["candidate_envelope"]["candidate"]["gene_id"].startswith("give_up"):
+            raise EvaluationSetupError("cannot build this candidate's stage 2")
+        return real(**kwargs)
+
+    monkeypatch.setattr(pipeline, "AblationEvaluator", refuses_the_bad_skill)
+    run_dir = tmp_path / "run"
+    with pytest.raises(EvaluationSetupError, match="cannot build"):
+        make_run(run_dir, splits).run()
+    assert not [k for k in ledger_keys(run_dir) if k.startswith("gate/")]

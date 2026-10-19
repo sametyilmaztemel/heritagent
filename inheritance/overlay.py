@@ -34,7 +34,8 @@ from runtime.expression import RuntimeConfig, RuntimeSkill
 from runtime.model_adapters import GenerationSettings
 from runtime.regulation import Condition
 
-EVAL_TEMPERATURE = 0.0  # locked: one deterministic execution per (task, condition)
+# locked: one deterministic execution per (seed, round, task, condition) (ADR-0012 D2)
+EVAL_TEMPERATURE = 0.0
 
 
 class EvaluationSetupError(ValueError):

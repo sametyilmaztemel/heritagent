@@ -239,3 +239,41 @@ def test_sensitivity_single_newly_eligible_candidate_identifiable(tmp_path):
     assert outcome.verdicts == {"a": "reject", "b": "reject"}
     assert {r.gene_id: somatic.state(r.gene_id, 1)
              for r in outcome.results} == {"a": "rejected", "b": "rejected"}
+
+
+def test_a_stricter_tau_c_that_would_have_continued_is_not_identifiable(tmp_path):
+    """ADR-0012 D7: a passes stage 2 at look 3 with (10, 0), point 10/144;
+    tau_c 0.08 would have continued past that look, so every 0.08 cell needs
+    a's unobserved outcome and is not identifiable. The 0.05 and 0.03 cells
+    are."""
+    world = build_world(tmp_path, candidates=("a", "b"), stage2={"a": "pass_look3"},
+                        ablation_deltas={"b": 0.9})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    outcome = orch.run(inputs)
+    assert outcome.verdicts == {"a": "promote", "b": "promote"}
+    assert inputs[0].ablation_evaluation.stop["look"] == 3
+    grid = orch.sensitivity_recomputation("a")
+    assert grid["ablation"]["tau_c=0.08"]["identifiable"] is False
+    assert grid["ablation"]["tau_c=0.03"]["identifiable"] is True
+    for tau_r in (0.02, 0.03, 0.05):
+        strict = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
+        assert strict["identifiable"] is False and strict["not_identifiable"] is True
+        assert strict["unidentified_stage2"] == ["a"] and "hypothetical_promote" not in strict
+        for tau_c in (0.03, 0.05):
+            cell = grid["cells"][f"tau_c={tau_c}|tau_r={tau_r}"]
+            assert cell["identifiable"] is True
+            assert cell["hypothetical_promote"] == ["a", "b"]
+
+
+def test_an_ineligible_candidate_does_not_make_a_cell_unidentifiable(tmp_path):
+    """The same a, failing stage 1: whatever stage 2 would have done under
+    tau_c 0.08, a is not eligible, so the 0.08 cells stay identifiable."""
+    world = build_world(tmp_path, candidates=("a", "b"), stage2={"a": "pass_look3"},
+                        ablation_deltas={"b": 0.9}, replay_pass_for={"a": False})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    orch.run(inputs)
+    grid = orch.sensitivity_recomputation("b")
+    assert grid["ablation"]["tau_c=0.08"]["identifiable"] is True  # b's own path
+    for tau_r in (0.02, 0.03, 0.05):
+        cell = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
+        assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]

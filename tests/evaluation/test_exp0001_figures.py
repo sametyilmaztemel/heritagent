@@ -145,6 +145,7 @@ def test_captions_quote_the_record_and_the_figures_avoid_claim_words(clean, tmp_
     h2 = clean[1]["statistics"]["h2"]
     assert f"H2 rule (all three clauses, as recorded): {'met' if h2['rule_met'] else 'not met'}" \
         in captions
+    assert figures.V2_DISCLOSURE in captions  # ADR-0012 D11
     # ADR-0012 D7: the futility-stopped candidate's out-of-scope check, 4A and 4C were not run
     assert "'not run' counts stages a candidate's record says were not run" in captions
     assert "Every candidate is checked at every stage" not in captions
@@ -449,3 +450,17 @@ def test_an_output_that_cannot_be_written_is_named(clean, tmp_path):
     blocked.write_text("", encoding="utf-8")
     with pytest.raises(FiguresError, match="cannot write figures there"):
         make_figures(run_dir=clean[0], out_dir=blocked)
+
+
+def test_a_not_run_all_family_candidate_counts_as_naming_every_family(clean):
+    """The out-of-scope row counts a vacuous pass and a not-run record of an
+    all-family candidate alike (ADR-0012 D7)."""
+    gate = json.loads((clean[0] / "seed-11" / "gate.json").read_text())
+    rows = {r["stage"]: r for r in figures.gate_rows({11: gate})}
+    assert rows["generalization_out_of_scope"]["all_family"] == 0
+    assert rows["generalization_out_of_scope"]["not_run"] == 1
+    for child in gate["children"].values():
+        if child["stage"] == "generalization_out_of_scope" and child["measurements"].get("not_run"):
+            child["measurements"]["all_family_applicability"] = True
+    rows = {r["stage"]: r for r in figures.gate_rows({11: gate})}
+    assert rows["generalization_out_of_scope"]["all_family"] == 1

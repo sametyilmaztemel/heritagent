@@ -348,12 +348,69 @@ def test_the_child_record_carries_the_path_and_recomputes(passed_record):
     (lambda m: m["bootstrap"].__setitem__("seed", 1), "bootstrap.seed"),
     (lambda m: m["bootstrap"].__setitem__("lower_bound", 0.5), "lower_bound"),
     (lambda m: m.__setitem__("contribution", {"exact": "1/2", "float": 0.5}), "contribution"),
+    # the guards the own review found individually untested (2026-10-19)
+    (lambda m: m["paired_outcomes"].append(
+        {**copy.deepcopy(m["paired_outcomes"][-1]), "task_id": m["allocation"]["task_ids"][96]}),
+     "does not stop"),                                    # a game after the stopping look
+    (lambda m: m["paired_outcomes"].extend(copy.deepcopy(m["paired_outcomes"]) * 2),
+     "more than the 192 games"),
+    (lambda m: m["paired_outcomes"][50].__setitem__("look", 1), "look 2 and round 2"),
+    (lambda m: m["paired_outcomes"][50].__setitem__("round", 1), "look 2 and round 2"),
+    (lambda m: m["paired_outcomes"][0].__setitem__("look", True), "look 1 and round 1"),
+    (lambda m: m["paired_outcomes"][0]["cell"].__setitem__("round", 1.0), "look 1 and round 1"),
+    (lambda m: m["paired_outcomes"][0]["cell"].__setitem__("seed", float(MINING_SEED)),
+     "a cell of seed"),
+    (lambda m: m["stop"].__setitem__("round", 1), "recorded stop"),
+    (lambda m: m["stop"].__setitem__("reason", "futility"), "recorded stop"),
+    (lambda m: m["paired_outcomes"][3]["cell"].__setitem__("expressed_gene_ids", [GENE_ID]),
+     "expressed the target gene"),
+    (lambda m: m["paired_outcomes"][3]["cell"].pop("expressed_gene_ids"), "expressed genes"),
+    (lambda m: m["paired_outcomes"][3].__setitem__("family", "navigate"), "its slot belongs"),
+    (lambda m: m["allocation"]["task_ids"].__setitem__(1, m["allocation"]["task_ids"][0]),
+     "distinct string ids"),
+    (lambda m: m["allocation"].__setitem__("families", ["navigate", FAMILY]), "name order"),
+    (lambda m: m.__setitem__("tau_c", {"exact": "2/25", "float": 0.08}), "recorded rule"),
+    (lambda m: m["thresholds"]["alphas"].reverse(), "recorded rule"),
+    (lambda m: m["paired_outcomes"][5].__setitem__("task_id", 5), "allocation's game"),
 ])
 def test_a_tampered_record_does_not_recompute(passed_record, tamper, message):
     m = copy.deepcopy(passed_record.child_record["measurements"])
     tamper(m)
     issues = stage2_evidence_issues(m, mining_seed=MINING_SEED)
     assert issues and any(re.search(message, i) for i in issues), issues
+
+
+def test_the_allocation_must_be_over_the_frozen_applicability(passed_record):
+    m = passed_record.child_record["measurements"]
+    assert stage2_evidence_issues(m, mining_seed=MINING_SEED, families=(FAMILY,)) == []
+    issues = stage2_evidence_issues(m, mining_seed=MINING_SEED, families=("navigate",))
+    assert any("frozen applicability" in issue for issue in issues)
+
+
+def test_a_look_that_fails_midway_leaves_no_game_behind(tmp_path, registry, base_config,
+                                                       envelope):
+    """play_look keeps a look's games only once the whole look has played: a
+    retry after a failure mid-look plays the look afresh, never twice."""
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
+    script(evaluator.runner, make_allocation(), [(True, False)] * 24 + [(False, False)] * 168)
+    real = evaluator.runner.run_episode
+    calls = []
+
+    def dies_once(task, config, budgets, condition, settings=None):
+        calls.append(task.task_id)
+        if len(calls) == 61:  # game 30 of look 1, its with-trait side
+            raise RuntimeError("backend died")
+        return real(task, config, budgets, condition, settings)
+
+    evaluator.runner.run_episode = dies_once
+    with pytest.raises(RuntimeError, match="backend died"):
+        evaluator.play_look(1, evaluator.runner)
+    assert evaluator.next_look == 1 and evaluator._outcomes == []
+    assert evaluator.play_look(1, evaluator.runner)["decision"] == "pass"
+    result = evaluator.evaluation()
+    assert len(result.paired_outcomes) == 48
+    assert stage2_evidence_issues(result.child_record["measurements"],
+                                  mining_seed=MINING_SEED) == []
 
 
 def test_a_cell_of_another_seed_is_flagged(passed_record):
