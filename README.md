@@ -4,7 +4,7 @@
 
 Model-independent research framework for **causally-gated assimilation of acquired skills into functional genomes** for evolvable LLM agents. Full specification: [SPEC.md](SPEC.md) (source document, v0.1).
 
-## Status (2026-10-15) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
+## Status (2026-10-19) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
 
 Phase 0 (SPEC §40, research grounding, 2026-10-02) is complete: related-work notes in `research/related-work/`, the novelty ledger, and the cross-reviewed ADR-0001 (EAG v0.1 schema) and ADR-0002 (EXP-0001 pre-registered design).
 

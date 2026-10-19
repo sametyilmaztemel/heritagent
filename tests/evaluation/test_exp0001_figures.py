@@ -511,3 +511,5 @@ def test_a_rehearsals_stamp_covers_no_label_or_legend():
     assert box.y0 >= 0 and box.x1 <= fig.bbox.x1
     for other in (ax.get_tightbbox(renderer), fig.legends[0].get_window_extent(renderer)):
         assert not box.overlaps(other)
+    # the layout leaves the raised legend its room
+    assert not fig.legends[0].get_window_extent(renderer).overlaps(ax.get_tightbbox(renderer))

@@ -4,7 +4,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   gpu-check       the A100 80 GB check (fails closed on any other GPU)
   fetch-data      download ALFWorld release 0.2.2's data (sha256-checked), the
                   data the frozen manifests were built from
-  verify-data     hash every game of the split and pilot manifests
+  verify-data     hash every game of the split, pilot and benefit-bank
+                  manifests
   mirror-check    write, replace, read and time small files in the mirror
                   directory (on Colab, Google Drive)
   run-commit      the code commit a run started at, from its mirror (empty for
@@ -54,8 +55,9 @@ the run directory, also after an error: the newest records exist only on
 this machine, and the notebooks keep the runtime. So does a SIGTERM while
 the command holds its directory (the stop button's second press). The one
 exception is another machine taking over the mirror: it holds the run now,
-and the command stops with exit 2 and no marker. The last snapshot is not
-cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
+and the command stops with exit 2 and no marker. ``rehearse`` and
+``rehearse-run`` leave no marker either: a rehearsal is started again, never
+resumed. The last snapshot is not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
 directory's one-writer lock from before they touch the mirror until after
 their last snapshot.
 
