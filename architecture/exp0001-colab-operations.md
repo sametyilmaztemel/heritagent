@@ -10,6 +10,28 @@ Builder-2's engineering within ADR-0008 D4 and D5, added after the owner accepte
   - with other settings, `serve` refuses and names its pid: it may still be loading and holds the GPU.
 - Otherwise, a port that already answers is refused. So the recorded server settings are always those of the server the run talks to.
 
+## The environment (owner decision, 2026-10-19)
+
+Asked what should happen when the run's machine differs from the run rehearsal's (a Python patch release, a pinned package), the owner answered: "Bununla ilgili tüm yapılandırmayı notebooka eklersin ortama öncesinde kurulum yapar bunları kontrol eden bir hücre eklersin" (put the whole configuration in the notebook, install it beforehand, add a cell that checks it). So no runtime brings its own environment any more.
+
+- **What is pinned.** `environments/exp0001-colab/` holds:
+  - `uv-version` (0.12.20) and `python-version` (3.13.15, the Python of the owner's pilot rehearsal on 2026-10-16);
+  - `requirements.in`: the versions the calibration pilot ran with (ADR-0008 D4) and the package's own requirements;
+  - `requirements.lock`: every dependency of these, 230 packages, each by version and sha256. `scripts/exp0001/lock_colab_environment.sh` resolves it with the pinned uv for Linux x86_64 (manylinux 2.35), from packages published before 2026-10-16. The vLLM and PyTorch indexes give no upload dates, so their files are held by version and hash alone.
+- **The install.** The pilot, run and both rehearsal notebooks share one install cell:
+  - it installs the pinned uv into Colab's Python;
+  - uv downloads the pinned Python (uv's own build, not Colab's) and makes the virtual environment `/content/heritagent-venv`, once per runtime;
+  - it syncs the environment to the lock with `--require-hashes`, which also removes any package outside the lock;
+  - the package itself goes on top, from the checkout, without dependencies.
+
+  Every `cli` command runs with that environment's Python and its `bin` first on the PATH, so `vllm serve` starts that environment's server. A kernel restart keeps the environment: it is never deleted while a command may still run from it. `EXP-0001-figures.ipynb` alone keeps Colab's Python: it only draws.
+- **The check.** The next cell runs `cli env-check`. It holds the installed environment to the files: the Python version, every locked package at its locked version, no package outside the lock but the project itself, and `vllm` on the PATH from this environment. Any difference stops the notebook before the data, the model or any command that records. The run's binding to the run rehearsal's record (Python and the pinned packages) follows as before.
+- **Measured (V, cloud container, 2026-10-19).** The lock installs into a fresh Python 3.13.15 environment in 2.5 minutes, building `jericho` and `fast-downward-textworld` from source as pip did before. `env-check` passes there, and `software_stack()` gives the pilot's ten versions. Not yet tried on Colab (U): the first session of the run rehearsal notebook will show it.
+- **Changing it.** A new version of anything means:
+  1. a change to `requirements.in`;
+  2. a new lock from the script, with the pinned uv;
+  3. a new run rehearsal, since the commit changes.
+
 ## Persistence and release (within D5)
 
 - **One writer per run directory.** `run`, `pilot` and `snapshot` take the run directory's lock before they touch the mirror, and hold it until after their last snapshot. A second command on the same directory fails at the lock, before it can take over the mirror or write the ledger. Example: a command started from a notebook whose kernel restarted while the previous command was still stopping.
@@ -35,6 +57,7 @@ Builder-2's engineering for ADR-0012's "Experiment needed" (the gate's rounds ru
 - **What it checks.** Every decision, round, cell reader, reserve record, D8 count and final cell, the T_reg draw with its baselines and each seed's mining pairs (ADR-0007 E3, E1), each stage's requests at the stand-in, and that it refused only the scripted overflow, against `run_rehearsal.expected_outcome`, which computes them from the script and the rule texts alone (it imports no rule from `inheritance/`; unit tests hold its rules equal to the code's). The checks are written into `run-rehearsal-passed.json`; one failed check fails the rehearsal, and no record is written.
 - **Identities a run refuses.** Run id `EXP-0001-run-rehearsal`, weights sha256 of a fixed sentinel string, backend version `stand-in (rehearsal)`. `run` refuses either of the first two, and a server whose version is the stand-in's. Its figures carry a REHEARSAL stamp on every figure, in the captions and in `figures.json`.
 - **The binding.** `cli run` needs `--rehearsal-passed` (a new run and a resumed one) and checks it before anything is written: a record whose every check passed, of the committed script (`script_sha256`), with the same clean commit, model, revision, tokenizer identity, Python, pinned software, protocol (`protocol_sha256`) and worker count. `rehearsal-check --kind run` makes the same check and needs `--revision` and `--workers`. The run notebook reads `heritagent/rehearsal/run-passed-<COMMIT>-<model>.json`, runs `rehearsal-check --kind run` before the model download and stops when it does not cover the machine: the run rehearsal takes hours, so it is never repeated on the A100. The pilot notebook and `EXP-0001-rehearsal.ipynb` are unchanged.
+- **The census stays** (owner decision, 2026-10-19: "Kalsın"), at about half an hour on Colab (M).
 - **Cost.** Measured (V, 2026-10-19, at `7a09c0f`): 52 minutes on a 4-CPU machine with 4 workers, the census's 17 minutes included (168 CPU-minutes); at `271b08c`, 55 minutes with other jobs sharing the CPUs. Estimated (M): about 1.5–3 hours on a standard CPU runtime with 16 workers; about 1 hour on an 8-vCPU High-RAM runtime. `--max-hours` (6 by default) stops it without a record. A rehearsal that stops never resumes: it starts again with new directories.
 - **Disk (V on the real data, 2026-10-19).** TextWorld 1.7.0 loads a fresh 32 MB copy of fast-downward's library for every game it opens and never unloads it; the copy's file is deleted at once but stays allocated until its process ends: free disk falls by about 30 MB per opened game. Unloading it on close crashes the process at exit (V), so nothing unloads it. The run's workers are replaced after 50 games (`episodes.WORKER_TASKS`; Python 3.11+), which bounds it at about 16 × 50 × 32 MB ≈ 26 GB with 16 workers (M), and the census's processes after 25 games (Python 3.11+). `rehearse-run` and `run` refuse a setup whose workers are never replaced. `rehearse-run` first checks the free disk: about 28 GB under the temporary directory with 16 workers (33 MiB a game, with a margin, and 2 GB for the run directory, which it measures under `--out-dir` instead when that is another disk). Colab's runtimes are expected to have room for that (U: their free disk was not measured here); a machine with less needs fewer workers.
 - **Not included.** The tokenizer's files are bound through the pinned revision, not hashed against `prepared.json`. No episode runs to the 50-step limit (the pilot rehearsal plays long losses).
@@ -62,6 +85,7 @@ The owner asked on 2026-10-18 that Claude run the notebooks and read their outpu
     3. that a failing cell reaches the notebook's error handler (`_on_error`, which releases the runtime; it catches `Exception`, so a Stop is not caught). No repository cell fails on demand, so with the owner's yes Claude runs one extra cell, `raise RuntimeError("colab-mcp trial")`. This releases the runtime, which is why it comes last.
 
     Until then the owner runs the A100 notebooks.
+  - **The run rehearsal notebook (owner decision, 2026-10-19).** Asked whether Claude may drive `EXP-0001-run-rehearsal.ipynb`, the owner answered "Evet, CPU denemesinden sonra" (yes, after the CPU trial). After the trial above, Claude may drive it when asked, under these rules.
   - **Only when asked.** Claude drives a notebook only when the owner is at the computer and has asked for that notebook in this session. Subagents and review workflows never call colab-mcp.
   - **Only the repository's cells, plus a short list.** Claude runs the cells of `notebooks/*.ipynb`. In the settings cell it changes only `CODE_REF`, `RUN_ID` and `STOP_AFTER_HOURS` (a finite number, never `None`), and `MODEL` or `WORKERS` only to a value the owner names. `REPO_URL`, `DRIVE_ROOT` and `AUTO_RELEASE` stay as in the file. The only cells Claude writes itself:
     - read-only cells that list, print or load files in the places below, call the notebook's `unmirrored()` or `running_commands()`, or show `git` state;
@@ -77,7 +101,7 @@ The owner asked on 2026-10-18 that Claude run the notebooks and read their outpu
       - a Stop the owner asked for, which ends in a `KeyboardInterrupt` traceback;
       - `Bitti` ("zaten bitti": the report already exists), which stops the notebook on purpose and releases by itself;
       - in the pilot notebook, the rehearsal-check cell catching a failed `rehearsal-check` and going on with "Bu makine provadakinden farklı", a rehearsal rerun on the A100. (The run notebook's rehearsal check does not go on: it stops, and the run rehearsal is rerun on a CPU runtime.)
-    - Claude never skips, reorders or wraps a cell in try/except, and never reruns a guard cell with changed inputs to get past it. The guard cells (the GPU check, the rehearsal check) stay as they are.
+    - Claude never skips, reorders or wraps a cell in try/except, and never reruns a guard cell with changed inputs to get past it. The guard cells (the GPU check, the environment check, the rehearsal check) stay as they are.
   - **A100 time is the owner's.** It costs about 7.5 compute units an hour (R, ADR-0008, Problem); Colab's own figure can differ. Before each session that attaches an A100, Claude asks the owner and gives an estimate (M), which is not a ceiling:
     - for the pilot, the notebook's own 1.3–4.2 hours, setup included. The pilot has no time limit, so Claude also asks the owner when it should ask them to press Stop;
     - for the run, setup as the notebook states it, plus `STOP_AFTER_HOURS`, plus the episodes in flight when it stops;

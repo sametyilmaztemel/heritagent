@@ -61,7 +61,7 @@ def test_every_command_of_the_notebook_parses(name):
             for branch in BRANCHES:
                 args = cli.parser().parse_args(argv(call, branch))  # an unknown flag exits
                 commands.add(args.command)
-    data = {"mirror-check", "fetch-data", "verify-data"}
+    data = {"env-check", "mirror-check", "fetch-data", "verify-data"}
     expected = {
         REHEARSAL: data | {"rehearse"}, RUN_REHEARSAL: data | {"rehearse-run"},
         # the pilot rehearses again where a passed rehearsal does not cover the machine
@@ -175,7 +175,8 @@ def notebook_cli_helper():
     source = next(s for s in code_cells(NAMES[0]) if "def cli(" in s)
     node = next(n for n in ast.parse(source).body
                 if isinstance(n, ast.FunctionDef) and n.name == "cli")
-    namespace = {"os": os, "signal": signal, "sys": sys, "subprocess": subprocess}
+    namespace = {"os": os, "signal": signal, "sys": sys, "subprocess": subprocess,
+                 "PY": sys.executable, "ENVIRONMENT": {}}  # the install cell's own names
     exec(compile(ast.Module([node], []), "<install cell>", "exec"), namespace)
     return namespace["cli"]
 
@@ -183,7 +184,7 @@ def notebook_cli_helper():
 def test_the_helper_raises_on_a_failing_command_and_passes_a_succeeding_one(capsys):
     helper = notebook_cli_helper()
     installs = [next(s for s in code_cells(name) if "def cli(" in s) for name in ALL]
-    assert installs[0] == installs[1] == installs[2]  # one install cell in every notebook
+    assert len(set(installs)) == 1  # one install cell in every notebook
     helper("--help")  # exit 0
     assert "usage" in capsys.readouterr().out  # the command's output reaches the cell
     with pytest.raises(RuntimeError, match="no-such-command"):
@@ -343,14 +344,43 @@ def test_the_last_cell_releases_through_release(name):
 
 
 def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
-    from evaluation.exp0001.serving import SOFTWARE_PACKAGES
-    pyproject = (NOTEBOOKS.parent / "pyproject.toml").read_text(encoding="utf-8")
     for name in ALL:
         text = (NOTEBOOKS / name).read_text(encoding="utf-8")
-        assert "vllm==0.29.0+cu129" in text and "alfworld-download\"]" not in text
+        assert "alfworld-download\"]" not in text
         assert "fetch-data" in text and "verify-data" in text
-        for package in SOFTWARE_PACKAGES:  # every recorded package has one version
-            assert f'{package}==' in text or f'"{package}==' in pyproject, package
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_notebooks_install_the_locked_environment_and_check_it_first(name):
+    """Owner decision 2026-10-19: Colab's own Python and packages play no
+    part. The install cell sets up environments/exp0001-colab/ (the pinned
+    uv and Python, the hash-locked packages) in a virtual environment, every
+    command runs from it, and the next cell holds it to the lock before the
+    data, the model or any command that records."""
+    from evaluation.exp0001.environment import ENVIRONMENT_DIR, LOCK_FILE
+    cells = code_cells(name)
+    install = first(cells, "def install():")
+    source = cells[install]
+    for needed in (f'ENV = f"{{REPO}}/{ENVIRONMENT_DIR.as_posix()}"', '"uv==" + pinned("uv-version")',
+                   '"--managed-python", "--python", pinned("python-version")',
+                   '"--require-hashes"', f'f"{{ENV}}/{LOCK_FILE}"',
+                   '"--no-deps", "-e", REPO]',
+                   'command = [PY, "-u", "-m", "evaluation.exp0001.cli", *map(str, args)]',
+                   "**os.environ, **ENVIRONMENT,"):
+        assert needed in source, needed
+    from evaluation.exp0001.serving import SOFTWARE_PACKAGES
+    for package in SOFTWARE_PACKAGES:  # no version outside the environment files
+        assert f'"{package}==' not in source and f"{package}[" not in source, package
+    # the venv's own `vllm` comes first on the commands' PATH
+    assert 'ENVIRONMENT = {"VIRTUAL_ENV": VENV, "PATH": f"{VENV}/bin:{os.environ[\'PATH\']}"}' \
+        in source
+    check = cells[install + 1]
+    assert [argv(call, {}) for call in cli_calls(check)] == [["env-check", "--repo", "1"]]
+    assert check.index('cli("env-check"') < check.index("subprocess.run([PY,")
+    assert "sys.executable" not in check
+    for later in ('"verify-data"', '"prepare-model"', 'cli("rehearse', 'cli("run"', 'cli("pilot"'):
+        if later in "".join(cells):
+            assert first(cells, later) > install + 1, later
 
 
 FIGURES = "EXP-0001-figures.ipynb"  # the CPU notebook that redraws a run's figures

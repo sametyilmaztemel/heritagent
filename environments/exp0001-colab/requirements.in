@@ -1,0 +1,25 @@
+# The EXP-0001 Colab environment (owner decision 2026-10-19): what the run,
+# the pilot and their CPU rehearsals install, on every runtime the same.
+# scripts/exp0001/lock_colab_environment.sh resolves it into
+# requirements.lock (every dependency, by version and hash); the notebooks
+# install the lock with uv (uv-version) into a virtual environment of the
+# Python in python-version, and `cli env-check` holds the installed
+# environment to it. These are the versions the calibration pilot ran with
+# (ADR-0008 D4, ADR-0011); the package itself is installed on top, from the
+# checkout, without dependencies.
+vllm==0.29.0+cu129
+torch==2.13.0+cu129
+torchvision==0.28.0+cu129
+torchaudio==2.11.0+cu129
+transformers==5.19.0
+tokenizers==0.23.3
+huggingface-hub==2.2.0
+xgrammar==0.2.8
+llguidance==1.7.6
+jinja2==3.1.6
+# pyproject.toml's alfworld extra (ADR-0003 D8)
+alfworld==0.4.2
+textworld==1.7.0
+# pyproject.toml's dependencies and figures extra
+jsonschema>=4.18
+matplotlib>=3.8
