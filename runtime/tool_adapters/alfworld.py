@@ -231,3 +231,43 @@ def open_game(gamefile: str, *, max_episode_steps: int) -> GameSession:
         gamefile, request_infos, max_episode_steps=max_episode_steps,
         wrappers=[AlfredDemangler(shuffle=False), AlfredInfos])
     return textworld.gym.make(env_id)
+
+
+def planner_environments(session) -> list:
+    """The TextWorld PDDL environments under an ``open_game`` session (its
+    batch environment, their wrappers): each holds its own copy of
+    fast-downward's library. Collect them before the session is closed,
+    which drops the batch environment."""
+    found, seen, stack = [], set(), [session]
+    while stack:
+        node = stack.pop()
+        if node is None or id(node) in seen:
+            continue
+        seen.add(id(node))
+        try:
+            own = vars(node)
+        except TypeError:  # no instance dictionary: holds nothing of its own
+            continue
+        if own.get("downward_lib") is not None:  # its own, not a wrapper's forwarded one
+            found.append(node)
+        stack.extend(own.get("envs") or ())
+        stack.extend(own.get(name) for name in ("batch_env", "_wrapped_env"))
+    return found
+
+
+def release_planner(environments) -> int:
+    """Unload each environment's copy of fast-downward's library, after its
+    game is closed. TextWorld 1.7.0 loads a fresh 32 MB copy for every game
+    it opens, from a temporary file it deletes at once, and never unloads
+    it: until the process ends, each opened game keeps that much disk (the
+    deleted file) and address space. Returns how many copies were unloaded."""
+    released = 0
+    for env in environments:
+        library = vars(env).get("downward_lib")
+        if library is None:
+            continue
+        import fast_downward
+        env.downward_lib = None
+        fast_downward.close_lib(library)
+        released += 1
+    return released
