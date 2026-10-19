@@ -379,14 +379,21 @@ def install_cell(name, venv, *, running=(), servers=(), repo=NOTEBOOKS.parent, f
         return SimpleNamespace(returncode=0)
 
     stopped = []
+
+    def stop(pids):
+        stopped.extend(pids)
+        calls.append((["stop", *map(str, pids)], None))
+
     namespace.update(subprocess=SimpleNamespace(run=run), VENV=str(venv), PY=f"{venv}/bin/python",
-                     vllm_servers=lambda: list(servers), stop_servers=stopped.extend)
+                     vllm_servers=lambda: list(servers), stop_servers=stop)
     namespace["stopped"] = stopped
     return namespace, calls
 
 
 def steps(calls):
     def kind(argv):
+        if argv[0] == "stop":
+            return "stop"
         if any(arg.endswith("/uv-requirements.txt") for arg in argv):
             return "uv"
         for word, step in (("venv", "venv"), ("sync", "sync"), ("-e", "editable"),
@@ -433,7 +440,8 @@ def test_the_install_cell_makes_the_environment_once_and_never_under_a_running_c
             stamp_file.write_text(stamp_text)
         cell, calls = install_cell(name, venv, servers=[456])
         cell["install"]()
-        assert cell["stopped"] == [456] and steps(calls)[0] == "uv"
+        assert cell["stopped"] == [456]  # before the environment changes
+        assert steps(calls) == ["stop", "uv", "sync", "editable", "check"]
         assert stamp_file.read_text() == stamp
 
 
@@ -464,6 +472,58 @@ def test_the_install_stamp_covers_every_environment_file_and_follows_a_whole_ins
         with pytest.raises(subprocess.CalledProcessError):
             cell["install"]()
         assert not (venv / "heritagent-environment.sha256").exists()
+
+
+def server_functions(tmp_path):
+    """The install cell's own server scan and stop, with short waits and a temporary record."""
+    source = next(s for s in code_cells(NAMES[1]) if "def install():" in s)
+    names = ("vllm_servers", "stop_servers", "SERVER_STOP_SECONDS", "SERVER_INFO")
+    body = [node for node in ast.parse(source).body
+            if (isinstance(node, ast.FunctionDef) and node.name in names)
+            or (isinstance(node, ast.Assign) and node.targets[0].id in names)]
+    namespace = {"os": os, "signal": signal, "time": time}
+    exec(compile(ast.Module(body, []), "<install cell>", "exec"), namespace)
+    namespace.update(SERVER_STOP_SECONDS=(2, 5), SERVER_INFO=str(tmp_path / "vllm-server.json"))
+    return namespace
+
+
+def fake_server(tmp_path, *, ignore_term):
+    """A `vllm serve` as the environment's console script runs it, in its own session."""
+    script = tmp_path / "bin" / "vllm"
+    script.parent.mkdir(exist_ok=True)
+    ready = tmp_path / "ready"
+    script.write_text(f"#!{sys.executable}\nimport pathlib, signal, time\n"
+                      + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+                      + f"pathlib.Path({str(ready)!r}).write_text('')\ntime.sleep(60)\n")
+    script.chmod(0o755)
+    server = subprocess.Popen([str(script), "serve", "/content/model"], start_new_session=True)
+    return server
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="the scan reads /proc")
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_the_install_cell_stops_an_older_environments_server(tmp_path, ignore_term):
+    cell = server_functions(tmp_path)
+    (tmp_path / "vllm-server.json").write_text("{}")
+    server = fake_server(tmp_path, ignore_term=ignore_term)
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)  # its signal handling is in place
+        assert server.pid in cell["vllm_servers"]()
+        started = time.monotonic()
+        cell["stop_servers"]([server.pid])  # SIGTERM, then SIGKILL to its group
+        assert server.pid not in cell["vllm_servers"]()
+        assert (time.monotonic() - started < 2) != ignore_term
+        assert not (tmp_path / "vllm-server.json").exists()  # `serve` will not wait on it
+    finally:
+        server.kill()
+        server.wait()
+    # one that never leaves the scan ends the cell
+    cell = server_functions(tmp_path)
+    cell.update(vllm_servers=lambda: [os.getpid() + 10 ** 6], SERVER_STOP_SECONDS=(0.1, 0.1))
+    with pytest.raises(RuntimeError, match="bırakılacak"):
+        cell["stop_servers"]([os.getpid() + 10 ** 6])
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="the scan reads /proc")
@@ -503,8 +563,10 @@ def test_the_notebooks_install_the_locked_environment_and_check_it_first(name):
     install = first(cells, "def install():")
     source = cells[install]
     tree = ast.parse(source)
-    assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-               and getattr(node.value.func, "id", None) == "install" for node in tree.body)
+    # the install is the cell's last statement, after the helper: `cli` exists when it stops
+    last = tree.body[-1]
+    assert isinstance(last, ast.Expr) and getattr(last.value.func, "id", None) == "install"
+    assert any(isinstance(node, ast.FunctionDef) and node.name == "cli" for node in tree.body)
     for needed in (f'ENV = f"{{REPO}}/{environment.ENVIRONMENT_DIR.as_posix()}"',
                    f'"--require-hashes",\n                    "--only-binary", ":all:", "-r", '
                    f'f"{{ENV}}/{environment.UV_REQUIREMENTS_FILE}"',
