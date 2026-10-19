@@ -989,6 +989,7 @@ def stub_command(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_adapter", lambda args, prepared: types.SimpleNamespace(
         metadata=lambda: types.SimpleNamespace(backend_version="0.29.0")))
     monkeypatch.setattr(cli, "_require_run_rehearsal", lambda args, prepared: None)
+    monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)
     monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(
         identity="t", count_teacher_prompt_tokens=len))
     monkeypatch.setattr(cli, "_run_start", lambda *a: {})

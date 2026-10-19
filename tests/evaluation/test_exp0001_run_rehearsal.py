@@ -201,8 +201,18 @@ def test_the_scripted_world_reaches_every_gate_path(world):
     assert per[C[3]]["out_of_scope"]["pass"] is False and per[C[3]]["regression"]["pass"] is False
     assert per[C[4]]["overhead_pass"] is False and per[C[4]]["regression"].get("not_run")
     assert expected["seeds"][11]["harmful"] == [(C[0], C[1])]
-    assert per[C[1]]["eliminated_by"] == C[0]
+    assert per[C[1]]["eliminated_by"] == [C[0]]
     assert expected["seeds"][11]["promoted"] == [C[0], C[2]]
+    assert all(e["stage1"]["pass"] for e in per.values()) and per[C[0]]["stage1"]["success"]
+    assert per[C[0]]["all_family"] and not any(per[c]["all_family"] for c in C[1:5])
+    # D7's grid: skill three would continue past look 3 at 0.08; skill four passes at 0.03
+    assert per[C[2]]["sensitivity"][Fraction(2, 25)] == {"identifiable": False}
+    assert per[C[3]]["sensitivity"][Fraction(3, 100)]["pass"] is True
+    cells = expected["seeds"][11]["sensitivity_cells"]
+    assert cells["tau_c=0.05|tau_r=0.03"] == {"identifiable": True, "eligible": sorted(C[:3]),
+                                              "eliminated": [C[1]],
+                                              "promote": sorted([C[0], C[2]])}
+    assert cells["tau_c=0.08|tau_r=0.03"]["identifiable"] is False
     assert expected["seeds"][23]["per_candidate"][C[5]]["stage2"]["reason"] == "futility"
     assert expected["seeds"][41]["candidates"] == []
     assert expected["episodes"] == {"lifetime": 540, "gate": 1198, "final": 776, "total": 2514}
@@ -341,10 +351,11 @@ def test_the_teacher_proposes_for_the_scripted_pair_and_overflows_once(script, s
 def test_the_faults_strike_where_the_plan_says(script, expected, splits):  # noqa: F811
     plan = rr.fault_plan(script, bank_of(splits), expected)
     assert plan["death_skill"] == C[1] and len(plan["death_games"]) == 48
+    assert plan["death_armed_after"] == rr.DEATH_ARMED_AFTER
     now = [0.0]
     policy = rr.RunPolicy(script, splits)
-    faults = rr.Faults(**{**plan, "blip_seconds": 5.0}, game_of=policy.game,
-                       clock=lambda: now[0])
+    faults = rr.Faults(**{**plan, "blip_seconds": 5.0, "death_armed_after": 2},
+                       game_of=policy.game, clock=lambda: now[0])
     blip = react_payload("x", temperature=0.7, seed=plan["blip_seed"])
     assert faults(react_payload("x", temperature=0.7, seed=1)) is False
     assert faults(blip) is True
@@ -352,7 +363,14 @@ def test_the_faults_strike_where_the_plan_says(script, expected, splits):  # noq
     assert faults(react_payload("x", temperature=0.7, seed=1)) is True  # every request, 5 s
     now[0] = 5.0
     assert faults(react_payload("x", temperature=0.7, seed=1)) is False
+    assert faults.blip_hits == 2
     death_game = start_text("train", plan["death_games"][0])
+    other_game = start_text("train", script["lifetime"]["L"][0])
+    # armed after two gate requests of seed 11 on the death's games, whatever their skills
+    assert faults(react_payload(death_game, seed=11, skills=[skill(C[1])])) is False
+    assert faults(react_payload(other_game, seed=11, skills=[skill(C[1])])) is False
+    assert faults(react_payload(death_game, seed=23, skills=[skill(C[1])])) is False
+    assert faults(react_payload(death_game, seed=11)) is False
     assert faults(react_payload(death_game, seed=11, skills=[skill(C[2])])) is False
     assert faults(react_payload(death_game, seed=11, skills=[skill(C[1])])) is True
     assert faults(react_payload("x")) is True  # dead until cleared
@@ -403,14 +421,38 @@ def failed(checks):
 @pytest.mark.parametrize("change, check", [
     (lambda e: e["seeds"][11]["per_candidate"][C[2]]["stage2"].update(stop_look=2),
      "seed 11: every stage-2 path (ADR-0012 D4)"),
-    (lambda e: e["seeds"][11]["per_candidate"][C[1]].update(eliminated_by=None),
+    (lambda e: e["seeds"][11]["per_candidate"][C[1]].update(eliminated_by=[]),
+     "seed 11: the eliminations"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[1]].update(eliminated_by=[C[2]]),
      "seed 11: the eliminations"),
     (lambda e: e["seeds"][11]["per_candidate"][C[2]].update(verdict="reject"),
      "seed 11: the verdicts"),
     (lambda e: e["seeds"][11]["per_candidate"][C[3]]["out_of_scope"].update(net_loss=1),
-     "seed 11: R5 and 4B as scripted (D5-D7)"),
+     "seed 11: out of scope (D5, D7)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[1]]["out_of_scope"].update(cell_successes=0),
+     "seed 11: out of scope (D5, D7)"),
     (lambda e: e["seeds"][23]["per_candidate"][C[5]].update(overhead_pass=False),
-     "seed 23: R5 and 4B as scripted (D5-D7)"),
+     "seed 23: 4B (D7)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[1]]["stage1"].update(success=True),
+     "seed 11: stage 1 (D3)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[0]].update(
+        observed=e["seeds"][11]["per_candidate"][C[0]]["observed"][::-1]),
+     "seed 11: every stage-2 paired outcome (D4)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[0]].update(
+        observed=e["seeds"][11]["per_candidate"][C[0]]["observed"][:-1]),
+     "seed 11: every stage-2 paired outcome (D4)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[4]]["in_scope"].update(delta=Fraction(1, 48)),
+     "seed 11: in scope by reference (D5)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[1]]["regression"].update(successes_with=3),
+     "seed 11: 4A and 4C (D6, D7)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[0]]["pairs"][C[2]].update(
+        delta=Fraction(-1, 10)), "seed 11: 4A and 4C (D6, D7)"),
+    (lambda e: e["seeds"][11]["per_candidate"][C[2]]["sensitivity"].update(
+        {Fraction(2, 25): {"identifiable": True, "pass": False, "stop_look": 3,
+                           "reason": "futility", "contribution": Fraction(10, 144)}}),
+     "seed 11: the sensitivity grid (D7)"),
+    (lambda e: e["seeds"][11]["sensitivity_cells"]["tau_c=0.05|tau_r=0.03"].update(
+        promote=[C[0]]), "seed 11: the sensitivity grid (D7)"),
     (lambda e: e["rounds"][11]["R5"]["cell_readers"].update(
         {next(iter(e["rounds"][11]["R5"]["cell_readers"])): 9}),
      "seed 11: the rounds, cells and readers (D2)"),
@@ -439,23 +481,67 @@ def ledger_lines(rehearsed):
 def test_the_ledger_checks_fail_when_the_ledger_differs(rehearsed, expected):
     lines = ledger_lines(rehearsed)
     interrupted = "gate/11/R2"
-    assert failed(rr.ledger_checks(lines, expected, interrupted=interrupted)) == []
-    assert failed(rr.ledger_checks(lines, expected, interrupted=None)) == [
+    caps = json.loads((rehearsed.run / "run-start.json").read_text())["protocol"]["caps"]
+    ledger_checks = functools.partial(rr.ledger_checks, caps=caps)
+    assert failed(ledger_checks(lines, expected, interrupted=interrupted)) == []
+    assert failed(ledger_checks(lines, expected, interrupted=None)) == [
         "one reserve check per round, one more for the interrupted round (D9)"]
     attempts = [i for i, r in enumerate(lines) if r.get("type") == "attempt"
                 and r["key"].startswith("gate/11/R1/")]
     swapped = list(lines)
     swapped[attempts[3]], swapped[attempts[4]] = swapped[attempts[4]], swapped[attempts[3]]
-    assert failed(rr.ledger_checks(swapped, expected, interrupted=interrupted)) == [
+    assert failed(ledger_checks(swapped, expected, interrupted=interrupted)) == [
         "each round's queue in ascending sha256 of its keys (D2)"]
     reserve = next(i for i, r in enumerate(lines) if r.get("type") == "reserve"
                    and r["label"] == "gate/23/R1")
     assert "one reserve check per round, one more for the interrupted round (D9)" in failed(
-        rr.ledger_checks(lines[:reserve] + lines[reserve + 1:], expected,
-                         interrupted=interrupted))
-    assert failed(rr.ledger_checks(lines, perturbed(
+        ledger_checks(lines[:reserve] + lines[reserve + 1:], expected, interrupted=interrupted))
+    assert failed(ledger_checks(lines, perturbed(
         expected, lambda e: e["episodes"].update(total=2515)), interrupted=interrupted)) == [
         "the episode total"]
+    arithmetic = "every reserve check's arithmetic, recomputed from the ledger (D9)"
+    # a reserve record whose numbers the ledger does not reproduce
+    shifted = [dict(r) for r in lines]
+    shifted[reserve]["calls_ahead"] += 1
+    assert failed(ledger_checks(shifted, expected, interrupted=interrupted)) == [arithmetic]
+    # the same records under smaller caps: the check would have stopped the run
+    assert failed(rr.ledger_checks(lines, expected, interrupted=interrupted,
+                                   caps={**caps, "episodes_max": 3000})) == [arithmetic]
+    # a round's check after its first admission
+    first = next(i for i, r in enumerate(lines) if r.get("type") == "attempt"
+                 and r["key"].startswith("gate/23/R1/"))
+    late = lines[:reserve] + lines[reserve + 1:first + 1] + [lines[reserve]] + lines[first + 1:]
+    assert "each round's admissions after its reserve check in the session (D9)" in failed(
+        ledger_checks(late, expected, interrupted=interrupted))
+    # a final episode before the last gate episode
+    last_gate = max(i for i, r in enumerate(lines) if r.get("type") == "episode"
+                    and r["key"].startswith("gate/"))
+    first_final = next(i for i, r in enumerate(lines) if r.get("type") == "episode"
+                       and r["key"].startswith("final/"))
+    early = list(lines)
+    early.insert(last_gate, early.pop(first_final))
+    assert failed(ledger_checks(early, expected, interrupted=interrupted)) == [
+        "lifetimes, then the gates in seed order, then the final evaluation (E8)"]
+    assert failed(ledger_checks(lines, perturbed(
+        expected, lambda e: e["final_per_genome"].update(t_eval=135)),
+        interrupted=interrupted)) == [
+        "every round's and every final genome's episodes (D2, ADR-0009 D2)"]
+
+
+def test_the_request_checks_count_each_stages_requests(script, expected):
+    """A final request that carries a seed is counted as a gate's (ADR-0007
+    E8: the final evaluation runs without a sampling seed)."""
+    lines = [{"type": "episode", "key": "lifetime/11/x/0", "model_calls": 3},
+             {"type": "episode", "key": "gate/11/R1/cell/x/f", "model_calls": 2},
+             {"type": "episode", "key": "final/G-1/t_eval/x", "model_calls": 4}]
+    policy = SimpleNamespace(log=[], overflows=0, script=script, kinds={
+        "lifetime": 3, "gate": 2, "final": 4, "teacher": 0, "preflight": 0})
+    key = "every lifetime and final request was its episodes' (E1, E8)"
+    assert rr.policy_checks(policy, expected, lines)[key] is True
+    policy.kinds.update(gate=3, final=3)
+    assert rr.policy_checks(policy, expected, lines)[key] is False
+    policy.kinds.update(gate=1, final=4)  # fewer gate requests than its episodes made
+    assert rr.policy_checks(policy, expected, lines)[key] is False
 
 
 @pytest.mark.parametrize("change, check", [
@@ -471,18 +557,39 @@ def test_the_report_checks_fail_when_the_report_differs(rehearsed, expected, cha
                                    ledger_lines(rehearsed))) == [check]
 
 
-def test_a_rehearsal_whose_run_differs_from_the_oracle_fails_without_a_record(
+class FactoryWithABrokenGame(GameFactory):
+    def __init__(self, broken):
+        self.broken = broken
+
+    def __call__(self, split, game_id):
+        if game_id == self.broken:
+            raise SystemExit("duplicate object")  # as TextWorld's translator ends
+        return super().__call__(split, game_id)
+
+
+def test_a_rehearsal_fails_at_its_first_failed_check_without_a_record(
         tmp_path, splits, script, monkeypatch, capsys):  # noqa: F811
-    real = rr.expected_outcome
-
-    def disagreeing(*args):
-        return perturbed(real(*args), lambda e: e["seeds"][11]["per_candidate"][C[2]].update(
-            verdict="reject"))
-
-    monkeypatch.setattr(rr, "expected_outcome", disagreeing)
-    assert rehearse_run(tmp_path, stub(monkeypatch, splits, script, tmp_path)) == 2
-    assert "the run rehearsal failed: ['seed 11: the verdicts']" in capsys.readouterr().err
+    """A failed census (a game that does not open) fails the rehearsal
+    before its passes, which take hours on Colab; no record is written."""
+    path = stub(monkeypatch, splits, script, tmp_path)
+    broken = bank_of(splits)["families"][rr.SCOPE_FAMILY][-1]["game_id"]
+    monkeypatch.setattr(cli, "AlfworldEnvFactory", lambda *a, **k: FactoryWithABrokenGame(broken))
+    assert rehearse_run(tmp_path, path) == 2
+    err = capsys.readouterr().err
+    assert "the run rehearsal failed the census" in err
+    assert not (tmp_path / "out" / "run").exists()
     assert not (tmp_path / "out" / rr.RUN_REHEARSAL_PASSED).exists()
+
+
+def test_the_census_names_a_game_that_fails_or_shows_another_text(script):
+    games = [("train", script["lifetime"]["L"][0]), ("train", script["lifetime"]["L"][1]),
+             ("train", "unplayed/trial_T1"), ("train", "broken/trial_T2")]
+    want = script["texts"]
+    results = [(want[f"train/{script['lifetime']['L'][0]}"], None), ("0" * 64, None),
+               ("1" * 64, None), (None, "SystemExit: duplicate object")]
+    assert rr.census_failures(games, results, script) == [
+        f"train/{script['lifetime']['L'][1]}: its start text is not the script's",
+        "train/broken/trial_T2: SystemExit: duplicate object"]
 
 
 @pytest.mark.parametrize("busy", ["out", "mirror"])
@@ -613,6 +720,7 @@ def test_run_refuses_a_rehearsal_that_does_not_cover_it_before_any_write(
 
 def test_run_starts_with_a_rehearsal_that_covers_it(committed, tmp_path, monkeypatch):
     stub_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)  # Python 3.10
     started = []
     monkeypatch.setattr(cli, "_run", lambda args, **kwargs: started.append(kwargs) or 0)
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed",
@@ -620,6 +728,17 @@ def test_run_starts_with_a_rehearsal_that_covers_it(committed, tmp_path, monkeyp
                              "--stop-after-hours", "1.5")) == 0
     # the stop-after-hours clock starts inside _run, right before the run
     assert len(started) == 1 and started[0]["stop_after_hours"] == 1.5
+
+
+@pytest.mark.parametrize("workers, version", [(1, (3, 12, 0)), (16, (3, 10, 20))])
+def test_run_needs_workers_that_are_replaced(monkeypatch, workers, version):
+    """Each opened game keeps 32 MB of disk until its process ends: a run
+    needs worker processes replaced every 50 games (Python 3.11+)."""
+    monkeypatch.setattr(sys, "version_info", version)
+    with pytest.raises(cli.CliError, match="replaced every 50 games"):
+        cli._require_recycled_workers(workers)
+    monkeypatch.setattr(sys, "version_info", (3, 12, 0))
+    cli._require_recycled_workers(2)
 
 
 @pytest.mark.parametrize("identity", ["run_id", "weights"])

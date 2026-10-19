@@ -277,6 +277,13 @@ class StandInPolicy:
         return _react("Looking around.", goto[(_draw(task, seed) + done) % len(goto)])
 
 
+class _Server(ThreadingHTTPServer):
+    """16 worker processes open connections in bursts at a round's start: a
+    longer listen queue than the default 5 spares them SYN retransmits."""
+    daemon_threads = True
+    request_queue_size = 64
+
+
 class StandInServer:
     """``vllm serve``'s HTTP surface for one model, in a thread of this
     process. ``count_prompt`` counts a request's messages as the server's
@@ -316,8 +323,7 @@ class StandInServer:
         self._count = count_prompt
         self._window = context_window
         self._lock = threading.Lock()
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self._httpd.daemon_threads = True
+        self._httpd = _Server(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, name="stand-in",
                                         daemon=True)
 

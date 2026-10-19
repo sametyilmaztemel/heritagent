@@ -890,6 +890,11 @@ def cmd_rehearse_run(args) -> int:
     out = Path(args.out_dir)
     _empty_dir(out, "directory")
     _empty_dir(args.mirror_dir, "mirror directory")
+    try:  # the figures come last: a missing matplotlib fails now, not hours later
+        import matplotlib  # noqa: F401
+    except ImportError:
+        raise CliError("the run rehearsal draws the run's figures: pip install -e .[figures]") \
+            from None
     repo = Path(args.repo)
     commit, dirty = git_state(repo)
     if dirty:
@@ -920,13 +925,20 @@ def cmd_rehearse_run(args) -> int:
                             "note": "a rehearsal loads no weights"}}
     local = out / "run"  # the figures and the record go beside it, never into it
     checks: dict[str, bool] = {}
+
+    def so_far(stage: str) -> None:  # a failed check fails now: the passes take hours
+        failed = [name for name, ok in checks.items() if not ok]
+        if failed:
+            raise CliError(f"the run rehearsal failed {stage}: {failed}")
+
     factory = AlfworldEnvFactory(args.data_root, splits, extra_games=bank_content_index(bank))
-    census = rr.census_games(splits, bank, script)
-    failures = _census(factory, census, args.workers)
-    checks["every game outside the script opens through the run's factory (the census)"] = \
-        not failures
-    _out(f"[rehearsal] census: {len(census)} games the script does not play opened, "
-         f"{len(failures)} failed" + (f" (first {failures[0]})" if failures else ""))
+    census = rr.census_games(splits, bank)
+    failures = rr.census_failures(census, _census(factory, census, args.workers), script)
+    checks["every game a run may play opens through the run's factory, and the scripted "
+           "ones show the script's start texts (the census)"] = not failures
+    _out(f"[rehearsal] census: {len(census)} games opened, {len(failures)} failed"
+         + (f" (first {failures[0]})" if failures else ""))
+    so_far("the census")
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
                                  template_kwargs=CHAT_TEMPLATE_KWARGS,
                                  check_schema=rehearsal.xgrammar_check(counter.tokenizer),
@@ -953,6 +965,16 @@ def cmd_rehearse_run(args) -> int:
         preflight = _preflight(adapter(), gate_shape=True)
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []} and \
             policy.kinds["preflight"] == 3
+        so_far("the preflight")
+
+        def restore_next() -> None:
+            """The next pass restores the run from the mirror: its last snapshot
+            must hold this pass's ledger, byte for byte."""
+            checks["the mirror's last snapshot holds the pass's ledger"] = \
+                snapshot_file(args.mirror_dir, "ledger.jsonl") == \
+                (local / "ledger.jsonl").read_bytes()
+            so_far("before the restore")
+            shutil.rmtree(local)  # the rehearsal's own directory: the next pass restores it
 
         def one_pass(pause=None) -> int:
             code = run(pause_when=lambda: overdue() or (pause is not None and pause()))
@@ -971,9 +993,9 @@ def cmd_rehearse_run(args) -> int:
             checks["the server's death stopped the first pass"] = server.url in str(exc)
         faults.clear()
         checks.update(rr.first_pass_checks(_ledger_lines(local / "ledger.jsonl"), faults,
-                                           aborted=summary()["aborted_attempts"]))
-        checks["the first pass left no unmirrored marker"] = not (local / UNMIRRORED).exists()
-        shutil.rmtree(local)  # the rehearsal's own directory: the next pass restores it
+                                           aborted=summary()["aborted_attempts"],
+                                           blip_key=rr.blip_key(script)))
+        restore_next()
         _out("[rehearsal] the first pass ended at the server's death; restoring from the mirror")
         # pass 2: restored, through the gate, paused inside the final evaluation
         code = one_pass(lambda: policy.kinds["final"] >= rr.PAUSE_AFTER_FINAL_REQUESTS)
@@ -981,7 +1003,7 @@ def cmd_rehearse_run(args) -> int:
             _ledger_lines(local / "ledger.jsonl"), expected, code=code,
             report_written=(local / "report.json").exists(),
             restores=summary()["notes"].count("restore")))
-        shutil.rmtree(local)
+        restore_next()
         _out("[rehearsal] the second pass paused in the final evaluation; restoring again")
         # pass 3: restored again, to the end
         checks["the third pass finished"] = one_pass() == 0
@@ -999,9 +1021,10 @@ def cmd_rehearse_run(args) -> int:
     checks.update(rr.gate_checks(local, expected, run_id=rr.RUN_REHEARSAL_RUN_ID,
                                  g0_genome_id=run_start["g0"]["genome_id"]))
     checks.update(rr.ledger_checks(lines, expected,
-                                   interrupted=f"gate/{rr.DEATH_SEED}/R{rr.DEATH_ROUND}"))
+                                   interrupted=f"gate/{rr.DEATH_SEED}/R{rr.DEATH_ROUND}",
+                                   caps=run_start["protocol"]["caps"]))
     checks.update(rr.report_checks(report, expected, lines))
-    checks.update(rr.policy_checks(policy, expected))
+    checks.update(rr.policy_checks(policy, expected, lines))
     checks["the figures are drawn, stamped as a rehearsal's"] = _rehearsal_figures(
         local, out / "figures", commit)
     record = rr.passed_record(
@@ -1010,6 +1033,7 @@ def cmd_rehearse_run(args) -> int:
         protocol_sha256=rr.protocol_sha256(run_start["protocol"]), script=script,
         workers=args.workers, expected=expected,
         measures={"census_games": len(census), "census_failures": failures,
+                  "blip_hits": faults.blip_hits,
                   "stand_in_requests": server.requests, "requests_by_kind": dict(policy.kinds),
                   "teacher_schema_compiled_with_xgrammar": server.schemas_compiled > 0,
                   "episodes": ledger["episodes"], "model_calls": ledger["model_calls"],
@@ -1024,11 +1048,11 @@ def cmd_rehearse_run(args) -> int:
     return 0
 
 
-def _census(factory, games: list[tuple[str, str]], workers: int) -> list[str]:
+def _census(factory, games: list[tuple[str, str]], workers: int) -> list[tuple]:
     """Open each game through the run's factory, in at most one worker
     process per CPU (an open is CPU-bound), each opening a bounded number
     of games (TextWorld keeps 32 MB of disk per opened game until its
-    process ends); returns what failed."""
+    process ends); returns ``run_rehearsal.open_game``'s result per game."""
     import os
     from evaluation.exp0001 import run_rehearsal as rr
     jobs = ([factory] * len(games), [g[0] for g in games], [g[1] for g in games])
@@ -1044,7 +1068,7 @@ def _census(factory, games: list[tuple[str, str]], workers: int) -> list[str]:
                                  mp_context=multiprocessing.get_context("spawn"),
                                  **options) as pool:
             errors = list(pool.map(rr.open_game, *jobs))  # one game a task
-    return [f"{split}/{game}: {error}" for (split, game), error in zip(games, errors) if error]
+    return errors
 
 
 def _rehearsal_figures(run_dir: Path, out_dir: Path, commit: str) -> bool:
@@ -1109,6 +1133,7 @@ def cmd_run(args) -> int:
         raise CliError("that is a rehearsal's identity, not a run's")
     # a passed run rehearsal of this commit, model, Python and software, before any write
     _require_run_rehearsal(args, prepared)
+    _require_recycled_workers(args.workers)
 
     def adapter():
         served = _adapter(args, prepared)
@@ -1122,6 +1147,19 @@ def cmd_run(args) -> int:
 
     return _run(args, gpu=gpu, prepared=prepared, adapter=adapter, counter=counter,
                 stop_after_hours=args.stop_after_hours)
+
+
+def _require_recycled_workers(workers: int) -> None:
+    """TextWorld 1.7.0 keeps a 32 MB copy of fast-downward's library per
+    opened game until its process ends (unloading it crashes the process at
+    exit): only worker processes replaced every ``WORKER_TASKS`` games
+    (Python 3.11+) bound the disk a run of thousands of games holds."""
+    from evaluation.exp0001.episodes import WORKER_TASKS
+    if workers < 2 or sys.version_info < (3, 11):
+        raise CliError(f"a run needs worker processes that are replaced every {WORKER_TASKS} "
+                       f"games (--workers 2 or more, Python 3.11 or later; here --workers "
+                       f"{workers}, Python {sys.version.split()[0]}): each opened game keeps "
+                       f"32 MB of disk until its process ends")
 
 
 def _require_run_rehearsal(args, prepared: dict) -> None:

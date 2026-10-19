@@ -57,6 +57,9 @@ ADAPTER_OPTIONS: dict = {}
 BLIP_SECONDS = 5.0
 PAUSE_AFTER_FINAL_REQUESTS = 300
 DEATH_SEED, DEATH_ROUND = 11, 2  # the server dies at the second candidate's look-2 games
+# ... once this many requests on those games have been answered: R2 has recorded episodes
+# when it dies, whatever the workers' timing (R2 sends some 600-800 on them)
+DEATH_ARMED_AFTER = 200
 # the protocol's rules, written out from ADR-0012 D4-D6 and ADR-0002 (not imported
 # from inheritance/: the oracle must not share the code it checks)
 LOOKS = (48, 96, 144, 192)
@@ -70,6 +73,8 @@ T_REG_MAX_NET_DROP = 1          # (without - with) / 40 <= 0.03
 INTERACTION_GAMES = 10
 HARMFUL_PAIR_DELTA = Fraction(-1, 20)
 FINAL_EVALUATION_RESERVE = 7 * (134 + 40 + 20)
+TAU_C_GRID = (Fraction(3, 100), Fraction(1, 20), Fraction(2, 25))  # the manifest's
+TAU_R_GRID = (Fraction(1, 50), Fraction(3, 100), Fraction(1, 20))  # sensitivity_secondary
 TEACHER_FORM_KEY = "form"       # the reduced evidence form names itself (ADR-0009 D8)
 EVIDENCE_START = '{"failed_trajectory":'
 OVERFLOW = "overflow (scripted)"
@@ -108,9 +113,10 @@ def sign_p(n_plus: int, n_minus: int) -> Fraction:
     return Fraction(sum(math.comb(n, i) for i in range(n_plus, n + 1)), 2 ** n)
 
 
-def stage2_path(pairs: Sequence[tuple[bool, bool]]) -> dict:
+def stage2_path(pairs: Sequence[tuple[bool, bool]], tau_c: Fraction = TAU_C) -> dict:
     """ADR-0012 D4 on (with-trait success, cell success) per allocation game:
-    the looks played, the stop and whether some look met alpha."""
+    the looks played, the stop and whether some look met alpha (``tau_c``
+    other than 0.05: D7's sensitivity grid)."""
     looks = []
     for k, n_k in enumerate(LOOKS, start=1):
         first = pairs[:n_k]
@@ -120,7 +126,7 @@ def stage2_path(pairs: Sequence[tuple[bool, bool]]) -> dict:
         point = Fraction(net, n_k)
         alpha = sign_p(n_plus, n_minus) <= ALPHAS[k - 1]
         looks.append({"look": k, "n_plus": n_plus, "n_minus": n_minus, "alpha_met": alpha})
-        if alpha and point >= TAU_C:
+        if alpha and point >= tau_c:
             return {"looks": looks, "stop_look": k, "decision": "pass", "reason": "efficacy",
                     "contribution": point, "alpha_met": True}
         if k < len(LOOKS) and net <= n_k // FUTILITY_DIVISOR:
@@ -201,11 +207,45 @@ class RunWorld:
 
 
 # -- the expected run ------------------------------------------------------------------
+def sensitivity_path(observed: Sequence[tuple[bool, bool]], tau_c: Fraction) -> dict:
+    """ADR-0012 D7: the stage-2 decision under another tau_c on the recorded
+    path (``observed``: the games up to the observed stopping look); not
+    identifiable when that tau_c would have continued past it."""
+    for k, n_k in enumerate(LOOKS, start=1):
+        if n_k > len(observed):
+            return {"identifiable": False}
+        path = stage2_path(list(observed[:n_k]) + [(False, False)] * (LOOKS[-1] - n_k), tau_c)
+        if path["stop_look"] <= k:  # this tau_c stops here (games after n_k are not read)
+            return {"identifiable": True, "pass": path["decision"] == "pass",
+                    "stop_look": path["stop_look"], "reason": path["reason"],
+                    "contribution": path["contribution"]}
+    raise AssertionError("the last look always decides")  # pragma: no cover
+
+
+def _loser(a: str, b: str, contribution: Mapping, rank: Mapping) -> str:
+    """ADR-0002 A1 / ADR-0012 D6: of a harmful pair, the lower contribution
+    is removed; a tie removes the later-ranked one."""
+    ca, cb = contribution[a], contribution[b]
+    if ca != cb:
+        return b if ca > cb else a
+    return b if rank[a] < rank[b] else a
+
+
 def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
     """What the run must give in this world, from the rule texts: per seed the
-    candidates' stage paths, verdicts and eliminations, each round's with-
-    trait episodes, cells and cell readers, the arms, the final cells, the D8
-    pair counts and the episode total."""
+    candidates' stage records (stage 1, the stage-2 path and its paired
+    outcomes, in scope by reference, out of scope, 4A, 4B, 4C pairs),
+    verdicts and eliminations, the D7 sensitivity grid, each round's with-
+    trait episodes, cells and cell readers, the arms, the final cells, the
+    D8 pair counts and the episode totals.
+
+    Two conventions the ADRs leave open follow the run's documented ones:
+    ``cell_readers`` counts reads of a round's cell, and 4A's T_reg cells
+    are read once per seed (ADR-0009 D1's one G0 run per seed), the out-of-
+    scope cells once per candidate and the interaction cells once per pair;
+    D8's cross-seed pairs compare each seed's earliest-round cell of a game
+    (evaluation/exp0001/noise.py). A grid cell that needs a pair never
+    played is not identifiable (gate.sensitivity_recomputation's rule)."""
     world = RunWorld(script, splits)
     lifetime_wins = {s: [(task, a) for task in world.t_mine for a in range(3)
                          if world.lifetime_win(s, task, a)] for s in SEED_OFFSET}
@@ -228,14 +268,23 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
         def read(r, game, n=1):
             readers[(r, game)] = readers.get((r, game), 0) + n
 
-        for c in cands:
+        def counts(games, name):
+            with_trait = sum(world.gate_win(s, g, {name}) for g in games)
+            cell = sum(world.gate_win(s, g, ()) for g in games)
+            plus = sum(1 for g in games if world.gate_win(s, g, {name})
+                       and not world.gate_win(s, g, ()))
+            minus = sum(1 for g in games if world.gate_win(s, g, ())
+                        and not world.gate_win(s, g, {name}))
+            return with_trait, cell, plus, minus
+
+        for rank, c in enumerate(cands):
             name = c["name"]
             families = families_of(c)
             allocation = interleave(bank, families, LOOKS[-1])
             pairs = [(world.gate_win(s, g, {name}), world.gate_win(s, g, ())) for g in allocation]
             path = stage2_path(pairs)
+            n_stop = LOOKS[path["stop_look"] - 1]
             round_with[1] += 1  # stage 1: the source task, with the trait only
-            stage1_success = world.gate_win(s, source, {name})
             start = 0
             for look in path["looks"]:
                 n_k = LOOKS[look["look"] - 1]
@@ -243,8 +292,24 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
                 for g in allocation[start:n_k]:
                     read(look["look"], g)
                 start = n_k
-            entry = {"name": name, "families": families, "stage1_success": stage1_success,
-                     "stage2": path, "overhead_pass": c.get("overhead", "pass") == "pass"}
+            stop = path["looks"][-1]
+            net = stop["n_plus"] - stop["n_minus"]
+            stage1_success = world.gate_win(s, source, {name})
+            entry = {"name": name, "rank": rank, "families": families,
+                     "all_family": families == universe,
+                     # D3: the target gene expressed or the episode failed; a mined gene
+                     # carries no regulation, so it is always expressed
+                     "stage1": {"success": stage1_success, "expressed": True, "pass": True},
+                     "stage2": path,
+                     "observed": [(g, w, cell) for g, (w, cell) in
+                                  zip(allocation[:n_stop], pairs[:n_stop])],
+                     "in_scope": {"games": n_stop, "n_plus": stop["n_plus"],
+                                  "n_minus": stop["n_minus"], "net": net,
+                                  "delta": Fraction(net, n_stop),
+                                  "pass": Fraction(net, n_stop) >= 0},
+                     "overhead_pass": c.get("overhead", "pass") == "pass",
+                     "sensitivity": {tau: sensitivity_path(pairs[:n_stop], tau)
+                                     for tau in TAU_C_GRID}}
             if path["alpha_met"]:
                 omitted = [f for f in universe if f not in families]
                 if omitted:
@@ -252,49 +317,52 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
                     round_with[5] += len(out_games)
                     for g in out_games:
                         read(5, g)
-                    net_loss = sum(1 for g in out_games if world.gate_win(s, g, ())
-                                   and not world.gate_win(s, g, {name})) - \
-                        sum(1 for g in out_games if world.gate_win(s, g, {name})
-                            and not world.gate_win(s, g, ()))
-                    entry["out_of_scope"] = {"vacuous": False, "net_loss": net_loss,
-                                             "pass": net_loss <= OUT_SCOPE_MAX_NET_LOSS}
+                    with_trait, cell, plus, minus = counts(out_games, name)
+                    entry["out_of_scope"] = {
+                        "vacuous": False, "net_loss": minus - plus, "successes_with": with_trait,
+                        "cell_successes": cell, "task_count": len(out_games),
+                        "pass": minus - plus <= OUT_SCOPE_MAX_NET_LOSS}
                 else:
                     entry["out_of_scope"] = {"vacuous": True, "pass": True}
                 round_with[5] += T_REG_SIZE
-                drop = sum(1 for g in t_reg if world.gate_win(s, g, ())
-                           and not world.gate_win(s, g, {name})) - \
-                    sum(1 for g in t_reg if world.gate_win(s, g, {name})
-                        and not world.gate_win(s, g, ()))
-                entry["regression"] = {"net_drop": drop, "pass": drop <= T_REG_MAX_NET_DROP}
+                with_trait, cell, plus, minus = counts(t_reg, name)
+                entry["regression"] = {"net_drop": minus - plus, "successes_with": with_trait,
+                                       "successes_without": cell,
+                                       "pass": minus - plus <= T_REG_MAX_NET_DROP}
             else:
                 entry["out_of_scope"] = {"not_run": True, "pass": False}
                 entry["regression"] = {"not_run": True, "pass": False}
-            entry["eligible"] = (path["decision"] == "pass" and entry["out_of_scope"]["pass"]
+            entry["eligible"] = (entry["stage1"]["pass"] and path["decision"] == "pass"
+                                 and entry["out_of_scope"]["pass"]
                                  and entry["regression"]["pass"] and entry["overhead_pass"])
             per[name] = entry
         if any(e["regression"].get("not_run") is not True for e in per.values()):
             for g in t_reg:  # the seed's one G0 run on T_reg (ADR-0009 D1), in R5
                 read(5, g)
         eligible = [c["name"] for c in cands if per[c["name"]]["eligible"]]
-        rank = {c["name"]: i for i, c in enumerate(cands)}
-        harmful, pairs_played = [], []
+        rank = {n: e["rank"] for n, e in per.items()}
+        deltas: dict[frozenset, Fraction] = {}
         for a, b in combinations(eligible, 2):
-            pairs_played.append((a, b))
             round_with[6] += INTERACTION_GAMES
             for g in interaction:
                 read(6, g)
-            delta = Fraction(sum(int(world.gate_win(s, g, {a, b})) - int(world.gate_win(s, g, ()))
-                                 for g in interaction), INTERACTION_GAMES)
-            if delta < HARMFUL_PAIR_DELTA:
-                harmful.append((a, b))
-        eliminated = {}
-        for a, b in harmful:
-            ca, cb = per[a]["stage2"]["contribution"], per[b]["stage2"]["contribution"]
-            loser = (b if ca > cb else a) if ca != cb else (b if rank[a] < rank[b] else a)
-            eliminated[loser] = b if loser == a else a
+            deltas[frozenset((a, b))] = Fraction(
+                sum(int(world.gate_win(s, g, {a, b})) - int(world.gate_win(s, g, ()))
+                    for g in interaction), INTERACTION_GAMES)
+        harmful = [tuple(sorted(pair, key=rank.get)) for pair, d in deltas.items()
+                   if d < HARMFUL_PAIR_DELTA]
+        contribution = {n: per[n]["stage2"]["contribution"] for n in per}
+        losers: dict[str, set] = {}
+        for a, b in harmful:  # every harmful pair resolved at once (ADR-0002 A1)
+            loser = _loser(a, b, contribution, rank)
+            losers.setdefault(loser, set()).add(b if loser == a else a)
         for name, entry in per.items():
-            entry["eliminated_by"] = eliminated.get(name)
-            entry["verdict"] = "promote" if entry["eligible"] and name not in eliminated \
+            entry["eliminated_by"] = sorted(losers.get(name, ()))
+            entry["pairs"] = {other: {"delta": deltas[frozenset((name, other))],
+                                      "harmful": deltas[frozenset((name, other))]
+                                      < HARMFUL_PAIR_DELTA}
+                              for other in eligible if other != name and name in eligible}
+            entry["verdict"] = "promote" if entry["eligible"] and name not in losers \
                 else "reject"
         rounds[s] = {f"R{r}": {"with_trait": round_with[r],
                                "cells": len({g for (rr, g) in readers if rr == r}),
@@ -304,9 +372,11 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
         for (r, g) in readers:
             cells[(s, r, g)] = world.gate_win(s, g, ())
         seeds[s] = {"candidates": [c["name"] for c in cands], "per_candidate": per,
-                    "pairs": pairs_played, "harmful": harmful,
+                    "pairs": [tuple(sorted(p, key=rank.get)) for p in deltas],
+                    "harmful": harmful,
                     "promoted": [n for n in per if per[n]["verdict"] == "promote"],
-                    "source_task": source}
+                    "source_task": source,
+                    "sensitivity_cells": _sensitivity_cells(per, deltas, rank)}
     # D8 (descriptive): a seed's cells of one game in two rounds; seeds' earliest cells
     by_game: dict[tuple[int, str], dict[int, bool]] = {}
     for (s, r, g), win in cells.items():
@@ -332,7 +402,8 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
             "transfer_successes": sum(world.final_win(g, skills) for g in transfer)}
     gate_episodes = sum(r["with_trait"] + r["cells"] for rs in rounds.values()
                         for r in rs.values())
-    final_episodes = len(genomes) * (len(t_eval) + T_REG_SIZE + len(transfer))
+    per_genome = len(t_eval) + T_REG_SIZE + len(transfer)
+    final_episodes = len(genomes) * per_genome
     lifetime_episodes = len(SEED_OFFSET) * len(world.t_mine) * 3
     return {"lifetime_wins": {s: len(w) for s, w in lifetime_wins.items()},
             "t_reg": t_reg, "seeds": seeds, "rounds": rounds,
@@ -341,9 +412,46 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
             "cross_seed": {"pairs": len(cross_seed),
                            "disagreements": sum(a != b for a, b in cross_seed)},
             "cells": len(cells), "final": final, "distinct_genomes": len(genomes),
+            "final_per_genome": {"t_eval": len(t_eval), "t_reg": T_REG_SIZE,
+                                 "transfer": len(transfer)},
             "episodes": {"lifetime": lifetime_episodes, "gate": gate_episodes,
                          "final": final_episodes,
                          "total": lifetime_episodes + gate_episodes + final_episodes}}
+
+
+def _sensitivity_cells(per: Mapping, deltas: Mapping, rank: Mapping) -> dict:
+    """ADR-0012 D7's grid (the manifest's ``sensitivity_secondary``) over a
+    seed's candidates: per (tau_c, tau_r) cell, which candidates would be
+    eligible and promoted, or that the cell is not identifiable."""
+    grid = {}
+    for tau_c in TAU_C_GRID:
+        for tau_r in TAU_R_GRID:
+            def others(e):  # every stage but stage 2, at this tau_r
+                r = e["regression"]
+                return (e["stage1"]["pass"] and e["out_of_scope"]["pass"] and e["overhead_pass"]
+                        and not r.get("not_run") and Fraction(r["net_drop"], T_REG_SIZE) <= tau_r)
+            key = f"tau_c={float(tau_c)}|tau_r={float(tau_r)}"
+            unidentified = sorted(n for n, e in per.items()
+                                  if others(e) and not e["sensitivity"][tau_c]["identifiable"])
+            if unidentified:
+                grid[key] = {"identifiable": False, "unidentified_stage2": unidentified}
+                continue
+            eligible = sorted(n for n, e in per.items()
+                              if others(e) and e["sensitivity"][tau_c]["pass"])
+            missing = [sorted(p) for p in combinations(eligible, 2)
+                       if frozenset(p) not in deltas]
+            if missing:
+                grid[key] = {"identifiable": False, "eligible": eligible,
+                             "missing_pairs": missing}
+                continue
+            contribution = {n: per[n]["sensitivity"][tau_c]["contribution"] for n in eligible}
+            eliminated = {_loser(a, b, contribution, rank)
+                          for a, b in combinations(eligible, 2)
+                          if deltas[frozenset((a, b))] < HARMFUL_PAIR_DELTA}
+            grid[key] = {"identifiable": True, "eligible": eligible,
+                         "eliminated": sorted(eliminated),
+                         "promote": sorted(n for n in eligible if n not in eliminated)}
+    return grid
 
 
 # -- building the script offline ---------------------------------------------------------
@@ -520,32 +628,46 @@ def validate_script(script: Mapping, splits: Mapping, pilot: Mapping, bank: Mapp
 CENSUS_TASKS_PER_CHILD = 25
 
 
-def census_games(splits: Mapping, bank: Mapping, script: Mapping) -> list[tuple[str, str]]:
-    """Every game the run may play that the scripted run does not: which
-    bank games a run plays depends on its model's candidates, so each one
-    is opened once before the A100 is paid for."""
-    played = {tuple(key.split("/", 1)) for key in script["texts"]}
+def census_games(splits: Mapping, bank: Mapping) -> list[tuple[str, str]]:
+    """Every game a run may play: which bank games a run plays depends on its
+    model's candidates, so each one is opened once before the A100 is paid
+    for, and the ones the scripted run plays must show the script's texts."""
     every = {("train", g["game_id"]) for games in bank["families"].values() for g in games}
     every |= {("valid_unseen" if pool == "t_eval" else "train", g["game_id"])
               for pool in ("t_mine", "t_eval", "interaction", "ablation")
               for g in splits["pools"][pool]["games"]}
-    return sorted(every - played)
+    return sorted(every)
 
 
-def open_game(env_factory, split: str, game_id: str) -> str | None:
-    """Open one game through the run's factory and read its start text: None,
-    or what went wrong (run in a worker process)."""
+def open_game(env_factory, split: str, game_id: str) -> tuple[str | None, str | None]:
+    """Open one game through the run's factory and read its start text:
+    (its sha256, None) or (None, what went wrong); run in a worker process."""
     try:
         env = env_factory(split, game_id)
         try:
-            env.start()
+            text = env.start()
         finally:
             close = getattr(env, "close", None)
             if callable(close):
                 close()
-    except Exception as exc:  # noqa: BLE001 - reported, the census fails
-        return f"{type(exc).__name__}: {exc}"[:300]
-    return None
+    # TextWorld's translator ends a malformed game with SystemExit
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - reported, the census fails
+        return None, f"{type(exc).__name__}: {exc}"[:300]
+    return text_sha256(text), None
+
+
+def census_failures(games: Sequence[tuple[str, str]], results: Sequence[tuple],
+                    script: Mapping) -> list[str]:
+    """The games that did not open, and the played ones whose start text is
+    not the script's (the stand-in would refuse them hours into the run)."""
+    failures = []
+    for (split, game), (sha, error) in zip(games, results):
+        want = script["texts"].get(f"{split}/{game}")
+        if error:
+            failures.append(f"{split}/{game}: {error}")
+        elif want is not None and sha != want:
+            failures.append(f"{split}/{game}: its start text is not the script's")
+    return failures
 
 
 # -- the stand-in's side ------------------------------------------------------------------
@@ -773,22 +895,34 @@ def fault_plan(script: Mapping, bank: Mapping, expected: Mapping) -> dict:
     allocation = interleave(bank, per["per_candidate"][name]["families"], LOOKS[-1])
     return {"blip_seed": attempt_seed(DEATH_SEED, script["lifetime"]["L"][3], 0),
             "blip_seconds": BLIP_SECONDS, "death_skill": name,
-            "death_games": allocation[LOOKS[DEATH_ROUND - 2]:LOOKS[DEATH_ROUND - 1]]}
+            "death_games": allocation[LOOKS[DEATH_ROUND - 2]:LOOKS[DEATH_ROUND - 1]],
+            "death_armed_after": DEATH_ARMED_AFTER}
+
+
+def blip_key(script: Mapping) -> str:
+    """The ledger key of the lifetime episode the blip strikes."""
+    return f"lifetime/{DEATH_SEED}/{script['lifetime']['L'][3]}/0"
 
 
 class Faults:
     """The rehearsal's server faults, decided from the request: a blip (503
-    for ``blip_seconds`` at the first lifetime request of ``blip_seed``,
-    which the adapter's retries absorb) and a death (503 from the first gate
-    request of ``death_skill`` on a ``death_games`` game until cleared)."""
+    for ``blip_seconds`` from the first lifetime request of ``blip_seed``,
+    which the adapter's retries absorb; ``blip_hits`` counts the requests it
+    refused) and a death (503 from the first gate request of ``death_skill``
+    on a ``death_games`` game, once ``death_armed_after`` gate requests of
+    the seed on those games have come in, until cleared)."""
 
     def __init__(self, *, blip_seed: int | None, blip_seconds: float, death_skill: str | None,
                  death_games: Iterable[str], game_of: Callable[[Mapping], str | None],
-                 clock: Callable[[], float]):
+                 clock: Callable[[], float], death_armed_after: int = 0,
+                 death_seed: int = DEATH_SEED):
         self.blip_seed, self.blip_seconds = blip_seed, blip_seconds
         self.death_skill, self.death_games = death_skill, set(death_games)
+        self.death_armed_after, self.death_seed = death_armed_after, death_seed
         self._game_of, self._clock = game_of, clock
         self.blip_started: float | None = None
+        self.blip_hits = 0
+        self.death_game_requests = 0
         self.dead = False
         self.died = False
         self._lock = threading.Lock()
@@ -802,12 +936,15 @@ class Faults:
                 self.blip_started = self._clock()
             if self.blip_started is not None and \
                     self._clock() - self.blip_started < self.blip_seconds:
+                self.blip_hits += 1
                 return True
             if self.death_skill is not None and not self.died and \
-                    payload.get("temperature") == 0.0 and payload.get("seed") is not None:
+                    payload.get("temperature") == 0.0 and payload.get("seed") == self.death_seed \
+                    and self._game_of(payload) in self.death_games:
+                self.death_game_requests += 1
                 messages = payload.get("messages") or [{}]
-                if prompt_skills(messages[0].get("content", "")) == [self.death_skill] and \
-                        self._game_of(payload) in self.death_games:
+                if self.death_game_requests > self.death_armed_after and \
+                        prompt_skills(messages[0].get("content", "")) == [self.death_skill]:
                     self.dead = self.died = True
                     return True
             return False
@@ -822,15 +959,19 @@ def _episode_keys(lines: Sequence[Mapping]) -> list[str]:
     return [r["key"] for r in lines if r.get("type") == "episode"]
 
 
-def first_pass_checks(lines: Sequence[Mapping], faults: Faults, *, aborted: int) -> dict:
-    """After the server's death: the blip was absorbed on the way, and the
-    pass ended inside seed 11's R2 with the attempts in flight charged."""
+def first_pass_checks(lines: Sequence[Mapping], faults: Faults, *, aborted: int,
+                      blip_key: str) -> dict:
+    """After the server's death: the blip was absorbed on the way (the
+    episode it struck was recorded at its first attempt), and the pass ended
+    inside seed 11's R2 with the attempts in flight charged."""
     keys = _episode_keys(lines)
     rounds = {int(k.split("/")[2][1:]) for k in keys if k.startswith(f"gate/{DEATH_SEED}/")}
     later = [k for k in keys if k.startswith("final/") or
              (k.startswith("gate/") and not k.startswith(f"gate/{DEATH_SEED}/"))]
+    attempts = [r for r in lines if r.get("type") == "attempt" and r["key"] == blip_key]
     return {"the blip came, and the adapter's retries absorbed it":
-                faults.blip_started is not None and faults.died,
+                faults.blip_hits >= 1 and faults.died and blip_key in keys
+                and len(attempts) == 1,
             f"the server died in seed {DEATH_SEED}'s R{DEATH_ROUND}":
                 rounds == set(range(1, DEATH_ROUND + 1)) and not later,
             "the death's attempts were charged": aborted >= 1}
@@ -850,10 +991,18 @@ def second_pass_checks(lines: Sequence[Mapping], expected: Mapping, *, code: int
                 sum(k.startswith("gate/") for k in keys) == expected["episodes"]["gate"]}
 
 
-def policy_checks(policy: RunPolicy, expected: Mapping) -> dict:
+def policy_checks(policy: RunPolicy, expected: Mapping, lines: Sequence[Mapping]) -> dict:
     """What the stand-in saw: no request refused but the scripted overflow,
-    whose pair the miner sent again in the reduced form (ADR-0009 D8), and
-    one teacher call per lifetime pair otherwise."""
+    whose pair the miner sent again in the reduced form (ADR-0009 D8), one
+    teacher call per lifetime pair otherwise, and every request of a kind
+    the ledger's episodes of that stage made: the lifetimes' at 0.7 with
+    an attempt seed, the final evaluation's at 0 without a seed (ADR-0007
+    E8; a seeded final request would count as a gate's), the gate's at 0
+    with the mining seed (aborted attempts' requests add to these)."""
+    calls = {"lifetime": 0, "gate": 0, "final": 0}
+    for r in lines:
+        if r.get("type") == "episode":
+            calls[r["key"].split("/")[0]] += r["model_calls"]
     log = list(policy.log)
     refused = [e for e in log if e["status"] != 200 and e.get("why") != OVERFLOW]
     teacher = [e for e in log if e["kind"] == "teacher"]
@@ -871,7 +1020,11 @@ def policy_checks(policy: RunPolicy, expected: Mapping) -> dict:
                 and len(teacher) == pairs + policy.overflows,
             "the scripted proposals reached the miner":
                 sum(e.get("proposals", 0) for e in teacher) == sum(
-                    len(s["candidates"]) for s in expected["seeds"].values())}
+                    len(s["candidates"]) for s in expected["seeds"].values()),
+            "every lifetime and final request was its episodes' (E1, E8)":
+                policy.kinds["lifetime"] == calls["lifetime"] > 0
+                and policy.kinds["final"] == calls["final"] > 0
+                and policy.kinds["gate"] >= calls["gate"] > 0}
 
 
 def _cell_trajectory(run_id: str, g0_genome_id: str, seed: int, gate_round: int,
@@ -894,9 +1047,91 @@ def _names(run_dir: Path, seed: int) -> dict[str, str]:
         "name"] for c in candidates["candidates"]}
 
 
+def _exact(value) -> str:
+    value = Fraction(value)
+    return f"{value.numerator}/{value.denominator}"
+
+
+def _stage_records(gate: Mapping, names: Mapping) -> dict:
+    """proposal name -> {stage: measurements} from a frozen gate artifact."""
+    stages: dict[str, dict] = {}
+    for child in gate["children"].values():
+        m = child["measurements"]
+        stages.setdefault(names.get(m.get("candidate_gene_id"), "?"), {})[child["stage"]] = m
+    return stages
+
+
+def _candidate_checks(got: Mapping, e: Mapping, s: int) -> dict[str, bool]:
+    """One candidate's stage records against the oracle's, per stage."""
+    replay = got.get("replay") or {}
+    episode = (replay.get("episodes") or [{}])[0]
+    expression = replay.get("expression_check") or {}
+    ablation = got.get("ablation") or {}
+    path = e["stage2"]
+    stop = ablation.get("stop") or {}
+    outcomes = ablation.get("paired_outcomes") or []
+    in_scope = got.get("generalization_in_scope") or {}
+    reference = in_scope.get("by_reference") or {}
+    out = got.get("generalization_out_of_scope") or {}
+    stage4 = got.get("interaction_regression") or {}
+    regression = stage4.get("regression") or {}
+    overhead = stage4.get("expression_overhead") or {}
+    pair_evidence = (stage4.get("interaction") or {}).get("pair_evidence") or []
+    ok = {}
+    ok["stage 1"] = (episode.get("success") is e["stage1"]["success"]
+                     and expression.get("expressed") is e["stage1"]["expressed"]
+                     and expression.get("passed") is e["stage1"]["pass"]
+                     and replay.get("stage_pass") is e["stage1"]["pass"])
+    ok["stage 2 path"] = (
+        (stop.get("look"), stop.get("decision"), stop.get("reason")) ==
+        (path["stop_look"], path["decision"], path["reason"])
+        and [(x.get("n_plus"), x.get("n_minus")) for x in ablation.get("looks", ())] ==
+        [(x["n_plus"], x["n_minus"]) for x in path["looks"]]
+        and ablation.get("alpha_met") is path["alpha_met"]
+        and (ablation.get("contribution") or {}).get("exact") == _exact(path["contribution"]))
+    # every paired outcome, in allocation order: the game, both successes, the round's
+    # cell of this seed, the trait expressed
+    ok["stage 2 paired outcomes"] = len(outcomes) == len(e["observed"]) and all(
+        (o.get("task_id"), (o.get("with_trait") or {}).get("success"),
+         (o.get("cell") or {}).get("success")) == (g, w, c)
+        and o.get("round") == o.get("look") == (o.get("cell") or {}).get("round")
+        and (o.get("cell") or {}).get("seed") == s and o.get("fired") is True
+        for o, (g, w, c) in zip(outcomes, e["observed"]))
+    ok["in scope by reference"] = (
+        reference.get("stage") == "ablation"
+        and (reference.get("games"), reference.get("n_plus"), reference.get("n_minus"),
+             reference.get("net")) == (e["in_scope"]["games"], e["in_scope"]["n_plus"],
+                                       e["in_scope"]["n_minus"], e["in_scope"]["net"])
+        and (in_scope.get("delta") or {}).get("exact") == _exact(e["in_scope"]["delta"])
+        and in_scope.get("stage_pass") is e["in_scope"]["pass"])
+    oos = e["out_of_scope"]
+    if oos.get("not_run"):
+        ok["out of scope"] = out.get("not_run") is True and out.get("stage_pass") is False
+        ok["4A and 4C"] = (stage4.get("not_run") is True and stage4.get("stage_pass") is False
+                           and regression.get("not_run") is True and not pair_evidence)
+    else:
+        summary = out.get("summary") or {}
+        ok["out of scope"] = out.get("stage_pass") is oos["pass"] and (
+            out.get("vacuous") is True if oos["vacuous"] else
+            (summary.get("net_loss"), summary.get("successes_with"),
+             summary.get("cell_successes"), summary.get("task_count")) ==
+            (oos["net_loss"], oos["successes_with"], oos["cell_successes"], oos["task_count"]))
+        r = e["regression"]
+        ok["4A"] = ((regression.get("successes_with"), regression.get("successes_without"),
+                     regression.get("task_count"), regression.get("regression_pass")) ==
+                    (r["successes_with"], r["successes_without"], T_REG_SIZE, r["pass"]))
+        ok["4A and 4C"] = ok.pop("4A") and {
+            x.get("other_gene_name"): (x.get("delta_pair"), x.get("harmful"))
+            for x in pair_evidence} == {
+            other: (float(v["delta"]), v["harmful"]) for other, v in e["pairs"].items()}
+    ok["4B"] = overhead.get("overhead_pass") is e["overhead_pass"]
+    return ok
+
+
 def gate_checks(run_dir: Path, expected: Mapping, *, run_id: str, g0_genome_id: str) -> dict:
-    """Per seed: the frozen candidate set, every candidate's stage path and
-    verdict, the rounds, and that every comparison read its own round's cell."""
+    """Per seed: the frozen candidate set, every candidate's stage records,
+    verdicts, eliminations and sensitivity grid, the rounds, and that every
+    comparison read its own round's cell."""
     checks: dict[str, bool] = {}
     for s, exp in expected["seeds"].items():
         names = _names(run_dir, s)
@@ -907,48 +1142,29 @@ def gate_checks(run_dir: Path, expected: Mapping, *, run_id: str, g0_genome_id: 
         verdicts = {names[g]: v for g, v in gate["verdicts"].items()}
         checks[f"seed {s}: the verdicts"] = verdicts == {
             n: e["verdict"] for n, e in exp["per_candidate"].items()}
+        # ADR-0002 A1 defines the eliminated set; a candidate that loses two harmful pairs
+        # names one of the winners
         eliminated = {names[g]: (names[b] if b else None)
                       for g, b in gate["eliminated_by_interaction"].items()}
-        checks[f"seed {s}: the eliminations"] = eliminated == {
-            n: e["eliminated_by"] for n, e in exp["per_candidate"].items()}
-        stages: dict[str, dict] = {}
-        for child in gate["children"].values():
-            m = child["measurements"]
-            stages.setdefault(names.get(m.get("candidate_gene_id"), "?"), {})[child["stage"]] = m
-        ok_paths = ok_r5 = True
+        checks[f"seed {s}: the eliminations"] = set(eliminated) == set(exp["per_candidate"]) \
+            and all((eliminated[n] in e["eliminated_by"]) if e["eliminated_by"]
+                    else eliminated[n] is None for n, e in exp["per_candidate"].items())
+        stages = _stage_records(gate, names)
+        for x in (m for got in stages.values() for m in got.values()):
+            for pair in ((x.get("interaction") or {}).get("pair_evidence") or ()):
+                pair["other_gene_name"] = names.get(pair.get("other_gene_id"))
+        per_stage: dict[str, bool] = {}
         for name, e in exp["per_candidate"].items():
-            got = stages.get(name, {})
-            ablation = got.get("ablation", {})
-            path = e["stage2"]
-            want_stop = (path["stop_look"], path["decision"], path["reason"])
-            stop = ablation.get("stop") or {}
-            looks = [(x.get("n_plus"), x.get("n_minus")) for x in ablation.get("looks", ())]
-            ok_paths &= (stop.get("look"), stop.get("decision"), stop.get("reason")) == want_stop
-            ok_paths &= looks == [(x["n_plus"], x["n_minus"]) for x in path["looks"]]
-            ok_paths &= ablation.get("alpha_met") is path["alpha_met"]
-            ok_paths &= (ablation.get("contribution") or {}).get("exact") == \
-                f"{path['contribution'].numerator}/{path['contribution'].denominator}"
-            ok_paths &= all(o["round"] == o["look"] == o["cell"]["round"] and o["cell"]["seed"] == s
-                            for o in ablation.get("paired_outcomes", ()))
-            replay = (got.get("replay") or {}).get("episodes") or [{}]
-            ok_paths &= replay[0].get("success") is e["stage1_success"]
-            out = got.get("generalization_out_of_scope", {})
-            stage4 = got.get("interaction_regression", {})
-            if e["out_of_scope"].get("not_run"):
-                ok_r5 &= out.get("not_run") is True and stage4.get("not_run") is True
-            elif e["out_of_scope"].get("vacuous"):
-                ok_r5 &= out.get("vacuous") is True and out.get("stage_pass") is True
-            else:
-                ok_r5 &= out.get("stage_pass") is e["out_of_scope"]["pass"]
-                ok_r5 &= (out.get("summary") or {}).get("net_loss") == e["out_of_scope"]["net_loss"]
-            if not e["regression"].get("not_run"):
-                regression = stage4.get("regression") or {}
-                ok_r5 &= regression.get("regression_pass", regression.get("passed")) \
-                    is e["regression"]["pass"]
-            overhead = stage4.get("expression_overhead") or {}
-            ok_r5 &= overhead.get("overhead_pass") is e["overhead_pass"]
-        checks[f"seed {s}: every stage-2 path (ADR-0012 D4)"] = ok_paths
-        checks[f"seed {s}: R5 and 4B as scripted (D5-D7)"] = ok_r5
+            for stage, ok in _candidate_checks(stages.get(name, {}), e, s).items():
+                per_stage[stage] = per_stage.get(stage, True) and ok
+        labels = {"stage 1": "stage 1 (D3)", "stage 2 path": "every stage-2 path (ADR-0012 D4)",
+                  "stage 2 paired outcomes": "every stage-2 paired outcome (D4)",
+                  "in scope by reference": "in scope by reference (D5)",
+                  "out of scope": "out of scope (D5, D7)", "4A and 4C": "4A and 4C (D6, D7)",
+                  "4B": "4B (D7)"}
+        for stage, label in labels.items():
+            checks[f"seed {s}: {label}"] = per_stage.get(stage, True)
+        checks[f"seed {s}: the sensitivity grid (D7)"] = _sensitivity_ok(gate, names, exp)
         rounds = {r: {k: v for k, v in body.items()} for r, body in gate["rounds"].items()}
         checks[f"seed {s}: the rounds, cells and readers (D2)"] = rounds == exp_rounds(expected, s)
         bound = True
@@ -970,6 +1186,39 @@ def gate_checks(run_dir: Path, expected: Mapping, *, run_id: str, g0_genome_id: 
     return checks
 
 
+def _sensitivity_ok(gate: Mapping, names: Mapping, exp: Mapping) -> bool:
+    """The frozen D7 grid of every candidate against the oracle's."""
+    ok = True
+    for gene, grid in (gate.get("sensitivity") or {}).items():
+        e = exp["per_candidate"][names[gene]]
+        for tau in TAU_C_GRID:
+            got = grid["ablation"][f"tau_c={float(tau)}"]
+            want = e["sensitivity"][tau]
+            ok &= got.get("identifiable") is want["identifiable"]
+            if want["identifiable"]:
+                ok &= (got.get("pass"), got.get("stop_look"), got.get("reason"),
+                       (got.get("contribution") or {}).get("exact")) == (
+                    want["pass"], want["stop_look"], want["reason"],
+                    _exact(want["contribution"]))
+        r = e["regression"]
+        for tau in TAU_R_GRID:
+            got = grid["regression"][f"tau_r={float(tau)}"]
+            ok &= got is None if r.get("not_run") else \
+                got is (Fraction(r["net_drop"], T_REG_SIZE) <= tau)
+        for key, want in exp["sensitivity_cells"].items():
+            got = grid["cells"].get(key) or {}
+            ok &= got.get("identifiable") is want["identifiable"]
+            if want["identifiable"]:
+                ok &= sorted(names[g] for g in got.get("hypothetical_eligible", ())) == \
+                    want["eligible"]
+                ok &= sorted(names[g] for g in got.get("eliminated_by_interaction", ())) == \
+                    want["eliminated"]
+                ok &= sorted(names[g] for g in got.get("hypothetical_promote", ())) == \
+                    want["promote"]
+        ok &= set(grid["cells"]) == set(exp["sensitivity_cells"])
+    return ok and set(gate.get("sensitivity") or {}) == set(gate["verdicts"])
+
+
 def exp_rounds(expected: Mapping, seed: int) -> dict:
     return {r: {"with_trait": body["with_trait"], "cells": body["cells"],
                 "cell_readers": dict(body["cell_readers"])}
@@ -980,48 +1229,130 @@ def _sha(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def reserve_replay(lines: Sequence[Mapping], caps: Mapping) -> list[dict]:
+    """ADR-0012 D9 recomputed from the ledger alone, at every reserve record:
+    the episodes and model calls recorded before it (episode and call
+    records, and the reservation of every attempt that ended without one),
+    the mean calls per recorded episode, the calls ahead (the round's
+    episodes plus the 1,358 reserve at that mean, rounded up) and whether
+    both caps leave room. Returns, per reserve record, (record, recomputed)."""
+    open_attempts: dict[str, list[int]] = {}
+    episodes, episode_calls, other_calls = 0, 0, 0
+    out = []
+    for r in lines:
+        kind = r.get("type")
+        if kind == "attempt":
+            open_attempts.setdefault(r["key"], []).append(r["reserved"])
+        elif kind in ("episode", "calls"):
+            if open_attempts.get(r["key"]):
+                open_attempts[r["key"]].pop()  # the attempt this record finished
+            if kind == "episode":
+                episodes += 1
+                episode_calls += r["model_calls"]
+            else:
+                other_calls += r["model_calls"]
+        elif kind == "reserve":
+            # nothing is in flight at a reserve check: every open attempt has ended
+            aborted = sum(sum(v) for v in open_attempts.values())
+            calls = episode_calls + other_calls + aborted
+            mean = Fraction(episode_calls, episodes) if episodes else None
+            ahead = r["round_episodes"] + FINAL_EVALUATION_RESERVE
+            calls_ahead = None if mean is None else math.ceil(mean * ahead)
+            out.append((r, {
+                "episodes": episodes, "model_calls": calls,
+                "mean_calls_per_episode": None if mean is None else _exact(mean),
+                "calls_ahead": calls_ahead,
+                "passed": calls_ahead is not None
+                and episodes + ahead <= caps["episodes_max"]
+                and calls + calls_ahead <= caps["model_calls_max"]}))
+    return out
+
+
 def ledger_checks(lines: Sequence[Mapping], expected: Mapping, *,
-                  interrupted: str | None) -> dict:
-    """D2's order and D9's reserve, from the ledger alone: rounds in order
-    per seed; within a session each round's admissions in ascending sha256
-    of their keys; one passed reserve record per non-empty round per
-    session, with the round's unrecorded count and the 1,358 reserve."""
+                  interrupted: str | None, caps: Mapping) -> dict:
+    """ADR-0007 E8's order, D2's rounds and D9's reserve, from the ledger
+    alone: the lifetimes, then each seed's gate in seed order, then the
+    final evaluation; per seed the rounds in order, each round's episodes and
+    each final genome's as expected; within a session each round's
+    admissions after its reserve record, in ascending sha256 of their keys;
+    one reserve record per non-empty round per session, whose arithmetic
+    the ledger reproduces."""
     checks: dict[str, bool] = {}
-    episodes = [r for r in lines if r.get("type") == "episode"]
-    keys = [r["key"] for r in episodes]
+    episodes = [(i, r) for i, r in enumerate(lines) if r.get("type") == "episode"]
+    keys = [r["key"] for _, r in episodes]
     checks["every episode recorded once"] = len(keys) == len(set(keys))
     checks["the episode total"] = len(keys) == expected["episodes"]["total"]
+    stage = {"lifetime": 0, "gate": 1, "final": 2}
+    order = [(stage[k.split("/")[0]], int(k.split("/")[1]) if k.startswith("gate/") else 0)
+             for k in keys]
+    checks["lifetimes, then the gates in seed order, then the final evaluation (E8)"] = \
+        order == sorted(order)
     order_ok = True
     for s in expected["seeds"]:
         rounds = [int(k.split("/")[2][1:]) for k in keys if k.startswith(f"gate/{s}/")]
         order_ok &= rounds == sorted(rounds)
     checks["rounds in order per seed (D2)"] = order_ok
-    hashed = True
-    current, admitted = None, []
+    counted: dict[str, int] = {}
+    for k in keys:
+        parts = k.split("/")
+        group = "lifetime" if parts[0] == "lifetime" else \
+            "/".join(parts[:3]) if parts[0] == "gate" else f"final/{parts[1]}/{parts[2]}"
+        counted[group] = counted.get(group, 0) + 1
+    want = {"lifetime": expected["episodes"]["lifetime"]}
+    want.update({f"gate/{s}/{name}": body["with_trait"] + body["cells"]
+                 for s in expected["seeds"] for name, body in expected["rounds"][s].items()})
+    finals = {g: n for g, n in counted.items() if g.startswith("final/")}
+    genomes = {g.split("/")[1] for g in finals}
+    checks["every round's and every final genome's episodes (D2, ADR-0009 D2)"] = (
+        {g: n for g, n in counted.items() if not g.startswith("final/")} == want
+        and len(genomes) == expected["distinct_genomes"]
+        and finals == {f"final/{genome}/{task_set}": n for genome in genomes
+                       for task_set, n in expected["final_per_genome"].items()})
+    hashed, after_reserve = True, True
+    current, admitted, reserved_labels = None, [], set()
     for r in lines:
         kind = r.get("type")
         if kind in ("session", "reserve"):
             hashed &= admitted == sorted(admitted, key=_sha)
             admitted = []
             current = r.get("label") if kind == "reserve" else None
-        elif kind == "attempt" and current and r["key"].startswith(current + "/"):
-            admitted.append(r["key"])
+            if kind == "session":
+                reserved_labels = set()
+            else:
+                reserved_labels.add(current)
+        elif kind == "attempt" and r["key"].startswith("gate/"):
+            label = "/".join(r["key"].split("/")[:3])
+            after_reserve &= label in reserved_labels  # its round's check came first
+            if current and r["key"].startswith(current + "/"):
+                admitted.append(r["key"])
     hashed &= admitted == sorted(admitted, key=_sha)
     checks["each round's queue in ascending sha256 of its keys (D2)"] = hashed
+    checks["each round's admissions after its reserve check in the session (D9)"] = after_reserve
     reserves = [r for r in lines if r.get("type") == "reserve"]
-    want = [f"gate/{s}/{r}" for s in expected["seeds"] for r in expected["rounds"][s]]
-    labels = [r["label"] for r in reserves]
+    want_labels = [f"gate/{s}/{r}" for s in expected["seeds"] for r in expected["rounds"][s]]
     first = {}
     for r in reserves:
         first.setdefault(r["label"], r)
     checks["one reserve check per round, one more for the interrupted round (D9)"] = \
-        sorted(labels) == sorted(want + ([interrupted] if interrupted else []))
-    checks["every reserve check passed with the 1,358 reserve"] = all(
-        r["passed"] is True and r["final_reserve"] == FINAL_EVALUATION_RESERVE for r in reserves)
-    checks["each round's first check counts its whole queue"] = all(
-        first[f"gate/{s}/{name}"]["round_episodes"] == body["with_trait"] + body["cells"]
-        for s in expected["seeds"] for name, body in expected["rounds"][s].items()
-        if f"gate/{s}/{name}" in first)
+        sorted(r["label"] for r in reserves) == \
+        sorted(want_labels + ([interrupted] if interrupted else []))
+    replayed = reserve_replay(lines, caps)
+    checks["every reserve check's arithmetic, recomputed from the ledger (D9)"] = bool(
+        replayed) and all(
+        r["final_reserve"] == FINAL_EVALUATION_RESERVE and r["passed"] is mine["passed"] is True
+        and (r["episodes"], r["model_calls"], r["calls_ahead"]) ==
+        (mine["episodes"], mine["model_calls"], mine["calls_ahead"])
+        and (r.get("mean_calls_per_episode") or {}).get("exact") == mine["mean_calls_per_episode"]
+        for r, mine in replayed)
+    recorded_before = {}
+    for r, mine in replayed:  # a resumed round counts only its unrecorded episodes
+        label = r["label"]
+        done = sum(1 for _, e in episodes[:mine["episodes"]]
+                   if e["key"].startswith(label + "/"))
+        recorded_before[id(r)] = done
+    checks["each round's checks count its unrecorded episodes"] = all(
+        r["round_episodes"] == want[r["label"]] - recorded_before[id(r)]
+        for r, _ in replayed if r["label"] in want)
     return checks
 
 
@@ -1037,8 +1368,7 @@ def report_checks(report: Mapping, expected: Mapping, lines: Sequence[Mapping]) 
             stops[label] = stops.get(label, 0) + 1
         ok &= gates.get(str(s)) == {
             "candidates": len(exp["candidates"]), "promoted": len(exp["promoted"]),
-            "all_family_candidates": sum(1 for e in exp["per_candidate"].values()
-                                         if e["out_of_scope"].get("vacuous")),
+            "all_family_candidates": sum(e["all_family"] for e in exp["per_candidate"].values()),
             "stage2_stops": dict(sorted(stops.items())),
             "reached_round_5": sum(1 for e in exp["per_candidate"].values()
                                    if e["stage2"]["alpha_met"])}

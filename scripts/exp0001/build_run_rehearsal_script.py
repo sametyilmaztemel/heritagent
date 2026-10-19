@@ -96,7 +96,8 @@ def survey(data_root: str, split: str, game_id: str) -> dict:
                 row["plan"] = plan
         finally:
             env.close()
-    except Exception as exc:  # noqa: BLE001 - reported; such a game is never designated
+    # TextWorld's translator ends a malformed game with SystemExit
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - reported; never designated
         row["error"] = f"{type(exc).__name__}: {exc}"[:300]
     return row
 
