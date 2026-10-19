@@ -11,9 +11,12 @@ the scripted world's, not EXP-0001 results."""
 import copy
 import functools
 import json
+import os
 import random
+import shutil
 import subprocess
 import sys
+import time
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +38,7 @@ from inheritance import ablation, generalization, interaction, regression
 from runtime.model_adapters.openai_server import NEUTRAL_SAMPLING
 from runtime.policies.planner_react import STOP_SEQUENCES, ReActPlanner
 from runtime.tool_adapters.alfworld import ACT_TOOL
-from tests.evaluation.exp0001_workers import GameFactory
+from tests.evaluation.exp0001_workers import DyingGameFactory, GameFactory, HangingGameFactory
 from tests.evaluation.test_exp0001_pipeline import PILOTS, bank_of, splits  # noqa: F401 (fixture)
 
 MODEL = "Org/Model-7B"
@@ -97,7 +100,7 @@ def stub(mp, splits, script, root):  # noqa: F811
     mp.setattr(rr, "ADAPTER_OPTIONS", {"backoff_seconds": 0.002})
     # scripted games keep no disk: the workers' recycling (Python 3.11+) is not needed
     mp.setattr(cli, "_require_recycled_workers", lambda workers: None)
-    mp.setattr(cli, "_require_rehearsal_disk", lambda workers: None)
+    mp.setattr(cli, "_require_rehearsal_disk", lambda workers, out_dir=None: None)
     mp.setattr(rr, "BLIP_SECONDS", 0.005)
     path = root / "script.json"
     path.write_text(json.dumps(script), encoding="utf-8")
@@ -392,6 +395,13 @@ def test_the_rehearsal_runs_the_whole_run_and_holds_it_to_the_oracle(rehearsed, 
     assert passed["schema"] == rr.RUN_REHEARSAL_PASSED_SCHEMA and passed["kind"] == "run"
     assert passed["passed"] is True and all(passed["checks"].values())
     assert len(passed["checks"]) >= 50
+    # each family of checks is on record, the ones cmd_rehearse_run makes itself included
+    for name in (CENSUS_CHECK, "preflight", "the mirror's last snapshot holds the pass's ledger",
+                 "the server's death stopped the first pass", "the third pass finished",
+                 "both restores are on record", "the run-start record is a rehearsal's",
+                 T_REG_CHECK, E1_CHECK, "the server refused only the scripted overflow",
+                 "the figures are drawn, stamped as a rehearsal's"):
+        assert passed["checks"][name] is True, name
     assert passed["episodes"] == expected["episodes"]
     assert passed["code"] == {"commit": "a" * 40} and passed["workers"] == 2
     assert passed["model"] == {"model_id": MODEL, "revision": "b" * 40, "tokenizer": TOKENIZER}
@@ -413,6 +423,13 @@ def test_the_rehearsals_figures_are_stamped(rehearsed):
     assert {f["name"] for f in manifest["figures"] if f["status"] == "drawn"} == \
         set(OUTPUT_NAMES)
     assert REHEARSAL_STAMP in (rehearsed.out / "figures" / "captions.md").read_text()
+
+
+CENSUS_CHECK = ("every game a run may play opens through the run's factory, and the scripted "
+                "ones show the script's start texts (the census)")
+T_REG_CHECK = ("T_reg: the 40 solved tasks of the keyed draw, each with its earliest success "
+               "(E3)")
+E1_CHECK = "each seed's mining pairs: first success, first failure (E1)"
 
 
 def perturbed(expected, change):
@@ -574,6 +591,65 @@ class FactoryWithABrokenGame(GameFactory):
         return super().__call__(split, game_id)
 
 
+def shift_attempt(seed, pick):
+    """Move one L task's winning attempt in ``seed``: ``pick`` chooses the task."""
+    def change(e):
+        wins = e["lifetime_win_attempt"][seed]
+        task = pick(e, wins)
+        wins[task] = (wins[task] + 1) % 3
+    return change
+
+
+def swap_t_reg_task(e):
+    outside = next(t for t in e["lifetime_win_attempt"][11] if t not in e["t_reg"])
+    e["t_reg"] = e["t_reg"][1:] + [outside]
+
+
+@pytest.mark.parametrize("change, checks", [
+    # seed 11 holds every task's earliest success: T_reg's baseline and seed 11's pair move
+    (shift_attempt(11, lambda e, wins: e["t_reg"][0]), [E1_CHECK, T_REG_CHECK]),
+    # a later seed's win is no baseline: only its mining pair moves
+    (shift_attempt(41, lambda e, wins: next(iter(wins))), [E1_CHECK]),
+    (swap_t_reg_task, [T_REG_CHECK]),
+])
+def test_the_lifetime_checks_fail_when_the_run_differs(rehearsed, expected, change, checks):
+    assert failed(rr.lifetime_checks(rehearsed.run, perturbed(expected, change),
+                                     run_id=rr.RUN_REHEARSAL_RUN_ID)) == sorted(checks)
+
+
+def test_the_oracle_takes_a_tasks_first_success(script, splits, monkeypatch):  # noqa: F811
+    """E1 and E3 read a task's first success in attempt order."""
+    monkeypatch.setattr(rr.RunWorld, "lifetime_win", lambda self, seed, task, attempt:
+                        attempt > 0)
+    e = rr.expected_outcome(script, splits, bank_of(splits))
+    assert {a for wins in e["lifetime_win_attempt"].values() for a in wins.values()} == {1}
+
+
+@pytest.mark.parametrize("refused, overflows, ok", [
+    (1, 1, True), (2, 1, False), (0, 0, False), (1, 0, False), (0, 1, False)])
+def test_the_server_check_holds_only_the_scripted_overflow(refused, overflows, ok):
+    """A refusal the policy never answered (the protocol, the chat template,
+    the grammar, the window) fails the rehearsal."""
+    assert rr.server_checks(refused, overflows) == {
+        "the server refused only the scripted overflow": ok}
+
+
+def test_the_census_keeps_its_deadline_while_a_game_never_opens(script, monkeypatch):
+    monkeypatch.setattr(cli, "CENSUS_WAKE_SECONDS", 0.2)
+    games = [("train", g) for g in script["lifetime"]["L"][:4]]
+    started = time.monotonic()
+    with pytest.raises(cli.CliError, match="census took more than --max-hours"):
+        cli._census(HangingGameFactory(games[0][1]), games, 2,
+                    overdue=lambda: time.monotonic() > started + 5, progress_every=0)
+    assert time.monotonic() - started < 60  # its workers ended: leaving the pool waited on none
+
+
+def test_a_census_worker_that_dies_fails_the_census_with_advice(script):
+    games = [("train", g) for g in script["lifetime"]["L"][:3]]
+    with pytest.raises(cli.CliError, match="census worker process ended abruptly.*High-RAM"):
+        cli._census(DyingGameFactory(games[1][1]), games, 2, progress_every=0)
+
+
 def test_a_rehearsal_fails_at_its_first_failed_check_without_a_record(
         tmp_path, splits, script, monkeypatch, capsys):  # noqa: F811
     """A failed census (a game that does not open) fails the rehearsal
@@ -662,7 +738,10 @@ def test_a_passed_rehearsal_covers_only_its_own_machine(rehearsed, script):
     for record in ({**passed, "passed": False}, {**passed, "kind": "pilot"},
                    {**passed, "checks": {}}, {**passed, "checks": {**passed["checks"], "x": False}},
                    {k: v for k, v in passed.items() if k != "script_sha256"},
-                   {**passed, "model": "m"}, ["a", "list"], "text"):
+                   {**passed, "model": "m"}, ["a", "list"], "text",
+                   # only True passes: no truthy stand-in, no list of names
+                   {**passed, "checks": {**passed["checks"], "x": 1}},
+                   {**passed, "passed": "true"}, {**passed, "checks": ["a"]}):
         assert list(check(record, passed)) == ["record"], record
     pilot = {"schema": rehearsal.REHEARSAL_PASSED_SCHEMA, "passed": True}
     assert list(check(pilot, passed)) == ["record"]
@@ -744,6 +823,58 @@ def test_the_rehearsal_needs_disk_for_what_its_processes_keep(monkeypatch):
     cli._require_rehearsal_disk(4)  # 4 x 50 games x 33 MB + 2 GB
     with pytest.raises(cli.CliError, match="needs about 28 GB of free disk"):
         cli._require_rehearsal_disk(16)
+
+
+def test_the_rehearsal_measures_the_out_dir_where_it_is_another_disk(tmp_path, monkeypatch):
+    """The games' copies go under the temporary directory; the run's 2 GB
+    under --out-dir, which may be another disk."""
+    import tempfile
+    out = tmp_path / "out"
+    out.mkdir()
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp))
+    real_stat = os.stat
+    monkeypatch.setattr(os, "stat", lambda path, *a, **k: SimpleNamespace(st_dev=-1)
+                        if Path(path) == out else real_stat(path, *a, **k))
+    usage = shutil.disk_usage("/")
+    free = {str(temp): 26 * 2 ** 30, str(out): 1 * 2 ** 30}
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=free[str(path)]))
+    with pytest.raises(cli.CliError, match=f"needs about 2 GB of free disk under {out}"):
+        cli._require_rehearsal_disk(16, out_dir=out)
+    free[str(out)] = 3 * 2 ** 30
+    cli._require_rehearsal_disk(16, out_dir=out)  # 16 x 50 games x 33 MB under the temp dir
+    with pytest.raises(cli.CliError, match=f"needs about 28 GB of free disk under {temp}"):
+        cli._require_rehearsal_disk(16, out_dir=temp / "out")  # one disk: both, 28 GB
+
+
+@pytest.mark.parametrize("workers, version", [(1, (3, 12, 0)), (16, (3, 10, 20))])
+def test_each_command_refuses_workers_that_are_never_replaced_before_any_write(
+        tmp_path, monkeypatch, capsys, workers, version):
+    """rehearse-run, rehearsal-check --kind run and run each make the check
+    before anything is written."""
+    monkeypatch.setattr(sys, "version_info", version)
+    assert rehearse_run(tmp_path, tmp_path / "script.json", workers=workers) == 2
+    assert "replaced every 50 games" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists() and not (tmp_path / "mirror").exists()
+    assert cli.main(["rehearsal-check", "--kind", "run", "--passed", str(tmp_path / "x.json"),
+                     "--model", MODEL, "--revision", "b" * 40, "--workers", str(workers)]) == 2
+    assert "replaced every 50 games" in capsys.readouterr().err
+    stub_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_require_run_rehearsal", lambda args, prepared: None)
+    assert cli.main(run_argv(tmp_path, "--rehearsal-passed", "x", "--workers",
+                             str(workers))) == 2
+    assert "replaced every 50 games" in capsys.readouterr().err
+    assert not (tmp_path / "work").exists()
+
+
+def test_the_rehearsal_refuses_a_small_disk_before_any_write(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)  # Python 3.10
+    usage = shutil.disk_usage("/")
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=2 ** 30))
+    assert rehearse_run(tmp_path, tmp_path / "script.json", workers=16) == 2
+    assert "of free disk under" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists() and not (tmp_path / "mirror").exists()
 
 
 @pytest.mark.parametrize("workers, version", [(1, (3, 12, 0)), (16, (3, 10, 20))])

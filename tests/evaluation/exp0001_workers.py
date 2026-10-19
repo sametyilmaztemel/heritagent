@@ -17,6 +17,32 @@ class GameFactory:
         return AlfworldEnvironment(Game(game_id), game_id=game_id)
 
 
+class HangingGameFactory(GameFactory):
+    """One game never opens (a worker that never returns it)."""
+
+    def __init__(self, hangs):
+        self.hangs = hangs
+
+    def __call__(self, split, game_id):
+        if game_id == self.hangs:
+            import time
+            time.sleep(3600)
+        return super().__call__(split, game_id)
+
+
+class DyingGameFactory(GameFactory):
+    """One game ends its worker process, as an out-of-memory kill does."""
+
+    def __init__(self, dies):
+        self.dies = dies
+
+    def __call__(self, split, game_id):
+        if game_id == self.dies:
+            import os
+            os._exit(1)
+        return super().__call__(split, game_id)
+
+
 class ClosingGameFactory:
     def __call__(self, split, game_id):
         return ClosingEnvironment(Game(game_id), game_id)

@@ -489,3 +489,25 @@ def test_the_v2_disclosure_follows_the_threshold_version(clean, tmp_path):
     make_figures(run_dir=run_dir, out_dir=out)
     captions = (out / "captions.md").read_text(encoding="utf-8")
     assert "EXP-0001-CIG-M0-v1" in captions and figures.V2_DISCLOSURE not in captions
+
+
+def test_a_rehearsals_stamp_covers_no_label_or_legend():
+    """The stamp sits in a strip of its own, under the axes' labels and a
+    legend below the axes."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(6.75, 2.0), layout="constrained")
+    ax = fig.add_subplot()
+    ax.plot([0, 1], [0, 1], label="pooled over mining seeds (A: its one run)")
+    ax.plot([0, 1], [1, 0], label="one mining seed")
+    ax.set_xlabel("T_eval success difference, percentage points (95 % bootstrap interval)")
+    fig.legend(loc="outside lower center", ncols=2)
+    figures._stamp(fig)
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+    stamp = next(t for t in fig.texts if t.get_text() == figures.REHEARSAL_STAMP)
+    box = stamp.get_window_extent(renderer)
+    assert box.y0 >= 0 and box.x1 <= fig.bbox.x1
+    for other in (ax.get_tightbbox(renderer), fig.legends[0].get_window_extent(renderer)):
+        assert not box.overlaps(other)

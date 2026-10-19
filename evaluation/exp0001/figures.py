@@ -598,7 +598,7 @@ def draw_gate(Figure, rows, state):
         ax.axvline(k, color=AXIS, linewidth=0.8, zorder=1)  # every candidate
         ax.set_xlim(0, max(k, 1) * 1.6)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_title(f"seed {seed}: {k} candidates", fontsize=8, loc="left")
+        ax.set_title(f"seed {seed}: {k} candidate{'' if k == 1 else 's'}", fontsize=8, loc="left")
         ax.set_xlabel("candidates passing")
         ax.grid(axis="x")
         ax.set_axisbelow(True)
@@ -835,6 +835,24 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     path.write_text(buffer.getvalue(), encoding="utf-8")
 
 
+STAMP_STRIP_INCHES = 0.2
+
+
+def _stamp(fig) -> None:
+    """A rehearsal's stamp, in a strip added under the figure's layout: it
+    covers no axis label or legend (a legend below the axes, which sits at
+    the figure's edge, moves up by the strip)."""
+    height = fig.get_figheight()
+    fig.set_figheight(height + STAMP_STRIP_INCHES)
+    strip = STAMP_STRIP_INCHES / (height + STAMP_STRIP_INCHES)
+    fig.get_layout_engine().set(rect=(0, strip, 1, 1 - strip))
+    for legend in fig.legends:
+        if getattr(legend, "_outside_loc", None) == "lower":
+            legend.borderaxespad += STAMP_STRIP_INCHES * 72 / legend.prop.get_size_in_points()
+    fig.text(0.99, strip / 2, REHEARSAL_STAMP, ha="right", va="center", fontsize=7,
+             color="#b3261e", fontweight="bold")
+
+
 def _save(fig, out_dir: Path, name: str) -> None:
     fig.savefig(out_dir / f"{name}.pdf", metadata={"CreationDate": None, "Creator": None,
                                                     "Producer": None})
@@ -969,8 +987,7 @@ def _draw_all(data, files, out_dir: Path, Figure, matplotlib, code_commit) -> di
             _write_csv(out_dir / f"{name}.csv", rows)
             fig = draw()
             if data["rehearsal"]:
-                fig.text(0.99, 0.005, REHEARSAL_STAMP, ha="right", va="bottom", fontsize=7,
-                         color="#b3261e", fontweight="bold")
+                _stamp(fig)
             _save(fig, out_dir, name)
             drawn[name] = f"{name}.pdf"
             manifest["figures"].append({"name": name, "status": "drawn"})

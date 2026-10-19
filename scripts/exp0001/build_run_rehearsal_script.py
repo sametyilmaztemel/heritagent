@@ -172,7 +172,8 @@ def _bounded_map(pool, function, jobs, workers: int, on_result) -> None:
     """``function(*job)`` for every job, at most ``workers`` in flight, each
     result handed to ``on_result`` as it comes: a pool that replaces its
     workers stops replacing them when every job is submitted up front, on
-    Python 3.11, 3.12 and 3.14 (CPython gh-115634)."""
+    Python 3.11, 3.12 and 3.14 (CPython gh-115634), and leaving a pool waits
+    for every job submitted."""
     from concurrent.futures import FIRST_COMPLETED, wait
     queue, pending = iter(jobs), set()
 
@@ -259,14 +260,20 @@ def main(argv: list[str] | None = None) -> int:
     plans = _cached(cache / "plans.jsonl")
     todo = [g for g in unique if g not in plans
             or (plans[g]["error"] or "").startswith(LOAD_DEPENDENT)]
+    tried = []
+
+    def plan_tried(row: dict) -> None:
+        plans[(row["split"], row["game_id"])] = row
+        _append(cache / "plans.jsonl", row)
+        tried.append(1)
+        if len(tried) % 25 == 0 or len(tried) == len(todo):
+            print(f"{len(tried)}/{len(todo)} plans tried", flush=True)
+
+    # at most --workers plans in flight: an interrupt waits only for those
     with ThreadPoolExecutor(max_workers=args.workers) as threads:
-        for done, row in enumerate(threads.map(lambda g: plan_in_process(
-                str(args.data_root), *g, memory_gb=args.memory_gb, timeout=args.timeout),
-                todo), start=1):
-            plans[(row["split"], row["game_id"])] = row
-            _append(cache / "plans.jsonl", row)
-            if done % 25 == 0 or done == len(todo):
-                print(f"{done}/{len(todo)} plans tried", flush=True)
+        _bounded_map(threads, functools.partial(plan_in_process, memory_gb=args.memory_gb,
+                                                timeout=args.timeout),
+                     [(str(args.data_root), *g) for g in todo], args.workers, plan_tried)
     script = rr.choose_script(
         splits, pilot, bank, start_text=lambda split, game: texts[(split, game)]["text"],
         plan=lambda split, game: (plans.get((split, game)) or {}).get("plan"),

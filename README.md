@@ -25,7 +25,7 @@ Not done yet:
 - single-lineage inheritance and the EXP-0001 run (#13);
 - filling the pre-registration fields (#6).
 
-The ALFWorld adapter (`runtime/tool_adapters/alfworld.py`) and the EXP-0001 orchestration (`evaluation/exp0001/`, run on Colab through `notebooks/`) exist. No pilot or EXP-0001 episode has run, so nothing here supports a research claim (SPEC §34).
+The ALFWorld adapter (`runtime/tool_adapters/alfworld.py`) and the EXP-0001 orchestration (`evaluation/exp0001/`, run on Colab through `notebooks/`) exist. The calibration pilot ran on 2026-10-16 (127 episodes, see below); no EXP-0001 episode has run, so nothing here supports a research claim (SPEC §34).
 
 ## Repository rules (SPEC §31–34)
 

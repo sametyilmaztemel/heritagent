@@ -406,7 +406,10 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
     final_episodes = len(genomes) * per_genome
     lifetime_episodes = len(SEED_OFFSET) * len(world.t_mine) * 3
     return {"lifetime_wins": {s: len(w) for s, w in lifetime_wins.items()},
-            "lifetime_win_attempt": {s: dict(w) for s, w in lifetime_wins.items()},
+            # a task's first success in attempt order (E1, E3); RunWorld wins each L task in
+            # one attempt per seed
+            "lifetime_win_attempt": {s: {task: min(a for t, a in w if t == task)
+                                         for task, _ in w} for s, w in lifetime_wins.items()},
             "t_reg": t_reg, "seeds": seeds, "rounds": rounds,
             "cross_round": {"pairs": len(cross_round),
                             "disagreements": sum(a != b for a, b in cross_round)},
@@ -894,10 +897,16 @@ def fault_plan(script: Mapping, bank: Mapping, expected: Mapping) -> dict:
     if per["per_candidate"][name]["stage2"]["stop_look"] < DEATH_ROUND:
         raise RehearsalScriptError(f"{name!r} stops before look {DEATH_ROUND}")
     look = per["per_candidate"][name]["observed"][LOOKS[DEATH_ROUND - 2]:LOOKS[DEATH_ROUND - 1]]
-    # the candidate's requests on those games: a win sends its plan, a loss its short walk
-    # and a final answer
+    # the candidate's requests on those games that Faults counts, the ones whose start text
+    # tells the game apart (RunPolicy.game): a win sends its plan, a loss its short walk and
+    # a final answer
+    counts: dict[str, int] = {}
+    for sha in script["texts"].values():
+        counts[sha] = counts.get(sha, 0) + 1
+    told_apart = {key.split("/", 1)[1] for key, sha in script["texts"].items()
+                  if counts[sha] == 1}
     requests = sum(len(script["plans"][g]) if won else SHORT_LOSS_STEPS + 1
-                   for g, won, _ in look)
+                   for g, won, _ in look if g in told_apart)
     armed_after = int(requests * DEATH_ARMED_FRACTION)
     if armed_after < 10:
         raise RehearsalScriptError(f"{name!r} sends {requests} requests in R{DEATH_ROUND}: too "
@@ -1260,6 +1269,13 @@ def lifetime_checks(run_dir: Path, expected: Mapping, *, run_id: str) -> dict:
         pairs_ok &= got == want
     checks["each seed's mining pairs: first success, first failure (E1)"] = pairs_ok
     return checks
+
+
+def server_checks(refused: int, overflows: int) -> dict:
+    """The stand-in refused one request in the whole run, the scripted
+    overflow (ADR-0009 D8): a refusal the policy never answered (the run's
+    protocol, the chat template, the grammar, the window) fails it."""
+    return {"the server refused only the scripted overflow": refused == overflows == 1}
 
 
 def exp_rounds(expected: Mapping, seed: int) -> dict:
