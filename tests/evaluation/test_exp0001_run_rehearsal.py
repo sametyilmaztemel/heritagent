@@ -95,6 +95,9 @@ def stub(mp, splits, script, root):  # noqa: F811
     mp.setattr(pipeline, "Exp0001Run", functools.partial(pipeline.Exp0001Run, **hashes))
     # retries of milliseconds, and a blip they outlive
     mp.setattr(rr, "ADAPTER_OPTIONS", {"backoff_seconds": 0.002})
+    # scripted games keep no disk: the workers' recycling (Python 3.11+) is not needed
+    mp.setattr(cli, "_require_recycled_workers", lambda workers: None)
+    mp.setattr(cli, "_require_rehearsal_disk", lambda workers: None)
     mp.setattr(rr, "BLIP_SECONDS", 0.005)
     path = root / "script.json"
     path.write_text(json.dumps(script), encoding="utf-8")
@@ -351,7 +354,8 @@ def test_the_teacher_proposes_for_the_scripted_pair_and_overflows_once(script, s
 def test_the_faults_strike_where_the_plan_says(script, expected, splits):  # noqa: F811
     plan = rr.fault_plan(script, bank_of(splits), expected)
     assert plan["death_skill"] == C[1] and len(plan["death_games"]) == 48
-    assert plan["death_armed_after"] == rr.DEATH_ARMED_AFTER
+    # skill two's look-2 games: 8 wins of one command, 40 losses of four requests
+    assert plan["death_armed_after"] == (8 * 1 + 40 * 4) // 3
     now = [0.0]
     policy = rr.RunPolicy(script, splits)
     faults = rr.Faults(**{**plan, "blip_seconds": 5.0, "death_armed_after": 2},
@@ -366,12 +370,15 @@ def test_the_faults_strike_where_the_plan_says(script, expected, splits):  # noq
     assert faults.blip_hits == 2
     death_game = start_text("train", plan["death_games"][0])
     other_game = start_text("train", script["lifetime"]["L"][0])
-    # armed after two gate requests of seed 11 on the death's games, whatever their skills
+    # armed after two of skill two's requests on its look-2 games in seed 11; no other counts
     assert faults(react_payload(death_game, seed=11, skills=[skill(C[1])])) is False
-    assert faults(react_payload(other_game, seed=11, skills=[skill(C[1])])) is False
-    assert faults(react_payload(death_game, seed=23, skills=[skill(C[1])])) is False
-    assert faults(react_payload(death_game, seed=11)) is False
-    assert faults(react_payload(death_game, seed=11, skills=[skill(C[2])])) is False
+    for other in (react_payload(other_game, seed=11, skills=[skill(C[1])]),
+                  react_payload(death_game, seed=23, skills=[skill(C[1])]),
+                  react_payload(death_game, seed=11),
+                  react_payload(death_game, seed=11, skills=[skill(C[2])])):
+        assert faults(other) is False
+    assert faults(react_payload(death_game, seed=11, skills=[skill(C[1])])) is False
+    assert faults.death_game_requests == 2
     assert faults(react_payload(death_game, seed=11, skills=[skill(C[1])])) is True
     assert faults(react_payload("x")) is True  # dead until cleared
     faults.clear()
@@ -730,6 +737,15 @@ def test_run_starts_with_a_rehearsal_that_covers_it(committed, tmp_path, monkeyp
     assert len(started) == 1 and started[0]["stop_after_hours"] == 1.5
 
 
+def test_the_rehearsal_needs_disk_for_what_its_processes_keep(monkeypatch):
+    import shutil
+    usage = shutil.disk_usage("/")
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=20 * 2 ** 30))
+    cli._require_rehearsal_disk(4)  # 4 x 50 games x 33 MB + 2 GB
+    with pytest.raises(cli.CliError, match="needs about 28 GB of free disk"):
+        cli._require_rehearsal_disk(16)
+
+
 @pytest.mark.parametrize("workers, version", [(1, (3, 12, 0)), (16, (3, 10, 20))])
 def test_run_needs_workers_that_are_replaced(monkeypatch, workers, version):
     """Each opened game keeps 32 MB of disk until its process ends: a run
@@ -755,6 +771,7 @@ def test_run_refuses_a_rehearsals_identity(tmp_path, monkeypatch, capsys, identi
 def test_run_refuses_a_stand_in_server(tmp_path, monkeypatch, capsys):
     stub_run(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_require_run_rehearsal", lambda args, prepared: None)
+    monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)  # Python 3.10
     stand_in = SimpleNamespace(metadata=lambda: SimpleNamespace(
         backend_version=rehearsal.STAND_IN_VERSION))
     monkeypatch.setattr(cli, "_adapter", lambda args, prepared: stand_in)
@@ -770,6 +787,7 @@ def test_run_refuses_a_stand_in_server(tmp_path, monkeypatch, capsys):
 def test_rehearsal_check_reads_a_run_record_as_run_does(committed, tmp_path, monkeypatch,
                                                          capsys):
     monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))
+    monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)  # Python 3.10
     record = str(committed.out / rr.RUN_REHEARSAL_PASSED)
     argv = ["rehearsal-check", "--kind", "run", "--passed", record, "--model", MODEL]
     assert cli.main(argv + ["--revision", "b" * 40, "--workers", "2"]) == 0

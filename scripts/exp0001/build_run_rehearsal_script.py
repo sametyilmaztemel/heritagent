@@ -12,8 +12,11 @@ a time limit, and replays them through the run's factory: a plan counts
 only when the run's environment reports ``won``. Then
 ``run_rehearsal.choose_script`` picks the designated games (text-unique
 and won by their plan) and the script is written with its generator's
-provenance. The texts and plans are cached (``--cache``), so an interrupted
-build resumes. The same data and versions give the same bytes.
+provenance. The texts and plans are cached (``--cache``, outside the
+checkout by default), so an interrupted build resumes; a plan that hit the
+time limit or the memory cap is tried again then. The same data, versions
+and plans give the same bytes (which plans hit the time limit can depend
+on the machine's load).
 
 Usage: python scripts/exp0001/build_run_rehearsal_script.py --data-root <json_2.1.1>
            [--out evaluation/exp0001/run_rehearsal_script.json] [--cache DIR]
@@ -121,41 +124,71 @@ def winning_plan(data_root: str, split: str, game_id: str) -> dict:
     return row
 
 
+LOAD_DEPENDENT = ("the planner took more than", "the planner's process ended")
+
+
 def plan_in_process(data_root: str, split: str, game_id: str, *, memory_gb: float,
                     timeout: float) -> dict:
-    """``winning_plan`` in a fresh process under a memory cap and a time
-    limit: TextWorld's planner exhausts memory on some games (one reached
-    5.3 GB and was killed), and such a game is just never designated."""
-    import resource
+    """``winning_plan`` in a fresh process under a memory cap (set by the
+    process itself) and a time limit: TextWorld's planner exhausts memory on
+    some games (one reached 5.3 GB and was killed), and such a game is just
+    never designated."""
     import subprocess
-
-    def cap():
-        limit = int(memory_gb * 2 ** 30)
-        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
     row = {"split": split, "game_id": game_id, "plan": None, "error": None}
     try:
         done = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--data-root",
-                               data_root, "--plan-one", split, game_id], capture_output=True,
-                              text=True, timeout=timeout, preexec_fn=cap)
+                               data_root, "--memory-gb", str(memory_gb), "--plan-one", split,
+                               game_id], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         row["error"] = f"the planner took more than {timeout:.0f} s"
         return row
     lines = done.stdout.strip().splitlines()
-    if done.returncode != 0 or not lines:
+    try:
+        answer = json.loads(lines[-1]) if done.returncode == 0 and lines else None
+    except ValueError:
+        answer = None
+    if not isinstance(answer, dict) or (answer.get("split"), answer.get("game_id")) != \
+            (split, game_id):
         row["error"] = f"the planner's process ended with {done.returncode}: " \
                        f"{done.stderr.strip()[-200:]}"
         return row
-    return json.loads(lines[-1])
+    return answer
 
 
 def _cached(path: Path) -> dict:
     rows = {}
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
-            row = json.loads(line)
+            try:
+                row = json.loads(line)
+            except ValueError:  # the torn last line of an interrupted build
+                continue
             rows[(row["split"], row["game_id"])] = row
     return rows
+
+
+def _bounded_map(pool, function, jobs, workers: int, on_result) -> None:
+    """``function(*job)`` for every job, at most ``workers`` in flight, each
+    result handed to ``on_result`` as it comes: a pool that replaces its
+    workers stops replacing them when every job is submitted up front, on
+    Python 3.11, 3.12 and 3.14 (CPython gh-115634)."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+    queue, pending = iter(jobs), set()
+
+    def submit_next():
+        for job in queue:
+            pending.add(pool.submit(function, *job))
+            return
+
+    for _ in range(workers):
+        submit_next()
+    while pending:
+        done, _ = wait(pending, return_when=FIRST_COMPLETED)
+        for future in done:
+            pending.discard(future)
+            on_result(future.result())
+            submit_next()
 
 
 def _append(path: Path, row: dict) -> None:
@@ -176,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=rr.SCRIPT_PATH)
     parser.add_argument("--cache", type=Path, default=None,
                         help="where the surveyed texts and plans are kept between attempts "
-                             "(default: <out>.cache)")
+                             "(default: heritagent-run-rehearsal-script under the system's "
+                             "temporary directory, outside the checkout)")
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--memory-gb", type=float, default=4.0,
                         help="the planner's memory cap per game")
@@ -185,26 +219,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--plan-one", nargs=2, metavar=("SPLIT", "GAME_ID"),
                         help=argparse.SUPPRESS)  # the planner's own process
     args = parser.parse_args(argv)
-    if args.plan_one:
+    if args.plan_one:  # this process alone: its memory cap does not reach the builder's
+        import resource
+        limit = int(args.memory_gb * 2 ** 30)
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
         print(json.dumps(winning_plan(str(args.data_root), *args.plan_one), sort_keys=True))
         return 0
 
     splits, pilot, bank = _manifests()
     games = rr.played_games(splits, bank)
-    cache = args.cache or args.out.with_name(args.out.name + ".cache")
+    import tempfile
+    cache = args.cache or Path(tempfile.gettempdir()) / "heritagent-run-rehearsal-script"
     cache.mkdir(parents=True, exist_ok=True)
     texts = _cached(cache / "texts.jsonl")
     todo = [g for g in games if g not in texts or texts[g]["error"]]
     options = {"max_tasks_per_child": TASKS_PER_CHILD} if sys.version_info >= (3, 11) else {}
+    done = []
+
+    def text_read(row: dict) -> None:
+        texts[(row["split"], row["game_id"])] = row
+        _append(cache / "texts.jsonl", row)
+        done.append(1)
+        if len(done) % 50 == 0 or len(done) == len(todo):
+            print(f"{len(done)}/{len(todo)} start texts read", flush=True)
+
     with ProcessPoolExecutor(max_workers=args.workers,
                              mp_context=multiprocessing.get_context("spawn"), **options) as pool:
-        for done, row in enumerate(pool.map(start_text, [str(args.data_root)] * len(todo),
-                                            [g[0] for g in todo], [g[1] for g in todo]),
-                                   start=1):
-            texts[(row["split"], row["game_id"])] = row
-            _append(cache / "texts.jsonl", row)
-            if done % 50 == 0 or done == len(todo):
-                print(f"{done}/{len(todo)} start texts read", flush=True)
+        _bounded_map(pool, start_text, [(str(args.data_root), *g) for g in todo], args.workers,
+                     text_read)
     errors = [r for r in texts.values() if r["error"] or r["text"] is None]
     if errors:
         for r in errors[:10]:
@@ -215,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     counts = Counter(texts[g]["text"] for g in games)
     unique = [g for g in games if counts[texts[g]["text"]] == 1]
     plans = _cached(cache / "plans.jsonl")
-    todo = [g for g in unique if g not in plans]
+    todo = [g for g in unique if g not in plans
+            or (plans[g]["error"] or "").startswith(LOAD_DEPENDENT)]
     with ThreadPoolExecutor(max_workers=args.workers) as threads:
         for done, row in enumerate(threads.map(lambda g: plan_in_process(
                 str(args.data_root), *g, memory_gb=args.memory_gb, timeout=args.timeout),

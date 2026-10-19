@@ -57,9 +57,9 @@ ADAPTER_OPTIONS: dict = {}
 BLIP_SECONDS = 5.0
 PAUSE_AFTER_FINAL_REQUESTS = 300
 DEATH_SEED, DEATH_ROUND = 11, 2  # the server dies at the second candidate's look-2 games
-# ... once this many requests on those games have been answered: R2 has recorded episodes
-# when it dies, whatever the workers' timing (R2 sends some 600-800 on them)
-DEATH_ARMED_AFTER = 200
+# ... once a third of that candidate's own requests on those games have come in: R2 has
+# recorded episodes when it dies, whatever the workers' timing
+DEATH_ARMED_FRACTION = Fraction(1, 3)
 # the protocol's rules, written out from ADR-0012 D4-D6 and ADR-0002 (not imported
 # from inheritance/: the oracle must not share the code it checks)
 LOOKS = (48, 96, 144, 192)
@@ -406,6 +406,7 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
     final_episodes = len(genomes) * per_genome
     lifetime_episodes = len(SEED_OFFSET) * len(world.t_mine) * 3
     return {"lifetime_wins": {s: len(w) for s, w in lifetime_wins.items()},
+            "lifetime_win_attempt": {s: dict(w) for s, w in lifetime_wins.items()},
             "t_reg": t_reg, "seeds": seeds, "rounds": rounds,
             "cross_round": {"pairs": len(cross_round),
                             "disagreements": sum(a != b for a, b in cross_round)},
@@ -892,11 +893,18 @@ def fault_plan(script: Mapping, bank: Mapping, expected: Mapping) -> dict:
     name = per["candidates"][1]
     if per["per_candidate"][name]["stage2"]["stop_look"] < DEATH_ROUND:
         raise RehearsalScriptError(f"{name!r} stops before look {DEATH_ROUND}")
-    allocation = interleave(bank, per["per_candidate"][name]["families"], LOOKS[-1])
+    look = per["per_candidate"][name]["observed"][LOOKS[DEATH_ROUND - 2]:LOOKS[DEATH_ROUND - 1]]
+    # the candidate's requests on those games: a win sends its plan, a loss its short walk
+    # and a final answer
+    requests = sum(len(script["plans"][g]) if won else SHORT_LOSS_STEPS + 1
+                   for g, won, _ in look)
+    armed_after = int(requests * DEATH_ARMED_FRACTION)
+    if armed_after < 10:
+        raise RehearsalScriptError(f"{name!r} sends {requests} requests in R{DEATH_ROUND}: too "
+                                   f"few to arm the death after a share of them")
     return {"blip_seed": attempt_seed(DEATH_SEED, script["lifetime"]["L"][3], 0),
             "blip_seconds": BLIP_SECONDS, "death_skill": name,
-            "death_games": allocation[LOOKS[DEATH_ROUND - 2]:LOOKS[DEATH_ROUND - 1]],
-            "death_armed_after": DEATH_ARMED_AFTER}
+            "death_games": [g for g, _, _ in look], "death_armed_after": armed_after}
 
 
 def blip_key(script: Mapping) -> str:
@@ -909,8 +917,8 @@ class Faults:
     for ``blip_seconds`` from the first lifetime request of ``blip_seed``,
     which the adapter's retries absorb; ``blip_hits`` counts the requests it
     refused) and a death (503 from the first gate request of ``death_skill``
-    on a ``death_games`` game, once ``death_armed_after`` gate requests of
-    the seed on those games have come in, until cleared)."""
+    on a ``death_games`` game after ``death_armed_after`` such requests have
+    come in, until cleared)."""
 
     def __init__(self, *, blip_seed: int | None, blip_seconds: float, death_skill: str | None,
                  death_games: Iterable[str], game_of: Callable[[Mapping], str | None],
@@ -938,13 +946,13 @@ class Faults:
                     self._clock() - self.blip_started < self.blip_seconds:
                 self.blip_hits += 1
                 return True
+            messages = payload.get("messages") or [{}]
             if self.death_skill is not None and not self.died and \
                     payload.get("temperature") == 0.0 and payload.get("seed") == self.death_seed \
+                    and prompt_skills(messages[0].get("content", "")) == [self.death_skill] \
                     and self._game_of(payload) in self.death_games:
                 self.death_game_requests += 1
-                messages = payload.get("messages") or [{}]
-                if self.death_game_requests > self.death_armed_after and \
-                        prompt_skills(messages[0].get("content", "")) == [self.death_skill]:
+                if self.death_game_requests > self.death_armed_after:
                     self.dead = self.died = True
                     return True
             return False
@@ -1217,6 +1225,41 @@ def _sensitivity_ok(gate: Mapping, names: Mapping, exp: Mapping) -> bool:
                     want["promote"]
         ok &= set(grid["cells"]) == set(exp["sensitivity_cells"])
     return ok and set(gate.get("sensitivity") or {}) == set(gate["verdicts"])
+
+
+def _trajectory(run_id: str, key: str) -> str:
+    """An episode's trajectory id from its ledger key (episodes.trajectory_id_for's rule)."""
+    return "T-" + hashlib.sha256(f"{run_id}|{key}".encode("utf-8")).hexdigest()[:12]
+
+
+def lifetime_checks(run_dir: Path, expected: Mapping, *, run_id: str) -> dict:
+    """ADR-0007 E3 and E1 against what the run froze: T_reg is the 40 solved
+    tasks with the smallest keyed hash, each with its earliest success (seed
+    order, then attempt order) as baseline; each seed's mining pairs are its
+    tasks' first success and first failure in attempt order."""
+    t_reg = json.loads((run_dir / "t_reg.json").read_text())
+    win = expected["lifetime_win_attempt"]
+    seeds = sorted(win)
+    first = {task: next((s, win[s][task]) for s in seeds if task in win[s])
+             for task in expected["t_reg"]}
+    baselines = {t["task_id"]: (t["baseline_seed"], t["baseline_attempt"], t["baseline_key"])
+                 for t in t_reg["tasks"]}
+    checks = {"T_reg: the 40 solved tasks of the keyed draw, each with its earliest success "
+              "(E3)": t_reg["eligible"] == len({t for w in win.values() for t in w})
+              and baselines == {task: (s, a, f"lifetime/{s}/{task}/{a}")
+                                for task, (s, a) in first.items()}}
+    pairs_ok = True
+    for s in seeds:
+        records = json.loads((run_dir / f"seed-{s}" / "candidates.json").read_text())[
+            "mining_records"]
+        got = sorted((tuple(r["success_trajectory_ids"]), tuple(r["failure_trajectory_ids"]))
+                     for r in records)
+        want = sorted(((_trajectory(run_id, f"lifetime/{s}/{task}/{a}"),),
+                       (_trajectory(run_id, f"lifetime/{s}/{task}/{min(set(range(3)) - {a})}"),))
+                      for task, a in win[s].items())
+        pairs_ok &= got == want
+    checks["each seed's mining pairs: first success, first failure (E1)"] = pairs_ok
+    return checks
 
 
 def exp_rounds(expected: Mapping, seed: int) -> dict:

@@ -830,6 +830,7 @@ def _run_rehearsal_check(args) -> int:
     will use)."""
     if args.revision is None or args.workers is None:
         raise CliError("--kind run needs --revision and --workers: run checks both")
+    _require_recycled_workers(args.workers)
     commit, dirty = git_state(Path(args.repo))
     if dirty:
         raise CliError(f"the checkout at {args.repo} has changes; a rehearsal covers a clean commit")
@@ -890,6 +891,8 @@ def cmd_rehearse_run(args) -> int:
     out = Path(args.out_dir)
     _empty_dir(out, "directory")
     _empty_dir(args.mirror_dir, "mirror directory")
+    _require_recycled_workers(args.workers)  # as `run` needs, before hours of CPU
+    _require_rehearsal_disk(args.workers)
     try:  # the figures come last: a missing matplotlib fails now, not hours later
         import matplotlib  # noqa: F401
     except ImportError:
@@ -933,7 +936,8 @@ def cmd_rehearse_run(args) -> int:
 
     factory = AlfworldEnvFactory(args.data_root, splits, extra_games=bank_content_index(bank))
     census = rr.census_games(splits, bank)
-    failures = rr.census_failures(census, _census(factory, census, args.workers), script)
+    failures = rr.census_failures(census, _census(factory, census, args.workers,
+                                                  overdue=overdue), script)
     checks["every game a run may play opens through the run's factory, and the scripted "
            "ones show the script's start texts (the census)"] = not failures
     _out(f"[rehearsal] census: {len(census)} games opened, {len(failures)} failed"
@@ -977,7 +981,13 @@ def cmd_rehearse_run(args) -> int:
             shutil.rmtree(local)  # the rehearsal's own directory: the next pass restores it
 
         def one_pass(pause=None) -> int:
-            code = run(pause_when=lambda: overdue() or (pause is not None and pause()))
+            from concurrent.futures.process import BrokenProcessPool
+            try:
+                code = run(pause_when=lambda: overdue() or (pause is not None and pause()))
+            except BrokenProcessPool as exc:
+                raise CliError(f"a worker process of the run ended abruptly ({exc}); out of "
+                               f"memory or disk? A High-RAM runtime, or fewer workers, then a "
+                               f"rehearsal of that worker count") from None
             if code == 130:
                 raise KeyboardInterrupt  # stopped: a rehearsal never resumes (main says so)
             if overdue() and not (local / "report.json").exists():
@@ -1018,6 +1028,7 @@ def cmd_rehearse_run(args) -> int:
         run_start["run_id"] == rr.RUN_REHEARSAL_RUN_ID
         and run_start["weights"]["sha256"] == rr.SENTINEL_WEIGHTS_SHA256
         and run_start["model"]["backend_version"] == rehearsal.STAND_IN_VERSION)
+    checks.update(rr.lifetime_checks(local, expected, run_id=rr.RUN_REHEARSAL_RUN_ID))
     checks.update(rr.gate_checks(local, expected, run_id=rr.RUN_REHEARSAL_RUN_ID,
                                  g0_genome_id=run_start["g0"]["genome_id"]))
     checks.update(rr.ledger_checks(lines, expected,
@@ -1025,6 +1036,9 @@ def cmd_rehearse_run(args) -> int:
                                    caps=run_start["protocol"]["caps"]))
     checks.update(rr.report_checks(report, expected, lines))
     checks.update(rr.policy_checks(policy, expected, lines))
+    # the server refused one request in the whole run: the scripted overflow (ADR-0009 D8)
+    checks["the server refused only the scripted overflow"] = \
+        server.refused == policy.overflows == 1
     checks["the figures are drawn, stamped as a rehearsal's"] = _rehearsal_figures(
         local, out / "figures", commit)
     record = rr.passed_record(
@@ -1034,7 +1048,8 @@ def cmd_rehearse_run(args) -> int:
         workers=args.workers, expected=expected,
         measures={"census_games": len(census), "census_failures": failures,
                   "blip_hits": faults.blip_hits,
-                  "stand_in_requests": server.requests, "requests_by_kind": dict(policy.kinds),
+                  "stand_in_requests": server.requests, "stand_in_refused": server.refused,
+                  "requests_by_kind": dict(policy.kinds),
                   "teacher_schema_compiled_with_xgrammar": server.schemas_compiled > 0,
                   "episodes": ledger["episodes"], "model_calls": ledger["model_calls"],
                   "aborted_attempts": ledger["aborted_attempts"]},
@@ -1048,27 +1063,51 @@ def cmd_rehearse_run(args) -> int:
     return 0
 
 
-def _census(factory, games: list[tuple[str, str]], workers: int) -> list[tuple]:
+def _census(factory, games: list[tuple[str, str]], workers: int, *,
+            overdue=lambda: False, progress_every: int = 100) -> list[tuple]:
     """Open each game through the run's factory, in at most one worker
-    process per CPU (an open is CPU-bound), each opening a bounded number
-    of games (TextWorld keeps 32 MB of disk per opened game until its
-    process ends); returns ``run_rehearsal.open_game``'s result per game."""
+    process per CPU (an open is CPU-bound), each replaced after a bounded
+    number of games (TextWorld keeps 32 MB of disk per opened game until its
+    process ends); returns ``run_rehearsal.open_game``'s result per game.
+    At most one game per process is in flight: with every game submitted up
+    front, a pool that replaces its workers stops replacing them on Python
+    3.11, 3.12 and 3.14 (CPython gh-115634) and never returns."""
+    import multiprocessing
     import os
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
     from evaluation.exp0001 import run_rehearsal as rr
-    jobs = ([factory] * len(games), [g[0] for g in games], [g[1] for g in games])
-    workers = min(workers, os.cpu_count() or 1)
-    if workers == 1 or not games:
-        errors = list(map(rr.open_game, *jobs))
-    else:
-        import multiprocessing
-        from concurrent.futures import ProcessPoolExecutor
-        options = {"max_tasks_per_child": rr.CENSUS_TASKS_PER_CHILD} \
-            if sys.version_info >= (3, 11) else {}
-        with ProcessPoolExecutor(max_workers=min(workers, len(games)),
-                                 mp_context=multiprocessing.get_context("spawn"),
-                                 **options) as pool:
-            errors = list(pool.map(rr.open_game, *jobs))  # one game a task
-    return errors
+    workers = max(1, min(workers, os.cpu_count() or 1))
+    options = {"max_tasks_per_child": rr.CENSUS_TASKS_PER_CHILD} \
+        if sys.version_info >= (3, 11) else {}
+    results: list = [None] * len(games)
+    queue = iter(enumerate(games))
+    with ProcessPoolExecutor(max_workers=workers,
+                             mp_context=multiprocessing.get_context("spawn"),
+                             **options) as pool:
+        pending = {}
+
+        def submit_next() -> None:
+            for index, (split, game) in queue:
+                pending[pool.submit(rr.open_game, factory, split, game)] = index
+                return
+
+        for _ in range(workers):
+            submit_next()
+        done_count = 0
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                results[pending.pop(future)] = future.result()
+                done_count += 1
+                if progress_every and done_count % progress_every == 0:
+                    _out(f"[rehearsal] census: {done_count}/{len(games)} games opened")
+                if overdue():
+                    for other in pending:
+                        other.cancel()
+                    raise CliError("the run rehearsal's census took more than --max-hours")
+                submit_next()
+    return results
 
 
 def _rehearsal_figures(run_dir: Path, out_dir: Path, commit: str) -> bool:
@@ -1160,6 +1199,27 @@ def _require_recycled_workers(workers: int) -> None:
                        f"games (--workers 2 or more, Python 3.11 or later; here --workers "
                        f"{workers}, Python {sys.version.split()[0]}): each opened game keeps "
                        f"32 MB of disk until its process ends")
+
+
+GAME_DISK_BYTES = 33 * 2 ** 20  # what an opened game keeps until its process ends (measured)
+
+
+def _require_rehearsal_disk(workers: int) -> None:
+    """Room for what the rehearsal's processes keep (TextWorld's library copy
+    per opened game, until a process is replaced) and 2 GB for the run, its
+    trajectories and the mirror's staging: a full disk would show hours in."""
+    import os
+    import shutil
+    import tempfile
+    from evaluation.exp0001 import run_rehearsal as rr
+    from evaluation.exp0001.episodes import WORKER_TASKS
+    census = min(workers, os.cpu_count() or 1) * rr.CENSUS_TASKS_PER_CHILD
+    need = (max(workers * WORKER_TASKS, census)) * GAME_DISK_BYTES + 2 * 2 ** 30
+    free = shutil.disk_usage(tempfile.gettempdir()).free
+    if free < need:
+        raise CliError(f"the run rehearsal with {workers} workers needs about "
+                       f"{need / 2 ** 30:.0f} GB of free disk under {tempfile.gettempdir()}; "
+                       f"{free / 2 ** 30:.0f} GB are free")
 
 
 def _require_run_rehearsal(args, prepared: dict) -> None:
