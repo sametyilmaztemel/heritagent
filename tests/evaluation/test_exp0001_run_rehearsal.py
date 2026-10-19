@@ -717,6 +717,17 @@ def test_the_rehearsal_refuses_a_directory_that_holds_anything(tmp_path, splits,
     assert "is not empty" in capsys.readouterr().err
 
 
+def test_the_rehearsal_refuses_a_matplotlib_that_does_not_load(tmp_path, splits, script,  # noqa: F811
+                                                              monkeypatch, capsys):
+    """The figures come last: a matplotlib that does not load stops the
+    rehearsal at its start, with what to install, not hours later."""
+    path = stub(monkeypatch, splits, script, tmp_path)
+    monkeypatch.setitem(sys.modules, "matplotlib", None)
+    assert rehearse_run(tmp_path, path) == 2
+    assert "pip install -e .[figures]" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
 def test_the_rehearsal_refuses_a_changed_checkout_and_a_foreign_script(
         tmp_path, splits, script, monkeypatch, capsys):  # noqa: F811
     path = stub(monkeypatch, splits, script, tmp_path)

@@ -70,7 +70,8 @@ def blocks(text):
 def test_every_locked_package_is_held_by_its_hashes_on_the_serving_builds_indexes():
     found = blocks(LOCK)
     assert len(found) == len(LOCKED) > 100
-    # closed: every package a block names as needing it (`# via`) has a block of its own
+    # every package a block names as needing it (`# via`) is locked too; that every locked
+    # package's own requirements are installed, `uv pip check` confirms in the install cell
     for match in found:
         names = re.findall(r"^    #(?: via |   )([A-Za-z0-9][A-Za-z0-9._-]*)$", match["via"],
                            re.MULTILINE)
@@ -185,6 +186,19 @@ def test_env_check_passes_only_in_the_locked_environment(tmp_path, monkeypatch, 
     assert "not the locked environment" in err and '"torch"' in err and "2.13.0+cu129" in err
     assert cli.main(["env-check", "--repo", str(tmp_path)]) == 2  # no environment files
     assert "cannot be read" in capsys.readouterr().err
+
+
+def test_the_installed_versions_list_a_name_on_every_path_entry_in_order(tmp_path, monkeypatch):
+    import importlib
+    for entry, version in (("first", "1.0"), ("second", "2.0")):
+        dist = tmp_path / entry / f"heritagent_probe-{version}.dist-info"
+        dist.mkdir(parents=True)
+        (dist / "METADATA").write_text(f"Metadata-Version: 2.1\nName: Heritagent.Probe\n"
+                                       f"Version: {version}\n")
+    monkeypatch.syspath_prepend(str(tmp_path / "second"))
+    monkeypatch.syspath_prepend(str(tmp_path / "first"))
+    importlib.invalidate_caches()
+    assert environment.installed_versions()["heritagent-probe"] == ["1.0", "2.0"]
 
 
 @pytest.mark.parametrize("line, pin", [

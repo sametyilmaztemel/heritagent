@@ -13,6 +13,7 @@ import sys
 import textwrap
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,7 +104,7 @@ def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
     required = first(cells, "if not os.path.exists(PASSED):")
     covers = first(cells, '"rehearsal-check"')
     model = first(cells, '"prepare-model"')
-    assert first(cells, "def install():") > required < covers < model < first(cells, '"serve"')
+    assert first(cells, "def install():") > required < covers < model < first(cells, 'cli("serve"')
     # before the guard, at most the repository itself is installed (seconds), so
     # the run notebook can read a resumed run's commit
     for source in cells[:required]:
@@ -351,6 +352,77 @@ def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
         assert "fetch-data" in text and "verify-data" in text
 
 
+def install_cell(name, venv, *, running=(), servers=()):
+    """The install cell's own functions against a temporary VENV, its subprocess calls recorded."""
+    source = next(s for s in code_cells(name) if "def install():" in s)
+    body = [node for node in ast.parse(source).body
+            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                    and getattr(node.value.func, "id", None) == "install")
+            and not (isinstance(node, ast.FunctionDef) and node.name == "cli")]
+    namespace = {"REPO": str(NOTEBOOKS.parent), "running_commands": lambda: list(running)}
+    exec(compile(ast.Module(body, []), "<install cell>", "exec"), namespace)
+    calls = []
+
+    def run(argv, **kwargs):
+        argv = [str(arg) for arg in argv]
+        calls.append((argv, kwargs.get("env")))
+        if "venv" in argv:  # what uv makes
+            (venv / "bin").mkdir(parents=True, exist_ok=True)
+            (venv / "bin" / "python").write_text("")
+            (venv / "pyvenv.cfg").write_text(f"home = /x\nversion_info = {argv[argv.index('--python') + 1]}\n")
+        return SimpleNamespace(returncode=0)
+
+    namespace.update(subprocess=SimpleNamespace(run=run), VENV=str(venv), PY=f"{venv}/bin/python",
+                     vllm_servers=lambda: list(servers))
+    return namespace, calls
+
+
+def steps(calls):
+    def kind(argv):
+        if any(arg.endswith("/uv-requirements.txt") for arg in argv):
+            return "uv"
+        for word, step in (("venv", "venv"), ("sync", "sync"), ("-e", "editable"),
+                           ("check", "check")):
+            if word in argv:
+                return step
+        return " ".join(argv)
+    return [kind(argv) for argv, _ in calls]
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_install_cell_makes_the_environment_once_and_never_under_a_running_command(
+        name, tmp_path):
+    venv = tmp_path / "venv"
+    cell, calls = install_cell(name, venv)
+    cell["install"]()  # a fresh runtime
+    assert steps(calls) == ["uv", "venv", "sync", "editable", "check"]
+    assert all(env["MPLBACKEND"] == "Agg" and "PYTHONPATH" not in env
+               for argv, env in calls[1:])  # the builds see none of the kernel's settings
+    stamp = (venv / "heritagent-environment.sha256").read_text()
+    calls.clear()
+    cell["install"]()  # a kernel restart: the environment stays
+    assert steps(calls) == ["uv", "sync", "editable", "check"]
+    (venv / "pyvenv.cfg").write_text("version_info = 3.12.0\n")
+    calls.clear()
+    cell["install"]()  # another Python: made again
+    assert steps(calls) == ["uv", "venv", "sync", "editable", "check"]
+    assert (venv / "heritagent-environment.sha256").read_text() == stamp
+    # a command still running: nothing is touched
+    cell, calls = install_cell(name, venv, running=[123])
+    with pytest.raises(RuntimeError, match="123"):
+        cell["install"]()
+    assert calls == []
+    # a server from the same environment is reused; from another, the environment stays
+    cell, calls = install_cell(name, venv, servers=[456])
+    cell["install"]()
+    assert steps(calls) == ["uv", "sync", "editable", "check"]
+    (venv / "heritagent-environment.sha256").write_text("an older environment\n")
+    cell, calls = install_cell(name, venv, servers=[456])
+    with pytest.raises(RuntimeError, match="456"):
+        cell["install"]()
+    assert calls == []
+
+
 @pytest.mark.parametrize("name", ALL)
 def test_the_notebooks_install_the_locked_environment_and_check_it_first(name):
     """Owner decision 2026-10-19: Colab's own Python and packages play no
@@ -452,6 +524,14 @@ def test_the_figures_notebook_reads_the_mirror_on_a_cpu_runtime():
     helper = next(s for s in rehearsal if "def cli(" in s)
     mine = cells[first(cells, "def cli(")]
     assert mine[mine.index("def cli("):] == helper[helper.index("def cli("):]
+    # the helper's names, defined for Colab's own Python: the kernel's environment as it is
+    namespace = {"os": os, "sys": sys}
+    tree = ast.parse(mine)
+    exec(compile(ast.Module([node for node in tree.body if isinstance(node, ast.Assign) or (
+        isinstance(node, ast.FunctionDef) and node.name == "command_environment")], []),
+        "<install cell>", "exec"), namespace)
+    assert namespace["PY"] == sys.executable
+    assert namespace["command_environment"]() == dict(os.environ)
     assert [line.strip() for line in cells[-1].splitlines() if not line.startswith("#")] == \
         ["if AUTO_RELEASE:", "release()"]
     notebook = json.loads((NOTEBOOKS / FIGURES).read_text(encoding="utf-8"))

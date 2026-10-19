@@ -2,9 +2,10 @@
 # the pilot and their CPU rehearsals install, on every runtime the same.
 # scripts/exp0001/lock_colab_environment.sh resolves it into
 # requirements.lock (every dependency, by version and hash); the notebooks
-# install the lock with uv (uv-version) into a virtual environment of the
-# Python in python-version, and `cli env-check` holds the installed
-# environment to it. These are the versions the calibration pilot ran with
+# install the lock with uv (uv-requirements.txt, by hash) into a virtual
+# environment of the Python in python-version, building its two source
+# packages with the tools in build-constraints.txt, and `cli env-check`
+# holds the installed environment to it. These are the versions the calibration pilot ran with
 # (ADR-0008 D4, ADR-0011); the package itself is installed on top, from the
 # checkout, without dependencies.
 vllm==0.29.0+cu129
