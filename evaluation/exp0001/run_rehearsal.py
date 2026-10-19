@@ -514,7 +514,10 @@ def validate_script(script: Mapping, splits: Mapping, pilot: Mapping, bank: Mapp
 
 
 # -- the census ----------------------------------------------------------------------------
-CENSUS_TASKS_PER_CHILD = 25  # a worker process opens this many games, then a fresh one starts
+# a census process opens this many games, then a fresh one starts: TextWorld 1.7.0 keeps a
+# 32 MB copy of fast-downward's library per opened game until its process ends (deleted,
+# still mapped; unloading it crashes the process at exit), as the run's workers do (50)
+CENSUS_TASKS_PER_CHILD = 25
 
 
 def census_games(splits: Mapping, bank: Mapping, script: Mapping) -> list[tuple[str, str]]:

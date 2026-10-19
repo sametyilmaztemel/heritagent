@@ -29,7 +29,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-TASKS_PER_CHILD = 20  # an open leaves files behind in its process (libdownward)
+# TextWorld keeps a 32 MB copy of fast-downward's library per opened game until its
+# process ends (unloading it crashes the process at exit): a worker surveys this many
+# games (two opens each), then a fresh one starts
+TASKS_PER_CHILD = 10
 
 
 @functools.lru_cache(maxsize=None)
@@ -50,11 +53,7 @@ def planned_commands(gamefile: str, max_steps: int) -> list[str]:
     from alfworld.agents.environment.alfred_tw_env import AlfredDemangler, AlfredInfos
     from textworld.envs.pddl import textgen
 
-    from runtime.tool_adapters.alfworld import (
-        patch_textworld_eval,
-        planner_environments,
-        release_planner,
-    )
+    from runtime.tool_adapters.alfworld import patch_textworld_eval
 
     patch_textworld_eval(textgen, textworld.__version__)
     request = textworld.EnvInfos(won=True, admissible_commands=True, policy_commands=True,
@@ -62,13 +61,11 @@ def planned_commands(gamefile: str, max_steps: int) -> list[str]:
     env = textworld.gym.make(textworld.gym.register_game(
         gamefile, request, max_episode_steps=max_steps,
         wrappers=[AlfredDemangler(shuffle=False), AlfredInfos]))
-    planners = planner_environments(env)
     try:
         _, infos = env.reset()
         return list(infos.get("policy_commands") or [])
     finally:
         env.close()
-        release_planner(planners)  # as the run's environment does on close
 
 
 @functools.lru_cache(maxsize=None)
@@ -123,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     with ProcessPoolExecutor(max_workers=args.workers,
                              mp_context=multiprocessing.get_context("spawn"), **options) as pool:
         rows = {}
-        for done, row in enumerate(pool.map(survey, *jobs, chunksize=2), start=1):
+        for done, row in enumerate(pool.map(survey, *jobs), start=1):
             rows[(row["split"], row["game_id"])] = row
             if done % 50 == 0 or done == len(games):
                 print(f"{done}/{len(games)} games surveyed", flush=True)

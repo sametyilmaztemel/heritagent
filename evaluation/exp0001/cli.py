@@ -1001,8 +1001,8 @@ def cmd_rehearse_run(args) -> int:
 def _census(factory, games: list[tuple[str, str]], workers: int) -> list[str]:
     """Open each game through the run's factory, in at most one worker
     process per CPU (an open is CPU-bound), each opening a bounded number
-    of games (an open leaves files behind in its process); returns what
-    failed."""
+    of games (TextWorld keeps 32 MB of disk per opened game until its
+    process ends); returns what failed."""
     import os
     from evaluation.exp0001 import run_rehearsal as rr
     jobs = ([factory] * len(games), [g[0] for g in games], [g[1] for g in games])
@@ -1017,7 +1017,7 @@ def _census(factory, games: list[tuple[str, str]], workers: int) -> list[str]:
         with ProcessPoolExecutor(max_workers=min(workers, len(games)),
                                  mp_context=multiprocessing.get_context("spawn"),
                                  **options) as pool:
-            errors = list(pool.map(rr.open_game, *jobs, chunksize=4))
+            errors = list(pool.map(rr.open_game, *jobs))  # one game a task
     return [f"{split}/{game}: {error}" for (split, game), error in zip(games, errors) if error]
 
 
