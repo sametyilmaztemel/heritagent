@@ -111,6 +111,12 @@ def test_an_edited_bank_fails_its_own_hash(committed, tamper, message):
         verify_benefit_bank(bank, splits, pilot)
 
 
+def _alias(bank, separator):
+    """A look game spelled with another path separator, in hash order."""
+    game = bank["families"]["look_at_obj_in_light"][0]
+    _swap_in(bank, dict(game, game_id=game["game_id"].replace("/", separator)))
+
+
 def _relabel(bank):
     """A train game of another family, labelled and filed as look."""
     game = dict(bank["families"]["pick_two_obj_and_place"][0], family="look_at_obj_in_light")
@@ -136,7 +142,26 @@ def _cross_family_duplicate(bank):
      "malformed game record"),
     (lambda b, s, p: b["available_by_family"].__setitem__("look_at_obj_in_light", 9999),
      "available_by_family"),
+    (lambda b, s, p: b["available_by_family"].__setitem__("look_at_obj_in_light", 277.0),
+     "available_by_family"),
+    # one game, two spellings: a T_eval or pool game must not hide behind an alias
+    (lambda b, s, p: _swap_in(b, dict(s["pools"]["t_eval"]["games"][0],
+                                      game_id=s["pools"]["t_eval"]["games"][0]["game_id"] + "/")),
+     "canonical"),
+    (lambda b, s, p: _swap_in(b, dict(s["pools"]["t_mine"]["games"][0],
+                                      game_id=s["pools"]["t_mine"]["games"][0]["game_id"]
+                                      .replace("/", "//"))), "canonical"),
+    (lambda b, s, p: _alias(b, "/./"), "canonical"),
+    (lambda b, s, p: _alias(b, "/x/../"), "canonical"),
+    (lambda b, s, p: b["families"]["look_at_obj_in_light"][0].__setitem__(
+        "content_sha256", "g" * 64), "malformed game record"),
+    (lambda b, s, p: b["families"]["look_at_obj_in_light"][0].__setitem__(
+        "content_sha256", "a" * 63), "malformed game record"),
     (lambda b, s, p: b.__setitem__("experiment", "EXP-0002"), "experiment"),
+    (lambda b, s, p: b.__setitem__("schema", "heritagent/other/0.1"), "schema"),
+    (lambda b, s, p: b.__setitem__("decision", "ADR-0099 D1"), "decision"),
+    (lambda b, s, p: b.__setitem__("status", "edited"), "status"),
+    (lambda b, s, p: b["selection"].__setitem__("extra", 1), "selection"),
     (lambda b, s, p: b["selection"].__setitem__("per_family", 192.0), "selection"),
     (lambda b, s, p: b["selection"].__setitem__("seed", False), "selection"),
     (lambda b, s, p: b["selection"].__setitem__("rule", "any"), "selection"),
@@ -147,6 +172,20 @@ def test_a_rehashed_wrong_committed_bank_fails_closed(committed, tamper, message
     tamper(bank, splits, pilot)
     with pytest.raises(SplitError, match=message):
         verify_benefit_bank(_rehash(bank), splits, pilot)
+
+
+def test_an_edited_inner_hash_fails_even_with_the_outer_hash_recomputed(committed):
+    bank, splits, pilot = (copy.deepcopy(x) for x in committed)
+    bank["games_sha256"] = "0" * 64
+    bank["bank_sha256"] = _sha256({k: v for k, v in bank.items() if k != "bank_sha256"})
+    with pytest.raises(SplitError, match="games do not match"):
+        verify_benefit_bank(bank, splits, pilot)
+
+
+def test_no_family_name_contains_a_hyphen():
+    """A game id names its family as the prefix before the first '-', so a
+    game can belong to one family only (the verifier relies on it)."""
+    assert not any("-" in family for family in ALFWORLD_TASK_TYPES)
 
 
 def test_a_bank_against_tampered_split_or_pilot_manifests_fails_closed(committed):
@@ -242,8 +281,63 @@ def test_the_bank_needs_the_pool_games_as_the_manifests_record_them(synthetic):
         build_benefit_bank(train, edited, pilot)
 
 
+def _rehashed_pilot(pilot, **changes):
+    edited = copy.deepcopy(pilot)
+    edited["games"][0].update(changes)
+    edited["games_sha256"] = _sha256(edited["games"])
+    edited["pilot_sha256"] = _sha256({k: v for k, v in edited.items() if k != "pilot_sha256"})
+    return edited
+
+
+@pytest.mark.parametrize("changes", [{"content_sha256": "0" * 64},
+                                     {"family": "pick_two_obj_and_place"}])
+def test_the_pilot_games_must_be_in_the_collection_as_recorded(synthetic, changes):
+    train, splits, pilot = synthetic
+    with pytest.raises(SplitError, match="not in the train collection as the split"):
+        build_benefit_bank(train, splits, _rehashed_pilot(pilot, **changes))
+
+
+def test_the_pool_games_must_carry_their_family(synthetic):
+    train, splits, _ = synthetic
+    edited = copy.deepcopy(splits)
+    game = edited["pools"]["t_mine"]["games"][0]
+    game["family"] = next(f for f in ALFWORLD_TASK_TYPES if f != game["family"])
+    edited["pools"]["t_mine"]["sha256"] = _sha256(edited["pools"]["t_mine"]["games"])
+    edited["manifest_sha256"] = _sha256({k: v for k, v in edited.items()
+                                         if k != "manifest_sha256"})
+    with pytest.raises(SplitError, match="not in the train collection as the split"):
+        build_benefit_bank(train, edited, build_pilot_manifest(train, edited))
+
+
+def test_main_writes_only_a_bank_that_verifies(synthetic, tmp_path, monkeypatch):
+    from evaluation.exp0001 import benefit_bank
+    train, splits, pilot = synthetic
+    (tmp_path / "splits.json").write_text(json.dumps(splits), encoding="utf-8")
+    (tmp_path / "pilot.json").write_text(json.dumps(pilot), encoding="utf-8")
+    monkeypatch.setattr(benefit_bank, "collect_games", lambda root, source: train)
+    out = tmp_path / "bank.json"
+    argv = ["--data-root", str(tmp_path), "--splits", str(tmp_path / "splits.json"),
+            "--pilot", str(tmp_path / "pilot.json"), "--out", str(out)]
+    assert benefit_bank.main(argv) == 0
+    verify_benefit_bank(json.loads(out.read_text(encoding="utf-8")), splits, pilot)
+
+    def refuse(*args):
+        raise SplitError("refused")
+    out.unlink()
+    monkeypatch.setattr(benefit_bank, "verify_benefit_bank", refuse)
+    with pytest.raises(SplitError, match="refused"):
+        benefit_bank.main(argv)
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("tamper, message", [
     (lambda b, s, p: _swap_in(b, s["pools"]["t_mine"]["games"][0]), "T_eval included"),
+    (lambda b, s, p: _swap_in(b, dict(b["families"]["look_at_obj_in_light"][0],
+                                      game_id="look_at_obj_in_light-movable-x/trial_T0001")),
+     "loader skips"),
+    (lambda b, s, p: _swap_in(b, dict(b["families"]["look_at_obj_in_light"][0],
+                                      game_id="look_at_obj_in_light-Sliced-x/trial_T0001")),
+     "loader skips"),
     (lambda b, s, p: _swap_in(b, s["pools"]["generalization_bank"]["games"][-1]),
      "T_eval included"),
     (lambda b, s, p: _swap_in(b, p["games"][0]), "T_eval included"),

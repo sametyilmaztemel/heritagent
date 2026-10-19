@@ -1,12 +1,12 @@
 """The EXP-0001 benefit bank (ADR-0012 D1; owner, 2026-10-19).
 
-The gate's stage 2 (ADR-0012 D4) and its out-of-scope check (D5) play
-games from this bank. It holds, per family, the 192 loader-accepted train
+Under ADR-0012 the gate's stage 2 (D4) and its out-of-scope check (D5)
+draw their games from this bank (the gate PR wires them). It holds, per family, the 192 loader-accepted train
 games of ALFWorld 0.2.2 that are in no pool of the split manifest and not
 among the calibration pilot's 30, taken by the smallest
 ``sha256('heritagent-split|0|benefit_bank|<family>|<game_id>')`` (the split
 builder's keyed-hash rule). Within a family the bank's order is ascending
-by that hash; allocations read the bank in that order.
+by that hash; allocations are to read the bank in that order.
 
 The bank has its own manifest, so neither the split manifest nor the
 pilot's draw changes: ``benefit_bank`` is not in the split builder's
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -43,6 +44,9 @@ BANK_ORDER = "within a family, ascending by the selection hash"
 BANK_DRAWN_FROM = "train games in no EXP-0001 pool and not in the calibration pilot"
 BANK_STATUS = "frozen before any EXP-0001 episode"
 RECORD_KEYS = {"game_id", "family", "content_sha256"}
+# ALFWorld's game ids: <task directory>/trial_T<digits and underscores> (every accepted
+# train and valid_unseen game of release 0.2.2); one spelling per game, no aliases
+GAME_ID = re.compile(r"[A-Za-z0-9_.\-]+/trial_T[0-9_]+")
 
 
 def bank_rank(family: str, game_id: str) -> str:
@@ -173,7 +177,8 @@ def _verify_bank(bank: Mapping, split_manifest: dict, pilot_manifest: dict) -> N
         raise SplitError("the benefit bank's selection is not ADR-0012 D1's")
     if sorted(bank["families"]) != sorted(ALFWORLD_TASK_TYPES):
         raise SplitError("the benefit bank must hold exactly the six ALFWorld families")
-    if bank["available_by_family"] != _available(split_manifest, pilot_manifest):
+    if any(type(v) is not int for v in bank["available_by_family"].values()) \
+            or bank["available_by_family"] != _available(split_manifest, pilot_manifest):
         raise SplitError("the benefit bank's available_by_family is not what the split and "
                          "pilot manifests leave")
     excluded = _excluded(split_manifest, pilot_manifest)
@@ -185,6 +190,9 @@ def _verify_bank(bank: Mapping, split_manifest: dict, pilot_manifest: dict) -> N
                     or len(record["content_sha256"]) != 64 \
                     or any(c not in "0123456789abcdef" for c in record["content_sha256"]):
                 raise SplitError(f"{BANK_POOL}[{family}]: a malformed game record {record!r}")
+            if not GAME_ID.fullmatch(record["game_id"]):
+                raise SplitError(f"{BANK_POOL}[{family}]: {record['game_id']!r} is not a "
+                                 f"canonical ALFWorld game id")
             if record["family"] != family or not record["game_id"].startswith(family + "-"):
                 raise SplitError(f"{BANK_POOL}[{family}]: holds a game of another family "
                                  f"({record['game_id']!r})")
