@@ -114,7 +114,8 @@ def rehearsed(tmp_path_factory, splits, script):  # noqa: F811
     root = tmp_path_factory.mktemp("rehearsed")
     with pytest.MonkeyPatch.context() as mp:
         code = rehearse_run(root, stub(mp, splits, script, root), workers=2)
-    return SimpleNamespace(code=code, root=root, out=root / "out", run=root / "out" / "run")
+    return SimpleNamespace(code=code, root=root, out=root / "out", run=root / "out" / "run",
+                           script=root / "script.json")
 
 
 # -- the oracle's rules are the protocol's --------------------------------------------------
@@ -517,24 +518,38 @@ def test_rehearse_run_has_no_option_that_reaches_the_protocol():
 
 
 # -- binding a run to a passed rehearsal ----------------------------------------------------
+@pytest.fixture
+def committed(rehearsed, monkeypatch):
+    """The synthetic script stands in for the committed one."""
+    monkeypatch.setattr(rr, "SCRIPT_PATH", rehearsed.script)
+    return rehearsed
+
+
 def check(passed, machine=None, **overrides):
     machine = machine or passed  # this machine's Python and software: the rehearsal's
     here = {"commit": "a" * 40, "python": machine["python"], "software": machine["software"],
             "model_id": MODEL, "revision": "b" * 40, "tokenizer": TOKENIZER,
-            "protocol": rr.protocol_sha256(provenance.plain(PROTOCOL)), "workers": 2}
+            "protocol": rr.protocol_sha256(provenance.plain(PROTOCOL)), "workers": 2,
+            "script": machine["script_sha256"]}
     return rr.check_run_rehearsal(passed, **{**here, **overrides})
 
 
-def test_a_passed_rehearsal_covers_only_its_own_machine(rehearsed):
+def test_a_passed_rehearsal_covers_only_its_own_machine(rehearsed, script):
     passed = json.loads((rehearsed.out / rr.RUN_REHEARSAL_PASSED).read_text())
+    assert passed["script_sha256"] == rr.script_sha256(script)
     assert check(passed) == {}
     for key, value in (("commit", "c" * 40), ("python", "3.0.0"), ("model_id", "Org/Other"),
                        ("revision", "d" * 40), ("tokenizer", "other"), ("protocol", "e" * 64),
-                       ("workers", 16), ("software", {"vllm": "0.0"})):
+                       ("workers", 16), ("software", {"vllm": "0.0"}), ("script", "f" * 64)):
         differ = check(passed, **{key: value})
-        assert list(differ) == [{"protocol": "protocol_sha256"}.get(key, key)], key
-    assert list(check({**passed, "passed": False})) == ["record"]
-    assert list(check({**passed, "kind": "pilot"})) == ["record"]
+        assert list(differ) == [{"protocol": "protocol_sha256",
+                                 "script": "script_sha256"}.get(key, key)], key
+    # only a whole passed record covers anything
+    for record in ({**passed, "passed": False}, {**passed, "kind": "pilot"},
+                   {**passed, "checks": {}}, {**passed, "checks": {**passed["checks"], "x": False}},
+                   {k: v for k, v in passed.items() if k != "script_sha256"},
+                   {**passed, "model": "m"}, ["a", "list"], "text"):
+        assert list(check(record, passed)) == ["record"], record
     pilot = {"schema": rehearsal.REHEARSAL_PASSED_SCHEMA, "passed": True}
     assert list(check(pilot, passed)) == ["record"]
 
@@ -565,9 +580,9 @@ def test_run_needs_a_passed_run_rehearsal(tmp_path, capsys):
 
 
 def test_run_refuses_a_rehearsal_that_does_not_cover_it_before_any_write(
-        rehearsed, tmp_path, monkeypatch, capsys):
+        committed, tmp_path, monkeypatch, capsys):
     stub_run(monkeypatch, tmp_path)
-    record = rehearsed.out / rr.RUN_REHEARSAL_PASSED
+    record = committed.out / rr.RUN_REHEARSAL_PASSED
     # the rehearsal ran with 2 workers; the run asks for 16
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(record))) == 2
     err = capsys.readouterr().err
@@ -576,18 +591,35 @@ def test_run_refuses_a_rehearsal_that_does_not_cover_it_before_any_write(
     monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, True))
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(record), "--workers", "2")) == 2
     assert "(dirty)" in capsys.readouterr().err
+    monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))
     (tmp_path / "torn.json").write_text("{")
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(tmp_path / "torn.json"))) == 2
     assert "not a run rehearsal's record" in capsys.readouterr().err
+    (tmp_path / "list.json").write_text("[]")
+    assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(tmp_path / "list.json"),
+                             "--workers", "2")) == 2
+    assert '"record"' in capsys.readouterr().err
+    # a rehearsal of another script than the committed one covers nothing
+    monkeypatch.setattr(rr, "SCRIPT_PATH", tmp_path / "torn.json")
+    assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(record), "--workers", "2")) == 2
+    assert "committed script cannot be read" in capsys.readouterr().err
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({**json.loads(committed.script.read_text()), "extra": 1}))
+    monkeypatch.setattr(rr, "SCRIPT_PATH", other)
+    assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(record), "--workers", "2")) == 2
+    assert '"script_sha256"' in capsys.readouterr().err
+    assert not (tmp_path / "work").exists()
 
 
-def test_run_starts_with_a_rehearsal_that_covers_it(rehearsed, tmp_path, monkeypatch):
+def test_run_starts_with_a_rehearsal_that_covers_it(committed, tmp_path, monkeypatch):
     stub_run(monkeypatch, tmp_path)
     started = []
-    monkeypatch.setattr(cli, "_run", lambda args, **kwargs: started.append(args) or 0)
+    monkeypatch.setattr(cli, "_run", lambda args, **kwargs: started.append(kwargs) or 0)
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed",
-                             str(rehearsed.out / rr.RUN_REHEARSAL_PASSED), "--workers", "2")) == 0
-    assert len(started) == 1
+                             str(committed.out / rr.RUN_REHEARSAL_PASSED), "--workers", "2",
+                             "--stop-after-hours", "1.5")) == 0
+    # the stop-after-hours clock starts inside _run, right before the run
+    assert len(started) == 1 and started[0]["stop_after_hours"] == 1.5
 
 
 @pytest.mark.parametrize("identity", ["run_id", "weights"])
@@ -616,14 +648,19 @@ def test_run_refuses_a_stand_in_server(tmp_path, monkeypatch, capsys):
     assert "a rehearsal's stand-in server, not vLLM" in capsys.readouterr().err
 
 
-def test_rehearsal_check_reads_a_run_record_as_run_does(rehearsed, tmp_path, monkeypatch,
+def test_rehearsal_check_reads_a_run_record_as_run_does(committed, tmp_path, monkeypatch,
                                                          capsys):
     monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))
-    record = str(rehearsed.out / rr.RUN_REHEARSAL_PASSED)
+    record = str(committed.out / rr.RUN_REHEARSAL_PASSED)
     argv = ["rehearsal-check", "--kind", "run", "--passed", record, "--model", MODEL]
-    assert cli.main(argv + ["--workers", "2"]) == 0
-    assert cli.main(argv + ["--workers", "16"]) == 2
-    assert cli.main(argv + ["--revision", "d" * 40]) == 2
+    assert cli.main(argv + ["--revision", "b" * 40, "--workers", "2"]) == 0
+    assert cli.main(argv + ["--revision", "b" * 40, "--workers", "16"]) == 2
+    assert cli.main(argv + ["--revision", "d" * 40, "--workers", "2"]) == 2
+    capsys.readouterr()
+    # what run checks, it needs
+    assert cli.main(argv + ["--workers", "2"]) == 2
+    assert cli.main(argv + ["--revision", "b" * 40]) == 2
+    assert "--kind run needs --revision and --workers" in capsys.readouterr().err
     assert cli.main(["rehearsal-check", "--passed", record, "--model", MODEL]) == 2  # pilot kind
     assert "is not a passed rehearsal" in capsys.readouterr().err
 

@@ -28,8 +28,9 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   restores and a pause, checked against what the script makes
                   the rule texts decide (a CPU runtime, hours; before the run)
   rehearsal-check whether a passed rehearsal covers this machine (commit,
-                  model, Python, pinned software; ``--kind run``: also the
-                  tokenizer, the protocol and the worker count)
+                  model, Python, pinned software; ``--kind run``: the check
+                  ``run`` makes, with the revision, tokenizer, protocol, worker
+                  count and the committed script)
   run             EXP-0001: check the passed run rehearsal (``--rehearsal-
                   passed``), write (or check) the run-start record, restore the
                   run directory from its mirror if it is missing, run or
@@ -800,9 +801,9 @@ def cmd_rehearsal_check(args) -> int:
     tokenizer and the protocol, as ``run`` checks them). The notebooks
     rehearse again before the model download when it does not."""
     from evaluation.exp0001 import rehearsal
-    passed = _json(args.passed)
     if args.kind == "run":
-        return _run_rehearsal_check(args, passed)
+        return _run_rehearsal_check(args)
+    passed = _json(args.passed)
     if passed.get("schema") != rehearsal.REHEARSAL_PASSED_SCHEMA or passed.get("passed") is not True:
         raise CliError(f"{args.passed} is not a passed rehearsal")
     commit, dirty = git_state(Path(args.repo))
@@ -823,24 +824,49 @@ def cmd_rehearsal_check(args) -> int:
     return 0
 
 
-def _run_rehearsal_check(args, passed: Mapping) -> int:
-    from evaluation.exp0001 import run_rehearsal
-    from evaluation.exp0001.protocol import PROTOCOL
-    from evaluation.exp0001.provenance import plain
+def _run_rehearsal_check(args) -> int:
+    """``rehearsal-check --kind run``: the check ``run`` makes, before the
+    model download (so it needs the revision and the worker count ``run``
+    will use)."""
+    if args.revision is None or args.workers is None:
+        raise CliError("--kind run needs --revision and --workers: run checks both")
     commit, dirty = git_state(Path(args.repo))
     if dirty:
         raise CliError(f"the checkout at {args.repo} has changes; a rehearsal covers a clean commit")
-    revision = args.revision
-    differ = run_rehearsal.check_run_rehearsal(
-        passed, commit=commit, python=sys.version.split()[0], software=software_stack(),
-        model_id=args.model, revision=revision,
-        tokenizer=None if revision is None else f"hf-tokenizer:{args.model}@{revision}",
-        protocol=run_rehearsal.protocol_sha256(plain(PROTOCOL)), workers=args.workers)
+    passed = _run_rehearsal_record(args.passed)
+    differ = _run_rehearsal_differences(passed, commit=commit, model_id=args.model,
+                                        revision=args.revision, workers=args.workers)
     if differ:
         raise CliError(f"the run rehearsal does not cover this machine: {json.dumps(differ)}")
-    _out(f"the run rehearsal of {commit} with {args.model}@{passed['model']['revision']} passed "
-         f"on this Python and software ({passed['finished_at']})")
+    _out(f"the run rehearsal of {commit} with {args.model}@{args.revision} and {args.workers} "
+         f"workers passed on this Python and software ({passed['finished_at']})")
     return 0
+
+
+def _run_rehearsal_record(path: Path):
+    try:
+        return _json(path)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"{path}: not a run rehearsal's record ({exc})") from None
+
+
+def _run_rehearsal_differences(passed, *, commit: str, model_id: str, revision: str,
+                               workers: int) -> dict:
+    """What ``run`` compares, as ``run_rehearsal.check_run_rehearsal``
+    returns it: this machine's Python and software, the checkout's protocol
+    and committed script, and the run's model, revision, tokenizer and
+    workers."""
+    from evaluation.exp0001 import run_rehearsal
+    from evaluation.exp0001.protocol import PROTOCOL
+    from evaluation.exp0001.provenance import plain
+    try:
+        script = run_rehearsal.script_sha256(run_rehearsal.load_script())
+    except (OSError, ValueError) as exc:
+        raise CliError(f"the run rehearsal's committed script cannot be read: {exc}") from None
+    return run_rehearsal.check_run_rehearsal(
+        passed, commit=commit, python=sys.version.split()[0], software=software_stack(),
+        model_id=model_id, revision=revision, tokenizer=f"hf-tokenizer:{model_id}@{revision}",
+        protocol=run_rehearsal.protocol_sha256(plain(PROTOCOL)), script=script, workers=workers)
 
 
 def cmd_rehearse_run(args) -> int:
@@ -870,14 +896,14 @@ def cmd_rehearse_run(args) -> int:
         raise CliError(f"the checkout at {repo} has changes; the run rehearsal names a clean "
                        f"commit")
     splits, pilot, bank = _manifests(repo)
-    verify_data(args.data_root, splits, pilot, bank)
-    script = rr.load_script(args.script)
     try:
+        script = rr.load_script(args.script)
         rr.validate_script(script, splits, pilot, bank)
         expected = rr.expected_outcome(script, splits, bank)
         plan = rr.fault_plan(script, bank, expected)
-    except rr.RehearsalScriptError as exc:
-        raise CliError(f"the rehearsal's script: {exc}") from None
+    except (OSError, ValueError, KeyError, TypeError) as exc:  # the script error included
+        raise CliError(f"the rehearsal's script: {exc!r}") from None
+    verify_data(args.data_root, splits, pilot, bank)  # minutes on Colab: after the script
     revision = resolve_revision(args.model, args.revision)
     counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
     _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python "
@@ -1094,30 +1120,19 @@ def cmd_run(args) -> int:
         return hf_token_counter(prepared["model_id"], prepared["revision"],
                                 path=Path(prepared["path"]))
 
-    budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
-    started = time.monotonic()
     return _run(args, gpu=gpu, prepared=prepared, adapter=adapter, counter=counter,
-                pause_when=None if budget is None
-                else (lambda: time.monotonic() - started > budget))
+                stop_after_hours=args.stop_after_hours)
 
 
 def _require_run_rehearsal(args, prepared: dict) -> None:
-    """A new or resumed run starts only with a passed run rehearsal of this
-    clean commit, model, revision, tokenizer, Python, pinned software and
-    protocol (``rehearse-run``), checked before anything is written."""
-    from evaluation.exp0001 import run_rehearsal
-    from evaluation.exp0001.protocol import PROTOCOL
-    from evaluation.exp0001.provenance import plain
+    """A new or resumed run starts only with a passed run rehearsal (every
+    check passed, the committed script) of this clean commit, model,
+    revision, tokenizer, Python, pinned software, protocol and worker count
+    (``rehearse-run``), checked before anything is written."""
     commit, dirty = git_state(Path(args.repo))
-    try:
-        passed = _json(args.rehearsal_passed)
-    except (OSError, ValueError) as exc:
-        raise CliError(f"{args.rehearsal_passed}: not a run rehearsal's record ({exc})") from None
-    differ = run_rehearsal.check_run_rehearsal(
-        passed, commit=commit, python=sys.version.split()[0], software=software_stack(),
-        model_id=prepared["model_id"], revision=prepared["revision"],
-        tokenizer=f"hf-tokenizer:{prepared['model_id']}@{prepared['revision']}",
-        protocol=run_rehearsal.protocol_sha256(plain(PROTOCOL)), workers=args.workers)
+    differ = _run_rehearsal_differences(
+        _run_rehearsal_record(args.rehearsal_passed), commit=commit,
+        model_id=prepared["model_id"], revision=prepared["revision"], workers=args.workers)
     if dirty:
         differ["commit"] = {"rehearsed": "a clean checkout", "here": f"{commit} (dirty)"}
     if differ:
@@ -1125,10 +1140,13 @@ def _require_run_rehearsal(args, prepared: dict) -> None:
                        f"EXP-0001-run-rehearsal.ipynb on a CPU runtime with this commit")
 
 
-def _run(args, *, gpu: dict, prepared: dict, adapter, counter, pause_when=None,
+def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
+         stop_after_hours: float | None = None, pause_when=None,
          disposable: bool = False) -> int:
     """The run from its checks to its last snapshot; ``rehearse-run`` runs the
-    same against its stand-in server (``disposable``: no unmirrored marker)."""
+    same against its stand-in server (``pause_when``, and ``disposable``: no
+    unmirrored marker). ``stop_after_hours`` counts from the run's start in
+    this session, after the restore, the checks and the lock."""
     from evaluation.exp0001.pipeline import Exp0001Run
 
     repo, local = Path(args.repo), Path(args.local_dir)
@@ -1142,6 +1160,13 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter, pause_when=None,
                         counter.identity, _environment(verified))
     with _run_dir_lock(local, marker=not disposable) as lock:  # one writer, before the mirror
         mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
+        started = time.monotonic()
+        budget = None if stop_after_hours is None else stop_after_hours * 3600
+
+        def pause() -> bool:
+            return (budget is not None and time.monotonic() - started > budget) or \
+                (pause_when is not None and bool(pause_when()))
+
         run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits,
                          pilot_manifest=pilot, benefit_bank=bank, model=adapter,
                          teacher=adapter,
@@ -1151,13 +1176,17 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter, pause_when=None,
                          session_info=_session_info(gpu, adapter, args.workers,
                                                     args.server_info),
                          on_ledger_append=Progress(mirror, args.progress_every),
-                         pause_when=pause_when, lock=lock)
+                         pause_when=pause if budget is not None or pause_when is not None
+                         else None,
+                         lock=lock)
         report, stopped, mirrored = None, False, False
         try:
             report = run.run()
         except RunPaused as exc:
-            _out(f"paused ({exc}); every admitted episode is recorded. Run the same command "
-                 f"again to resume.")
+            after = "" if stop_after_hours is None else \
+                f" after {stop_after_hours} h of this session"
+            _out(f"paused{after} ({exc}); every admitted episode is recorded. Run the same "
+                 f"command again to resume.")
         except KeyboardInterrupt:
             stopped = True
         finally:

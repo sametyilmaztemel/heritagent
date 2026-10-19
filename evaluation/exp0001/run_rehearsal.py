@@ -1086,23 +1086,39 @@ def protocol_sha256(protocol_block: Mapping) -> str:
                           .encode("utf-8")).hexdigest()
 
 
-def check_run_rehearsal(passed: Mapping, *, commit: str, python: str, software: Mapping,
+def check_run_rehearsal(passed, *, commit: str, python: str, software: Mapping,
                         model_id: str, revision: str | None, tokenizer: str | None,
-                        protocol: str, workers: int | None = None) -> dict:
+                        protocol: str, script: str, workers: int | None = None) -> dict:
     """What differs between a passed run rehearsal and this machine and
-    checkout (empty when it covers them)."""
-    if passed.get("schema") != RUN_REHEARSAL_PASSED_SCHEMA or passed.get("kind") != "run" \
-            or passed.get("passed") is not True:
-        return {"record": {"rehearsed": passed.get("schema"), "here": "a passed run rehearsal"}}
+    checkout (empty when it covers them): a record of this schema whose every
+    check passed, of the committed script (``script``, its sha256), the same
+    commit, model, Python, software and protocol, and, when given, revision,
+    tokenizer and worker count."""
+    try:
+        recorded = {"commit": passed["code"]["commit"], "model_id": passed["model"]["model_id"],
+                    "python": passed["python"], "software": passed["software"],
+                    "protocol_sha256": passed["protocol_sha256"],
+                    "script_sha256": passed["script_sha256"],
+                    "revision": passed["model"]["revision"],
+                    "tokenizer": passed["model"]["tokenizer"], "workers": passed["workers"]}
+        checks = passed["checks"]
+        whole = passed.get("schema") == RUN_REHEARSAL_PASSED_SCHEMA and \
+            passed.get("kind") == "run" and passed.get("passed") is True and \
+            isinstance(checks, Mapping) and bool(checks) and \
+            all(ok is True for ok in checks.values())
+    except (KeyError, TypeError, AttributeError):
+        whole = False
+    if not whole:
+        schema = passed.get("schema") if isinstance(passed, Mapping) else type(passed).__name__
+        return {"record": {"rehearsed": schema, "here": "a passed run rehearsal, every check "
+                                                       "passed"}}
     now = {"commit": commit, "model_id": model_id, "python": python, "software": dict(software),
-           "protocol_sha256": protocol}
-    then = {"commit": passed["code"]["commit"], "model_id": passed["model"]["model_id"],
-            "python": passed["python"], "software": passed["software"],
-            "protocol_sha256": passed["protocol_sha256"]}
+           "protocol_sha256": protocol, "script_sha256": script}
     if revision is not None:
-        now["revision"], then["revision"] = revision, passed["model"]["revision"]
+        now["revision"] = revision
     if tokenizer is not None:
-        now["tokenizer"], then["tokenizer"] = tokenizer, passed["model"]["tokenizer"]
+        now["tokenizer"] = tokenizer
     if workers is not None:
-        now["workers"], then["workers"] = workers, passed["workers"]
-    return {key: {"rehearsed": then[key], "here": now[key]} for key in now if then[key] != now[key]}
+        now["workers"] = workers
+    return {key: {"rehearsed": recorded[key], "here": now[key]} for key in now
+            if recorded[key] != now[key]}
