@@ -19,106 +19,95 @@ from somatic.store import SomaticStore
 from tests.gate.conftest import interaction_tasks
 from tests.gate.helpers import (
     BUDGETS,
+    FAMILY,
     MINING_SEED,
     PARENT_CIG,
+    UNIVERSE,
     ScriptedGateRunner,
-    coherent_stage11_children,
     mint_envelope,
+    out_of_scope_allocation,
+    stage12_evidence,
 )
 
 
 def build_world(tmp_path, *, candidates=("a", "b"), ranks=None,
-                 replay_pass=True, ablation_deltas=None, gen_in_with=True,
-                 gen_out_with=True, treg_success_count=40,
-                 interaction=None, replay_pass_for=None,
-                 commit_stores=True):
+                replay_pass=True, ablation_deltas=None, stage2=None,
+                gen_out_with=True, treg_success_count=40,
+                interaction=None, replay_pass_for=None,
+                commit_stores=True, applicability=None):
     """Build a full scripted world: runner, inputs, orchestrator, stores.
 
     Every candidate carries its OWN aggregate CIG id (CIG-0007, CIG-0008,
-    ...); multi-candidate inputs can never share one parent.
-    Generalization defaults: with-trait all succeed, without-trait all
-    succeed -> delta 0 (pass both scopes). Interaction defaults: both pass,
-    neither pass -> delta 0 (not harmful).
-    ablation_deltas: optional per-name ablation contribution.
-    commit_stores=False wires the orchestrator WITHOUT stores so a run
-    produces results without committing (candidates stay 'candidate')."""
-    from inheritance.generalization import GeneralizationAllocation
-    from inheritance.regression import RegressionAllocation, TRegTask
+    ...). Its stage-1 and stage-2 evidence comes from the real evaluators
+    (ADR-0012 D3, D4) under scripted outcomes: ``ablation_deltas`` maps a
+    name to a stage-2 contribution (>= 0.05: efficacy at look 1 with net
+    max(11, round(48 * delta)); below: futility at look 1, alpha never
+    met), and ``stage2`` maps a name to a path shape ('pass', 'futility',
+    'alpha_only'). Out of scope: 24 games, with-trait success
+    ``gen_out_with``, G0 cells all succeed. Interaction defaults: both and
+    neither succeed (delta 0, not harmful). commit_stores=False wires the
+    orchestrator WITHOUT stores."""
     from inheritance.interaction import InteractionAllocation
-    from inheritance.runner import EvaluationTask
+    from inheritance.regression import RegressionAllocation, TRegTask
 
     registry = TraitRegistry(tmp_path / "registry")
     runner = ScriptedGateRunner()
     inputs = []
     ranks = ranks or {name: i for i, name in enumerate(candidates)}
     ablation_deltas = ablation_deltas or {}
+    stage2 = stage2 or {}
+    applicability = applicability or {}
     store = SomaticStore.create(tmp_path / "somatic.jsonl", registry)
     cig_store = CigRecordStore()
+    base_config = g0_config(registry)
 
     for index, name in enumerate(candidates):
         parent = "CIG-" + format(7 + index, "04d")
-        envelope = mint_envelope(registry, name)
+        families = tuple(applicability.get(name, (FAMILY,)))
+        envelope = mint_envelope(registry, name, families=families)
         store.add_candidate(envelope)  # real flow: candidate persisted by #9/#10
         gene_id = envelope["candidate"]["gene_id"]
         delta = ablation_deltas.get(name, 0.5)
+        shape = stage2.get(name, "pass" if delta >= 0.05 else "futility")
         rp = replay_pass
         if replay_pass_for is not None and name in replay_pass_for:
             rp = replay_pass_for[name]
-        replay, ablation = coherent_stage11_children(
-            gene_id, parent=parent, replay_pass=rp, ablation_pass=delta >= 0.05,
-            ablation_delta=delta, envelope=envelope,
-            base_genome_id=g0_config(registry).genome_id)
-        # generalization: with/without per scope
-        for scope, w_ok in (("in", gen_in_with), ("out", gen_out_with)):
-            for i in range(10):
-                tid = f"{scope}-{name}-{i}"
-                runner.set(tid, "with_trait", w_ok, (gene_id,))
-                runner.set(tid, "without_trait", True, ())
+        replay, ablation = stage12_evidence(
+            registry, base_config, envelope, parent=parent, replay_pass=rp, stage2=shape,
+            net=max(11, round(48 * delta)), families=families)
+        out_plan = out_of_scope_allocation(name, families)
+        for task in out_plan.tasks:
+            runner.set(task.task_id, "with_trait", gen_out_with, (gene_id,))
+            runner.set(task.task_id, "without_trait", True, ())
         # regression: first treg_success_count succeed; G0 without the trait
-        # solves every T_reg task in the paired run (ADR-0009 D1), so the
-        # paired drop is the old absolute one
+        # solves every T_reg task in the paired run (ADR-0009 D1)
         for i in range(40):
             runner.set(f"treg-{name}-{i}", "with_trait",
-                        i < treg_success_count, (gene_id,))
+                       i < treg_success_count, (gene_id,))
             runner.set(f"treg-{name}-{i}", "without_trait", True, ())
-        # interaction: both/neither outcomes shared per pair; explicit
-        # dict form allows without-arm contamination simulation
         interaction = interaction or {"both": (True, (gene_id,)),
-                                       "neither": (True, ())}
+                                      "neither": (True, ())}
         both = interaction["both"]
         neither = interaction["neither"]
         for i in range(10):
             tid = f"ix-{i}"
             runner.set(tid, "both", both[0], tuple(both[1]))
             runner.set(tid, "neither", neither[0], tuple(neither[1]))
-        in_scope = tuple(EvaluationTask(
-            task_id=f"in-{name}-{i}", family="heat_and_place",
-            payload={"goal": "g"},
-            bank_id="generalization_bank[heat_and_place]") for i in range(10))
-        out_scope = tuple(EvaluationTask(
-            task_id=f"out-{name}-{i}", family="clean_surface",
-            payload={"goal": "g"},
-            bank_id="generalization_bank[clean_surface]") for i in range(10))
-        gen_alloc = GeneralizationAllocation(
-            in_scope_tasks=in_scope, out_scope_tasks=out_scope,
-            frozen_in_scope_plan={"heat_and_place": 10},
-            frozen_out_scope_plan={"clean_surface": 10},
-            declared_frozen_applicability=("heat_and_place",))
         treg = RegressionAllocation(tasks=tuple(
-            TRegTask(task_id=f"treg-{name}-{i}", family="heat_and_place",
-                      baseline_trajectory_id="T-" + format(i, "04d") + "aaaa")
+            TRegTask(task_id=f"treg-{name}-{i}", family=FAMILY,
+                     baseline_trajectory_id="T-" + format(i, "04d") + "aaaa")
             for i in range(40)))
         inputs.append(GateCandidateInput(
             candidate_envelope=envelope, frozen_rank=ranks[name],
             replay_evaluation=replay, ablation_evaluation=ablation,
-            generalization_allocation=gen_alloc,
+            generalization_allocation=out_plan,
             regression_allocation=treg,
             parent_cig_id=parent))
 
     interaction_alloc = InteractionAllocation(tasks=interaction_tasks(10))
     counter = _WordCounter()
     orch = CigGateOrchestrator(
-        registry=registry, base_config=g0_config(registry), runner=runner,
+        registry=registry, base_config=base_config, runner=runner,
         budgets=BUDGETS, parent_cig_id=PARENT_CIG, mining_seed=MINING_SEED,
         token_counter=counter, interaction_allocation=interaction_alloc,
         somatic_store=store if commit_stores else None,
@@ -266,20 +255,24 @@ def test_candidate_ordering_does_not_change_verdicts(tmp_path):
 
 
 def test_fewer_than_two_eligible_zero_pair_calls(tmp_path):
-    """Both candidates fail ablation -> both reject, zero interaction calls,
-    explicit vacuous interaction reason."""
+    """Both candidates stop for futility at look 1 -> stage 2 never met
+    alpha, so neither reaches R5 or R6: zero calls, both reject, and their
+    out-of-scope, 4A and 4C records say not run (ADR-0012 D7)."""
     world = build_world(tmp_path, candidates=("a", "b"),
-                         ablation_deltas={"a": 0.0, "b": 0.0})
+                        ablation_deltas={"a": 0.0, "b": 0.0})
     orch, somatic, cig_store, runner, inputs, registry = world
     outcome = orch.run(inputs)
-    ix_calls = [c for c in runner.calls if c[0].startswith("ix-")]
-    assert ix_calls == []
+    assert runner.calls == []  # not even the T_reg cells: no candidate reached R5
     assert set(outcome.verdicts.values()) == {"reject"}
     for r in outcome.results:
-        inter = r.stage4_child["measurements"]["interaction"]
-        assert inter["pair_count"] == 0
-        assert inter["vacuous"] is True
-        assert inter["reason"]
+        m = r.stage4_child["measurements"]
+        assert m["not_run"] is True and m["stage_pass"] is False
+        assert m["interaction"]["not_run"] is True and m["regression"]["not_run"] is True
+        assert m["expression_overhead"]["overhead_pass"] is True  # 4B runs for everyone
+        out = [c for c in cig_store.children.values()
+               if c["parent_cig_id"] == r.aggregate_cig_id
+               and c["stage"] == "generalization_out_of_scope"][0]
+        assert out["measurements"]["not_run"] is True
     # live bundles still exposed for the rejected candidates
     for result in outcome.results:
         assert_live_bundle_exposed(cig_store, result)
@@ -306,13 +299,12 @@ def test_duplicate_parent_cig_ids_rejected_before_any_episode(tmp_path):
     assert len(runner.calls) == calls_before
 
 
-def _shared_t_reg_inputs(inputs, seed_b, base_genome_id):
+def _shared_t_reg_inputs(inputs, seed_b, registry):
     """Both candidates on candidate a's T_reg; candidate b at ``seed_b``."""
     a, b = inputs
-    gid_b = b.candidate_envelope["candidate"]["gene_id"]
-    replay, ablation = coherent_stage11_children(
-        gid_b, parent=b.parent_cig_id, replay_pass=True, ablation_pass=True,
-        seed=seed_b, envelope=b.candidate_envelope, base_genome_id=base_genome_id)
+    replay, ablation = stage12_evidence(
+        registry, g0_config(registry), b.candidate_envelope, parent=b.parent_cig_id,
+        seed=seed_b)
     return [a, GateCandidateInput(
         candidate_envelope=b.candidate_envelope, frozen_rank=b.frozen_rank,
         replay_evaluation=replay, ablation_evaluation=ablation,
@@ -326,6 +318,9 @@ def test_the_shared_g0_run_is_per_mining_seed(tmp_path, seed_b, runs):
     """ADR-0009 D1: G0 plays T_reg once per mining seed at that seed, and
     every candidate of the seed is paired against that run."""
     orch, _, _, runner, inputs, registry = build_world(tmp_path, candidates=("a", "b"))
+    # b fails its out-of-scope check, so no pair forms (a pair needs one seed's R6 cells)
+    for task in inputs[1].generalization_allocation.tasks:
+        runner.set(task.task_id, "with_trait", False, ("b",))
     seen = []
     play = runner.run_episode
 
@@ -334,7 +329,7 @@ def test_the_shared_g0_run_is_per_mining_seed(tmp_path, seed_b, runs):
         return play(task, config, budgets, condition, settings)
 
     runner.run_episode = recording
-    outcome = orch.run(_shared_t_reg_inputs(inputs, seed_b, g0_config(registry).genome_id))
+    outcome = orch.run(_shared_t_reg_inputs(inputs, seed_b, registry))
     g0_runs = [(tid, seed) for tid, condition, seed in seen
                if tid.startswith("treg-") and condition == "without_trait"]
     assert len(g0_runs) == 40 * runs
@@ -344,6 +339,15 @@ def test_the_shared_g0_run_is_per_mining_seed(tmp_path, seed_b, runs):
         assert regression["paired_g0_run"]["eval_generation_settings"]["seed"] == seed
         assert regression["eval_generation_settings"]["seed"] == seed
         assert regression["successes_without"] == 40
+
+
+def test_eligible_candidates_of_two_seeds_never_form_a_pair(tmp_path):
+    """A pair reads one seed's R6 cells (ADR-0012 D2): eligible candidates of
+    two mining seeds fail closed before any R6 episode."""
+    orch, _, _, runner, inputs, registry = build_world(tmp_path, candidates=("a", "b"))
+    with pytest.raises(GateInputError, match="mining seeds"):
+        orch.run(_shared_t_reg_inputs(inputs, MINING_SEED + 1, registry))
+    assert not [c for c in runner.calls if c[0].startswith("ix-")]
 
 
 def test_control_expression_of_target_aborts_no_child(tmp_path):
@@ -411,12 +415,8 @@ def test_invalid_token_counter_fails_closed(tmp_path):
 def _replay_with_child(replay, child):
     """Rebuild the frozen ReplayEvaluation around a (possibly corrupted)
     child record."""
-    return type(replay)(
-        _passed=replay.passed, _successes_with=replay.successes_with,
-        _successes_without=replay.successes_without,
-        _delta_count=replay.delta_count, _delta_success=replay.delta_success,
-        _expression_ok=replay.expression_ok, _episodes=(),
-        _child_record=child, _allocation=replay.allocation)
+    import dataclasses
+    return dataclasses.replace(replay, _child_record=child)
 
 
 OTHER_ARTIFACT = "registry://skills/a@1/sha256:" + "0" * 64
@@ -538,3 +538,106 @@ def test_stage11_settings_must_match_locked_contract(tmp_path, field,
     with pytest.raises(EvidenceCoherenceError, match=field):
         orch.run([bad_input])
     assert len(runner.calls) == calls_before
+
+
+# -- ADR-0012: rounds R5 and R6, not-run children, the in-scope reference --------------
+def _child(cig_store, result, stage):
+    return [c for c in cig_store.children.values()
+            if c["parent_cig_id"] == result.aggregate_cig_id and c["stage"] == stage][0]
+
+
+def test_a_candidate_meeting_alpha_without_the_point_rule_reaches_round_5(tmp_path):
+    """(9, 0) at look 4 meets alpha but fails stage 2: its out-of-scope check
+    and 4A still run (ADR-0012 D7), and it is rejected."""
+    orch, _, cig_store, runner, inputs, _ = build_world(tmp_path, candidates=("a",),
+                                                        stage2={"a": "alpha_only"})
+    outcome = orch.run(inputs)
+    result = outcome.results[0]
+    assert result.verdict == "reject"
+    assert result.stage_results["ablation"] is False
+    played = {task for task, _ in runner.calls}
+    assert {t.task_id for t in inputs[0].generalization_allocation.tasks} <= played
+    assert {f"treg-a-{i}" for i in range(40)} <= played
+    out = _child(cig_store, result, "generalization_out_of_scope")["measurements"]
+    assert "not_run" not in out and out["stage_pass"] is True
+    assert result.stage4_child["measurements"]["regression"]["regression_pass"] is True
+
+
+def test_the_in_scope_child_is_stage_2_by_reference(tmp_path):
+    from inheritance.generalization import paired_outcomes_sha256
+    orch, _, cig_store, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    result = orch.run(inputs).results[0]
+    child = _child(cig_store, result, "generalization_in_scope")["measurements"]
+    ablation = inputs[0].ablation_evaluation
+    assert child["by_reference"] == {
+        "stage": "ablation", "child_id": ablation.child_record["cig_id"],
+        "paired_outcomes_sha256": paired_outcomes_sha256(ablation.paired_outcomes),
+        "games": 48, "n_plus": 24, "n_minus": 0, "net": 24}
+    assert child["episodes_run"] == 0 and child["stage_pass"] is True
+    assert not any(task.startswith("s2-") for task, _ in runner.calls)  # no stage-2 replay
+
+
+@pytest.mark.parametrize("losses, passes", [(1, True), (2, False)])
+def test_the_out_of_scope_check_allows_a_net_loss_of_one_in_24(tmp_path, losses, passes):
+    orch, _, cig_store, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
+    for task in inputs[0].generalization_allocation.tasks[:losses]:
+        runner.set(task.task_id, "with_trait", False, ())
+    result = orch.run(inputs).results[0]
+    out = _child(cig_store, result, "generalization_out_of_scope")["measurements"]
+    assert out["summary"]["net_loss"] == losses and out["summary"]["task_count"] == 24
+    assert out["stage_pass"] is passes
+    assert result.verdict == ("promote" if passes else "reject")
+
+
+@pytest.mark.parametrize("delta, state", [(0.5, "vacuous"), (0.0, "not_run")])
+def test_an_all_family_candidate(tmp_path, delta, state):
+    """No out-of-scope family: a vacuous pass once stage 2 met alpha
+    (ADR-0007 E6), a not-run record otherwise (ADR-0012 D7)."""
+    orch, _, cig_store, runner, inputs, _ = build_world(
+        tmp_path, candidates=("a",), ablation_deltas={"a": delta},
+        applicability={"a": UNIVERSE})
+    assert inputs[0].generalization_allocation.vacuous
+    result = orch.run(inputs).results[0]
+    out = _child(cig_store, result, "generalization_out_of_scope")["measurements"]
+    if state == "vacuous":
+        assert out["vacuous"] is True and out["stage_pass"] is True
+        assert result.aggregate["stages"]["generalization_out_of_scope"]["threshold"] \
+            .startswith("vacuous:")
+    else:
+        assert out["not_run"] is True and out["all_family_applicability"] is True
+        assert out["stage_pass"] is False and "vacuous" not in out
+
+
+def test_rounds_5_and_6_use_their_own_runners(tmp_path):
+    """The orchestrator asks for round R5's runner for stage 3 and 4A and
+    round R6's for the pairs (ADR-0012 D2)."""
+    orch, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a", "b"))
+    rounds = []
+
+    class RoundRecorder:
+        def __init__(self, gate_round):
+            self.gate_round = gate_round
+
+        def run_episode(self, task, config, budgets, condition, settings):
+            rounds.append((self.gate_round, task.task_id, condition))
+            return runner.run_episode(task, config, budgets, condition, settings)
+
+    orch._runner = lambda gate_round: RoundRecorder(gate_round)  # round -> runner
+    orch.run(inputs)
+    assert {r for r, task, _ in rounds if task.startswith(("out-", "treg-"))} == {5}
+    assert {r for r, task, _ in rounds if task.startswith("ix-")} == {6}
+    assert {c for r, _, c in rounds if r == 6} == {"both", "neither"}
+
+
+def test_a_harmful_pair_compares_the_stage_2_points(tmp_path):
+    """The contribution is the point at the stopping look (ADR-0012 D6):
+    43/48 against 11/48 here."""
+    orch, _, _, _, inputs, _ = build_world(
+        tmp_path, candidates=("a", "b"), ablation_deltas={"a": 0.9, "b": 0.1},
+        interaction={"both": (False, ()), "neither": (True, ())})
+    contributions = {inp.candidate_envelope["candidate"]["gene_id"]:
+                     inp.ablation_evaluation.contribution for inp in inputs}
+    from fractions import Fraction
+    assert contributions == {"a": Fraction(43, 48), "b": Fraction(11, 48)}
+    outcome = orch.run(inputs)
+    assert outcome.verdicts == {"a": "promote", "b": "reject"}

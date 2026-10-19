@@ -1,15 +1,18 @@
-"""The ablation bootstrap is pre-registered (ADR-0005, owner decision
+"""The stage-2 bootstrap is pre-registered (ADR-0005, owner decision
 2026-10-14): seed 0, 10,000 resamples, and the paired deltas ordered by
-task_id before resampling. Near the tau_c boundary the seed and the delta
-order could otherwise decide the stage verdict, so neither is free."""
+task_id before resampling. Since ADR-0012 D4 it decides nothing (the exact
+sign test does), but every stage-2 record carries it and the gate recomputes
+it (ADR-0009 D5), so neither the seed nor the order is free."""
 
-import json
+import copy
+import dataclasses
 import re
 from pathlib import Path
 
 import pytest
 
 from inheritance.ablation import (
+    ALLOCATION_SIZE,
     BOOTSTRAP_CLUSTER_ORDER,
     BOOTSTRAP_N_RESAMPLES,
     BOOTSTRAP_SEED,
@@ -18,33 +21,41 @@ from inheritance.ablation import (
 from inheritance.bootstrap import paired_cluster_bootstrap
 from inheritance.gate import PRIMARY_THRESHOLDS
 from inheritance.overlay import EvaluationSetupError
-from tests.inheritance.conftest import GENE_ID
-from tests.inheritance.test_ablation import FROZEN_STRATA, make_allocation, make_evaluator
+from inheritance.runner import EvaluationTask
+from tests.inheritance.test_ablation import (
+    BANK_SHA,
+    FAMILY,
+    make_allocation,
+    make_evaluator,
+    play,
+    script,
+)
 
-# found by search: point estimate 0.25 >= tau_c, and with seed 0 the
-# allocation order gives a lower bound of 0.0 (stage fails) while task_id
-# order gives 0.05 (stage passes): the order alone decides the verdict
+# found by search (issue #63): with seed 0 the index order of these 20
+# deltas gives a lower bound of 0.0 and their task_id order gives 0.05
 WITH = {2, 5, 7, 9, 11, 14, 15, 19}
 WITHOUT = {2, 3, 9}
 
 
-def outcomes():
-    table = {}
-    for i in range(20):
-        table[(f"abl-{i}", "with_trait")] = (i in WITH, (GENE_ID,))
-        table[(f"abl-{i}", "without_trait")] = (i in WITHOUT, ())
-    return table
+def reversed_ids_allocation() -> AblationAllocation:
+    """An allocation whose play order is the reverse of its task_id order."""
+    tasks = tuple(EvaluationTask(task_id=f"bank-{ALLOCATION_SIZE - 1 - j:03d}", family=FAMILY,
+                                 payload={"goal": f"game {j}"},
+                                 bank_id=f"benefit_bank[{FAMILY}]")
+                  for j in range(ALLOCATION_SIZE))
+    return AblationAllocation(tasks=tasks, families=(FAMILY,), bank_sha256=BANK_SHA)
 
 
-def evaluate(tmp_path, registry, base_config, envelope, allocation):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    evaluator._runner.outcomes = outcomes()
-    return evaluator.evaluate(allocation)
+def evaluate(tmp_path, registry, base_config, envelope, allocation, pairs):
+    evaluator = make_evaluator(tmp_path, registry, base_config, envelope, allocation=allocation)
+    script(evaluator.runner, allocation, pairs)
+    return play(evaluator)
 
 
-def reordered(allocation, key):
-    return AblationAllocation(tasks=tuple(sorted(allocation.tasks, key=key)),
-                              frozen_strata=dict(FROZEN_STRATA))
+# look 1: 14 rescues and 3 losses (net 11, p > 1/2000), so the path continues;
+# look 2 adds 10 rescues: efficacy, 96 games played
+PAIRS = [(True, False)] * 14 + [(False, True)] * 3 + [(False, False)] * 31 + \
+    [(True, False)] * 10 + [(False, False)] * 134
 
 
 @pytest.mark.parametrize("seed", [1, 7, 12345, -1])
@@ -54,49 +65,46 @@ def test_any_other_seed_is_rejected_before_any_episode(tmp_path, registry, base_
         make_evaluator(tmp_path, registry, base_config, envelope, bootstrap_seed=seed)
 
 
-def test_the_verdict_does_not_depend_on_the_allocation_order(tmp_path, registry, base_config,
-                                                             envelope):
-    base = make_allocation(tmp_path, registry)
-    results = [evaluate(tmp_path, registry, base_config, envelope, allocation)
-               for allocation in (base,
-                                  reordered(base, key=lambda t: t.task_id),
-                                  reordered(base, key=lambda t: t.task_id[::-1]))]
-    assert len({tuple(r.deltas) for r in results}) == 1
-    assert len({(r.bootstrap["lower_bound"], r.bootstrap["upper_bound"]) for r in results}) == 1
-    assert len({json.dumps(r.child_record["measurements"]["paired_deltas"])
-                for r in results}) == 1
-
-
-def test_the_unordered_deltas_would_flip_the_verdict(tmp_path, registry, base_config,
-                                                     envelope):
-    """Guards the test above: for this pattern the delta order alone flips
-    the stage verdict when the deltas are not sorted first."""
+def test_the_index_order_would_change_the_interval():
+    """Why the order is fixed: for this pattern the order of the deltas alone
+    moves the interval."""
     by_index = [float(i in WITH) - float(i in WITHOUT) for i in range(20)]
     by_task_id = [d for _, d in sorted((f"abl-{i}", d) for i, d in enumerate(by_index))]
     unsorted = paired_cluster_bootstrap(by_index, seed=BOOTSTRAP_SEED)
     locked = paired_cluster_bootstrap(by_task_id, seed=BOOTSTRAP_SEED)
     assert unsorted.point_estimate == locked.point_estimate == 0.25
     assert (unsorted.lower_bound, locked.lower_bound) == (0.0, 0.05)
-    result = evaluate(tmp_path, registry, base_config, envelope,
-                      make_allocation(tmp_path, registry))
-    assert result.bootstrap["lower_bound"] == 0.05 and result.passed is True
 
 
-def test_the_child_record_recomputes_its_bound(tmp_path, registry, base_config, envelope):
-    result = evaluate(tmp_path, registry, base_config, envelope,
-                      make_allocation(tmp_path, registry))
+def test_the_child_record_recomputes_its_interval_in_task_id_order(tmp_path, registry,
+                                                                   base_config, envelope):
+    allocation = reversed_ids_allocation()
+    result = evaluate(tmp_path, registry, base_config, envelope, allocation, PAIRS)
     measurements = result.child_record["measurements"]
+    assert measurements["stop"]["look"] == 2 and len(measurements["paired_outcomes"]) == 96
     recorded = measurements["bootstrap"]
-    assert (recorded["seed"], recorded["n_resamples"], recorded["cluster_order"]) == (
-        0, 10_000, "task_id")
-    task_ids = sorted(measurements["allocation"]["task_ids"])
-    assert measurements["paired_delta_task_ids"] == task_ids  # each delta names its task
-    assert len(task_ids) == len(measurements["paired_deltas"]) == 20
+    assert (recorded["seed"], recorded["n_resamples"], recorded["cluster_order"],
+            recorded["descriptive"]) == (0, 10_000, "task_id", True)
+    played = [t.task_id for t in allocation.tasks[:96]]
+    assert measurements["paired_delta_task_ids"] == sorted(played) != played
+    by_task = {t.task_id: float(w) - float(c) for t, (w, c) in zip(allocation.tasks, PAIRS)}
+    assert measurements["paired_deltas"] == [by_task[t] for t in sorted(played)]
     recomputed = paired_cluster_bootstrap(measurements["paired_deltas"], seed=recorded["seed"],
                                           n_resamples=recorded["n_resamples"])
     assert (recomputed.lower_bound, recomputed.upper_bound) == (
         recorded["lower_bound"], recorded["upper_bound"])
     assert result.bootstrap["cluster_order"] == "task_id"
+
+
+def test_episodes_keep_the_allocation_order(tmp_path, registry, base_config, envelope):
+    """Only the bootstrap input is sorted: the episodes run, and are
+    recorded, in allocation order (ADR-0005; review of #63), which also
+    decides the looks (ADR-0012 D4)."""
+    allocation = reversed_ids_allocation()
+    result = evaluate(tmp_path, registry, base_config, envelope, allocation, PAIRS)
+    order = [t.task_id for t in allocation.tasks[:96]]
+    outcomes = result.child_record["measurements"]["paired_outcomes"]
+    assert [o["task_id"] for o in outcomes] == order
 
 
 def manifest_bootstraps(text: str) -> tuple[list[dict], int]:
@@ -130,6 +138,7 @@ def test_the_manifest_gate_and_code_agree():
     assert anywhere == 1, "no other stage pre-registers one"
     assert len(matches) == 1, "the ablation stage must pre-register its bootstrap exactly once"
     match = matches[0]
+    assert match["role"] == "descriptive"  # ADR-0012 D4
     assert (int(match["seed"]), int(match["resamples"]), match["cluster_order"]) == (
         BOOTSTRAP_SEED, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_CLUSTER_ORDER)
     # ADR-0009 D5: the method, confidence and generator are pre-registered too
@@ -151,21 +160,6 @@ def test_a_commented_out_pre_registration_does_not_count(line):
     assert manifest_bootstraps(text) == ([], 0)
 
 
-def test_episodes_keep_the_allocation_order(tmp_path, registry, base_config, envelope):
-    """Only the bootstrap input is sorted: the episodes run, and are
-    recorded, in allocation order (ADR-0005; review of #63)."""
-    allocation = reordered(make_allocation(tmp_path, registry), key=lambda t: t.task_id[::-1])
-    result = evaluate(tmp_path, registry, base_config, envelope, allocation)
-    order = [t.task_id for t in allocation.tasks]
-    assert order != sorted(order)
-    episodes = result.child_record["measurements"]["episodes"]
-    assert [e["task_id"] for e in episodes if e["condition"] == "with_trait"] == order
-    deltas = dict(zip(result.child_record["measurements"]["paired_delta_task_ids"],
-                      result.child_record["measurements"]["paired_deltas"]))
-    for i in range(20):
-        assert deltas[f"abl-{i}"] == float(i in WITH) - float(i in WITHOUT)
-
-
 def test_the_gate_aggregate_records_the_lock(tmp_path):
     """The aggregate's thresholds_used carries the pre-registered seed and
     order (ADR-0005 Recording; review of #63)."""
@@ -178,67 +172,59 @@ def test_the_gate_aggregate_records_the_lock(tmp_path):
                 values["bootstrap_cluster_order"]) == (0, 10_000, "task_id")
 
 
-def test_non_string_task_ids_are_rejected_with_the_allocation(tmp_path, registry):
+def test_non_string_task_ids_are_rejected_with_the_allocation():
     """The bootstrap order is string order (ADR-0005): a non-string id fails
-    when the allocation is built, not after its 40 episodes (review of #63)."""
-    from inheritance.runner import EvaluationTask
-    tasks = list(make_allocation(tmp_path, registry).tasks)
+    when the allocation is built, not after its episodes (review of #63)."""
+    tasks = list(make_allocation().tasks)
     first = tasks[0]
     tasks[0] = EvaluationTask(task_id=0, family=first.family,
                               payload=dict(first.payload), bank_id=first.bank_id)
     with pytest.raises(ValueError, match="must be strings"):
-        AblationAllocation(tasks=tuple(tasks), frozen_strata=dict(FROZEN_STRATA))
-
-
-def _set(block, key, value):
-    if value is _DROP:
-        block.pop(key)
-    else:
-        block[key] = value
+        AblationAllocation(tasks=tuple(tasks), families=(FAMILY,), bank_sha256=BANK_SHA)
 
 
 _DROP = object()
 
 
-@pytest.mark.parametrize("where,key,value", [
-    ("child", "seed", 11),               # the mining seed the old fixture used
-    ("child", "seed", False),            # False == 0: the type is checked too
-    ("child", "seed", 0.0),              # 0.0 == 0
-    ("child", "n_resamples", 9_999),
-    ("child", "cluster_order", "allocation"),
-    ("child", "cluster_order", _DROP),
-    ("child", "bootstrap", _DROP),
-    ("evaluation", "seed", 11),
-    ("evaluation", "cluster_order", _DROP),
-    ("ids", None, ["abl-01", "abl-00"]),  # not in task_id order
-    ("ids", None, ["abl-00", "abl-00"]),  # not distinct
-    ("ids", None, list(range(20))),       # ascending, but not strings
-    ("ids", None, [1] + [f"abl-{i:02d}" for i in range(2, 21)]),  # mixed types
-    ("ids", None, _DROP),
+@pytest.mark.parametrize("key,value", [
+    ("seed", 11),               # the mining seed the old fixture used
+    ("seed", False),            # False == 0: the type is checked too
+    ("seed", 0.0),              # 0.0 == 0
+    ("n_resamples", 9_999),
+    ("cluster_order", "allocation"),
+    ("cluster_order", _DROP),
+    ("bootstrap", _DROP),
+    ("ids", "unsorted"),        # not in task_id order
+    ("ids", "duplicated"),      # not distinct
+    ("ids", "ints"),            # not strings
+    ("ids", _DROP),
 ])
-def test_the_gate_rejects_an_ablation_child_off_the_locked_bootstrap(tmp_path, where, key, value):
+def test_the_gate_rejects_an_ablation_child_off_the_locked_bootstrap(tmp_path, key, value):
     """The aggregate records seed 0 and task_id order as the thresholds
-    used, so the gate checks them in the ablation evidence before any
-    stage-3/4 episode (review of #63)."""
-    import copy
-    import dataclasses
-
+    used, so the gate checks them in the stage-2 evidence before any R5
+    episode (review of #63; ADR-0009 D5)."""
     from inheritance.gate import EvidenceCoherenceError
     from tests.gate.test_gate_orchestrator import build_world
     orchestrator, _, _, runner, inputs, _ = build_world(tmp_path, candidates=("a",))
     ablation = inputs[0].ablation_evaluation
     child = copy.deepcopy(ablation.child_record)
-    evaluated = ablation.bootstrap
     measurements = child["measurements"]
-    if where == "child" and key == "bootstrap":
+    ids = measurements["paired_delta_task_ids"]
+    if key == "bootstrap":
         measurements.pop("bootstrap")
-    elif where == "child":
-        _set(measurements["bootstrap"], key, value)
-    elif where == "evaluation":
-        _set(evaluated, key, value)
+    elif key == "ids" and value is _DROP:
+        measurements.pop("paired_delta_task_ids")
+    elif key == "ids":
+        measurements["paired_delta_task_ids"] = {
+            "unsorted": [ids[1], ids[0]] + ids[2:],
+            "duplicated": [ids[0], ids[0]] + ids[2:],
+            "ints": list(range(len(ids)))}[value]
+    elif value is _DROP:
+        measurements["bootstrap"].pop(key)
     else:
-        _set(measurements, "paired_delta_task_ids", value)
-    bad = dataclasses.replace(ablation, _child_record=child, _bootstrap=evaluated)
-    with pytest.raises(EvidenceCoherenceError, match="ADR-0005|bootstrap is missing"):
+        measurements["bootstrap"][key] = value
+    bad = dataclasses.replace(ablation, _child_record=child)
+    with pytest.raises(EvidenceCoherenceError,
+                       match="ADR-0005|bootstrap is missing|in task_id order"):
         orchestrator.run([dataclasses.replace(inputs[0], ablation_evaluation=bad)])
     assert runner.calls == []

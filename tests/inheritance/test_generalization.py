@@ -1,275 +1,263 @@
-"""Stage-3 generalization evaluator tests (issue #12 criterion 16) -
-applicability from artifact, locked thresholds, leakage."""
+"""Stage-3 generalization evaluator tests (issue #12 criterion 16;
+recalibrated by ADR-0012 D5 and D7): the in-scope child by reference to
+stage 2, the 24-game out-of-scope check in R5 against R5's cells, the
+vacuous all-family pass (ADR-0007 E6) and the not-run child."""
+
+from fractions import Fraction
 
 import pytest
 
-from genome.validation.errors import RecordConsistencyError
+from genome.validation.loader import load_cig
 from inheritance.generalization import (
+    NOT_RUN_THRESHOLD_TEXT,
+    OUT_SCOPE_COUNT,
+    OUT_SCOPE_ROUND,
     VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT,
-    GeneralizationAllocation,
     GeneralizationEvaluator,
+    OutOfScopeAllocation,
+    paired_outcomes_sha256,
 )
-from inheritance.runner import EvaluationTask
-from runtime.loop import Budgets
-
-from tests.gate.conftest import ScriptedGateRunner
+from inheritance.runner import EvaluationIntegrityError, EvaluationTask, RunnerContractError
+from tests.gate.helpers import (
+    BANK_SHA,
+    BUDGETS,
+    FAMILY,
+    MINING_SEED,
+    PARENT_CIG,
+    UNIVERSE,
+    ScriptedGateRunner,
+    mint_envelope,
+    out_of_scope_allocation,
+    stage12_evidence,
+)
 
 GENE_ID = "look_before_heat_v1"
 
 
-def make_envelope(registry, applicability=("heat_and_place",)):
-    payload = {
-        "name": GENE_ID,
-        "principle": "Inspect affordances before acting.",
-        "when_to_apply": "Heat tasks.",
-        "applicability": {"task_families": list(applicability)},
-        "procedure": [{"id": "S1", "text": "probe heater"}],
-    }
-    uri = registry.put("skill", GENE_ID, 1, payload)
-    return {
-        "candidate": {
-            "gene_id": GENE_ID, "version": 1, "type": "skill",
-            "origin": "acquired", "artifact": uri,
-            "provenance": {"born_generation": 1,
-                            "source_trajectory": "T-aaaa1111aaaa"},
-        },
-        "validation": {"state": "candidate"},
-    }
-
-
-def make_allocation(registry, envelope, in_families=None,
-                     out_families=None, plans=True):
-    in_families = in_families or ["heat_and_place"] * 10
-    out_families = out_families or ["clean_surface"] * 10
-    in_tasks = tuple(EvaluationTask(
-        task_id="in-" + str(i), family=f, payload={"goal": "g"},
-        bank_id="generalization_bank[" + f + "]") for i, f in enumerate(in_families))
-    out_tasks = tuple(EvaluationTask(
-        task_id="out-" + str(i), family=f, payload={"goal": "g"},
-        bank_id="generalization_bank[" + f + "]") for i, f in enumerate(out_families))
-
-    def plan_for(families):
-        plan = {}
-        for f in families:
-            plan[f] = plan.get(f, 0) + 1
-        return plan
-
-    return GeneralizationAllocation(
-        in_scope_tasks=in_tasks, out_scope_tasks=out_tasks,
-        frozen_in_scope_plan=plan_for(in_families) if plans else {},
-        frozen_out_scope_plan=plan_for(out_families) if plans else {},
-        declared_frozen_applicability=("heat_and_place",))
-
-
-def make_evaluator(tmp_path, registry, base_config, envelope):
+def make_evaluator(registry, base_config, envelope):
     return GeneralizationEvaluator(
         candidate_envelope=envelope, registry=registry, base_config=base_config,
-        runner=ScriptedGateRunner(), budgets=Budgets(max_steps=4,
-                                                      max_total_retries=10,
-                                                      max_tokens_per_request=64),
-        parent_cig_id="CIG-0007", mining_seed=11)
+        budgets=BUDGETS, parent_cig_id=PARENT_CIG, mining_seed=MINING_SEED)
 
 
-def test_applicability_resolved_from_artifact(tmp_path, registry, base_config, envelope):
-    """The frozen applicability comes from the STORED artifact, bound at
-    evaluator construction - caller labels are ignored."""
-    from inheritance.generalization import resolve_frozen_applicability
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    assert evaluator._frozen_applicability == ("heat_and_place",)
-    alloc = make_allocation(registry, envelope)
-    result = evaluator.evaluate(alloc)
-    assert result.passed is True
+def stage2(registry, base_config, envelope, shape="pass", families=(FAMILY,)):
+    _, ablation = stage12_evidence(registry, base_config, envelope, stage2=shape,
+                                   families=families)
+    return ablation
 
 
-def test_in_scope_family_outside_artifact_rejected(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    alloc = make_allocation(registry, envelope,
-                             in_families=["quantum_chamber"] * 10)
-    with pytest.raises(ValueError, match="frozen applicability"):
-        evaluator.evaluate(alloc)
+def script_out_of_scope(runner, allocation, *, losses=0, rescues=0, cell_expresses=False):
+    """The first ``losses`` games: the cell solves, the with-trait execution
+    fails; the next ``rescues`` games the reverse; the rest both fail."""
+    for index, task in enumerate(allocation.tasks):
+        with_success = losses <= index < losses + rescues
+        cell_success = index < losses
+        runner.set(task.task_id, "with_trait", with_success, (GENE_ID,) if with_success else ())
+        runner.set(task.task_id, "without_trait", cell_success,
+                   (GENE_ID,) if cell_expresses else ())
 
 
-def test_out_scope_family_inside_artifact_rejected(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    alloc = make_allocation(registry, envelope,
-                             out_families=["heat_and_place"] * 10)
-    with pytest.raises(ValueError, match="frozen applicability"):
-        evaluator.evaluate(alloc)
+@pytest.fixture
+def envelope(registry):
+    return mint_envelope(registry, GENE_ID)
 
 
-def test_frozen_family_plans_enforced(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    with pytest.raises(ValueError, match="non-empty"):
-        alloc = make_allocation(registry, envelope, plans=False)
-        evaluator.evaluate(alloc)
+# -- in scope (by reference) ------------------------------------------------------------
+def test_the_in_scope_child_records_stage_2_by_reference(registry, base_config, envelope):
+    ablation = stage2(registry, base_config, envelope)
+    runner = ScriptedGateRunner()
+    allocation = out_of_scope_allocation(GENE_ID)
+    script_out_of_scope(runner, allocation)
+    result = make_evaluator(registry, base_config, envelope).evaluate(ablation, allocation, runner)
+    child = result.in_scope_child
+    load_cig(child)
+    assert child["cig_id"] == f"{PARENT_CIG}/S{MINING_SEED}-generalization_in_scope"
+    m = child["measurements"]
+    outcomes = ablation.paired_outcomes
+    assert m["by_reference"] == {
+        "stage": "ablation", "child_id": ablation.child_record["cig_id"],
+        "paired_outcomes_sha256": paired_outcomes_sha256(outcomes),
+        "games": 48, "n_plus": 24, "n_minus": 0, "net": 24}
+    assert m["episodes_run"] == 0 and m["delta"]["exact"] == "1/2"
+    assert result.in_scope_passed is True and result.delta_in == Fraction(1, 2)
+    # the in-scope side plays nothing: every call is an out-of-scope game
+    assert {task_id for task_id, _ in runner.calls} == {t.task_id for t in allocation.tasks}
 
 
-def test_exactly_40_calls_all_ids_distinct(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    runner = evaluator._runner
-    alloc = make_allocation(registry, envelope)
-    result = evaluator.evaluate(alloc)
-    gen_calls = [c for c in runner.calls
-                  if c[0].startswith("in-") or c[0].startswith("out-")]
-    assert len(gen_calls) == 40  # 20 tasks x 2 conditions
-    assert len(set(gen_calls)) == 40
-    ids = [t.task_id for t in alloc.in_scope_tasks + alloc.out_scope_tasks]
-    assert len(set(ids)) == 20
+def test_the_in_scope_child_must_be_the_candidates_own_stage_2(registry, base_config, envelope):
+    other = mint_envelope(registry, "someone_else_v1")
+    ablation = stage2(registry, base_config, other)
+    with pytest.raises(RunnerContractError, match="stage-2 record"):
+        make_evaluator(registry, base_config, envelope).evaluate(
+            ablation, out_of_scope_allocation(GENE_ID), ScriptedGateRunner())
 
 
-def test_in_scope_zero_delta_passes(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    runner = evaluator._runner
-    for i in range(10):
-        runner.set("in-" + str(i), "with_trait", True, ())
-        runner.set("in-" + str(i), "without_trait", True, ())
-    result = evaluator.evaluate(make_allocation(registry, envelope))
-    assert result.delta_in == 0.0
-    assert result.in_scope_passed is True  # delta 0 >= 0
-
-
-def test_in_scope_negative_delta_fails(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    runner = evaluator._runner
-    for i in range(10):
-        runner.set("in-" + str(i), "with_trait", False, ())
-        runner.set("in-" + str(i), "without_trait", True, ())
-    result = evaluator.evaluate(make_allocation(registry, envelope))
-    assert result.delta_in == -1.0
-    assert result.in_scope_passed is False
-
-
-def test_out_scope_below_minus_threshold_fails(tmp_path, registry, base_config, envelope):
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    runner = evaluator._runner
-    for i in range(10):
-        runner.set("out-" + str(i), "with_trait", i < 4, ())
-        runner.set("out-" + str(i), "without_trait", i < 9, ())
-    result = evaluator.evaluate(
-        make_allocation(registry, envelope, out_families=["clean_surface"] * 10))
-    assert result.delta_out == pytest.approx(-0.5)
-    assert result.out_scope_passed is False
-
-
-def test_control_target_expression_contamination_fails_closed(tmp_path, registry, base_config, envelope):
-    from inheritance.runner import EvaluationIntegrityError
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    runner = evaluator._runner
-    for i in range(10):
-        runner.set("in-" + str(i), "with_trait", True, ())
-        runner.set("in-" + str(i), "without_trait", True, (GENE_ID,))
-    with pytest.raises(EvaluationIntegrityError, match="contaminated"):
-        evaluator.evaluate(make_allocation(registry, envelope))
-
-
-def test_trajectory_mismatch_fail_closed(tmp_path, registry, base_config, envelope):
-    from inheritance.runner import EpisodeOutcome, RunnerContractError
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    runner = evaluator._runner
-    for i in range(10):
-        runner.set("in-" + str(i), "with_trait", True, ())
-    real_run = runner.run_episode
-
-    def no_trajectory(task, config, budgets, condition, settings=None):
-        outcome = real_run(task, config, budgets, condition, settings)
-        return EpisodeOutcome(
-            task_id=outcome.task_id, condition=outcome.condition,
-            success=outcome.success,
-            expressed_gene_ids=outcome.expressed_gene_ids,
-            status=outcome.status, trajectory_id=None,
-            effective_settings=outcome.effective_settings)
-    runner.run_episode = no_trajectory
-    with pytest.raises(RunnerContractError, match="trajectory_id"):
-        evaluator.evaluate(make_allocation(registry, envelope))
-
-
-def test_both_children_schema_valid(tmp_path, registry, base_config, envelope):
-    from genome.validation.loader import load_cig
-    evaluator = make_evaluator(tmp_path, registry, base_config, envelope)
-    result = evaluator.evaluate(make_allocation(registry, envelope))
-    for child in result.child_records:
-        load_cig(child)
-    assert result.in_scope_child["cig_id"].endswith("-generalization_in_scope")
-    assert result.out_scope_child["cig_id"].endswith(
-        "-generalization_out_of_scope")
-
-
-# --- ADR-0007 E6: a vacuous out-of-scope stage ------------------------------
-
-UNIVERSE = ("clean_surface", "cool_and_place", "heat_and_place")
-
-
-def universal_envelope(registry, applicability=UNIVERSE, gene_id="probe_everything_v1"):
-    payload = {"name": gene_id, "principle": "Look before acting.",
-               "when_to_apply": "Any household task.",
-               "applicability": {"task_families": list(applicability)}}
-    uri = registry.put("skill", gene_id, 1, payload)
-    return {"candidate": {"gene_id": gene_id, "version": 1, "type": "skill",
-                          "origin": "acquired", "artifact": uri,
-                          "provenance": {"born_generation": 1,
-                                         "source_trajectory": "T-aaaa1111aaaa"}},
-            "validation": {"state": "candidate"}}
-
-
-def vacuous_allocation(declared=UNIVERSE, universe=UNIVERSE, in_families=None, **overrides):
-    in_families = in_families or [UNIVERSE[i % 3] for i in range(10)]
-    plan = {}
-    for f in in_families:
-        plan[f] = plan.get(f, 0) + 1
-    args = dict(in_scope_tasks=tuple(EvaluationTask(
-                    task_id=f"in-{i}", family=f, payload={"goal": "g"},
-                    bank_id=f"generalization_bank[{f}]") for i, f in enumerate(in_families)),
-                out_scope_tasks=(), frozen_in_scope_plan=plan, frozen_out_scope_plan={},
-                declared_frozen_applicability=declared, family_universe=universe)
-    args.update(overrides)
-    return GeneralizationAllocation(**args)
-
-
-def test_a_vacuous_out_of_scope_stage_runs_no_episode_and_passes(tmp_path, registry,
-                                                                  base_config):
-    evaluator = make_evaluator(tmp_path, registry, base_config, universal_envelope(registry))
-    allocation = vacuous_allocation()
-    assert allocation.out_scope_vacuous
-    result = evaluator.evaluate(allocation)
-    calls = evaluator._runner.calls
-    assert len(calls) == 20 and all(c[0].startswith("in-") for c in calls)
-    assert result.out_scope_passed is True and result.delta_out is None
-    child = result.out_scope_child["measurements"]
-    assert child["vacuous"] is True and child["stage_pass"] is True
-    assert child["delta"] is None and child["scope_episodes"] == []
-    assert child["locked_threshold"] == {"min_delta": None,
-                                         "rule": VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT}
-    assert "pooled in-scope delta" in child["vacuous_reason"]
-    assert child["allocation"]["out_scope_vacuous"] is True
-    assert child["allocation"]["family_universe"] == list(UNIVERSE)
-    assert "vacuous" not in result.in_scope_child["measurements"]
-
-
-def test_a_non_vacuous_allocation_records_no_vacuous_keys(tmp_path, registry, base_config,
-                                                          envelope):
-    result = make_evaluator(tmp_path, registry, base_config, envelope).evaluate(
-        make_allocation(registry, envelope))
-    assert "vacuous" not in result.out_scope_child["measurements"]
-    assert "out_scope_vacuous" not in result.out_scope_child["measurements"]["allocation"]
-
-
-@pytest.mark.parametrize("overrides,message", [
-    ({"universe": ()}, "family universe"),
-    ({"declared": UNIVERSE[:2]}, "names every family"),
-    ({"frozen_out_scope_plan": {"clean_surface": 0}}, "empty plan"),
-    ({"in_families": ["heat_and_place"] * 10}, "cover every family"),
+# -- out of scope --------------------------------------------------------------------------
+@pytest.mark.parametrize("losses,rescues,passed,delta", [
+    (0, 0, True, "0/1"),       # the record always writes numerator/denominator
+    (1, 0, True, "-1/24"),     # a net loss of 1 of 24 is within -0.05
+    (2, 0, False, "-1/12"),    # 2 of 24 is not
+    (2, 1, True, "-1/24"),     # the net decides, not the losses
+    (0, 3, True, "1/8"),
 ])
-def test_a_vacuous_allocation_is_checked_at_construction(overrides, message):
+def test_the_out_of_scope_rule_in_exact_arithmetic(registry, base_config, envelope, losses,
+                                                   rescues, passed, delta):
+    ablation = stage2(registry, base_config, envelope)
+    runner = ScriptedGateRunner()
+    allocation = out_of_scope_allocation(GENE_ID)
+    script_out_of_scope(runner, allocation, losses=losses, rescues=rescues)
+    result = make_evaluator(registry, base_config, envelope).evaluate(ablation, allocation, runner)
+    m = result.out_scope_child["measurements"]
+    assert result.out_scope_passed is passed and m["stage_pass"] is passed
+    assert m["delta"]["exact"] == delta and result.delta_out == Fraction(delta)
+    assert m["summary"]["net_loss"] == losses - rescues
+    assert result.passed is passed  # the in-scope side passes
+
+
+def test_the_out_of_scope_check_plays_24_games_in_r5(registry, base_config, envelope):
+    ablation = stage2(registry, base_config, envelope)
+    runner = ScriptedGateRunner()
+    allocation = out_of_scope_allocation(GENE_ID)
+    script_out_of_scope(runner, allocation)
+    result = make_evaluator(registry, base_config, envelope).evaluate(ablation, allocation, runner)
+    assert runner.calls == [(t.task_id, condition) for t in allocation.tasks
+                            for condition in ("with_trait", "without_trait")]
+    child = result.out_scope_child
+    load_cig(child)
+    m = child["measurements"]
+    assert m["round"] == OUT_SCOPE_ROUND == 5 and m["episodes_run"] == OUT_SCOPE_COUNT == 24
+    assert all(o["round"] == o["cell"]["round"] == 5 and o["cell"]["seed"] == MINING_SEED
+               for o in m["paired_outcomes"])
+    assert m["allocation"]["omitted_families"] == ["clean_surface", "navigate"]
+    assert m["allocation"]["family_counts"] == {"clean_surface": 12, "navigate": 12}
+    assert m["allocation"]["bank_sha256"] == BANK_SHA
+    assert "vacuous" not in m and "not_run" not in m
+
+
+def test_a_cell_that_expresses_the_target_is_an_integrity_error(registry, base_config,
+                                                                envelope):
+    ablation = stage2(registry, base_config, envelope)
+    runner = ScriptedGateRunner()
+    allocation = out_of_scope_allocation(GENE_ID)
+    script_out_of_scope(runner, allocation, cell_expresses=True)
+    with pytest.raises(EvaluationIntegrityError, match="contaminated"):
+        make_evaluator(registry, base_config, envelope).evaluate(ablation, allocation, runner)
+
+
+def test_a_runner_reporting_another_task_is_rejected(registry, base_config, envelope):
+    from inheritance.runner import EpisodeOutcome
+    ablation = stage2(registry, base_config, envelope)
+    runner = ScriptedGateRunner()
+    real = runner.run_episode
+
+    def mismatched(task, config, budgets, condition, settings=None):
+        outcome = real(task, config, budgets, condition, settings)
+        return EpisodeOutcome(task_id="wrong", condition=condition, success=outcome.success,
+                              expressed_gene_ids=outcome.expressed_gene_ids,
+                              status=outcome.status, trajectory_id=outcome.trajectory_id,
+                              effective_settings=outcome.effective_settings)
+    runner.run_episode = mismatched
+    with pytest.raises(RunnerContractError, match="task_id"):
+        make_evaluator(registry, base_config, envelope).evaluate(
+            ablation, out_of_scope_allocation(GENE_ID), runner)
+
+
+def test_the_out_of_scope_check_needs_the_r5_runner(registry, base_config, envelope):
+    ablation = stage2(registry, base_config, envelope)
+    with pytest.raises(RunnerContractError, match="R5"):
+        make_evaluator(registry, base_config, envelope).evaluate(
+            ablation, out_of_scope_allocation(GENE_ID), None)
+
+
+# -- not run (ADR-0012 D7) ------------------------------------------------------------------
+@pytest.mark.parametrize("families", [(FAMILY,), UNIVERSE])
+def test_a_candidate_that_never_met_alpha_gets_a_not_run_child(registry, base_config,
+                                                              families):
+    envelope = mint_envelope(registry, GENE_ID, families=families)
+    ablation = stage2(registry, base_config, envelope, shape="futility", families=families)
+    assert ablation.alpha_met is False
+    runner = ScriptedGateRunner()
+    allocation = out_of_scope_allocation(GENE_ID, applicability=families)
+    result = make_evaluator(registry, base_config, envelope).evaluate(ablation, allocation, runner)
+    assert runner.calls == []
+    child = result.out_scope_child
+    load_cig(child)
+    m = child["measurements"]
+    assert m["not_run"] is True and m["stage_pass"] is False and m["episodes_run"] == 0
+    assert m["all_family_applicability"] is (families == UNIVERSE)
+    assert m["locked_threshold"] == {"min_delta": None, "rule": NOT_RUN_THRESHOLD_TEXT}
+    assert "ADR-0012 D7" in m["not_run_reason"]
+    assert result.out_scope_state == "not_run" and result.delta_out is None
+    assert result.passed is False
+    # the in-scope child is still written, by reference
+    assert result.in_scope_child["measurements"]["by_reference"]["games"] == 48
+
+
+# -- vacuous (ADR-0007 E6) ----------------------------------------------------------------
+def test_an_all_family_applicability_passes_vacuously(registry, base_config):
+    envelope = mint_envelope(registry, GENE_ID, families=UNIVERSE)
+    ablation = stage2(registry, base_config, envelope, families=UNIVERSE)
+    runner = ScriptedGateRunner()
+    allocation = out_of_scope_allocation(GENE_ID, applicability=UNIVERSE)
+    assert allocation.vacuous and allocation.tasks == ()
+    result = make_evaluator(registry, base_config, envelope).evaluate(ablation, allocation, runner)
+    assert runner.calls == []
+    m = result.out_scope_child["measurements"]
+    load_cig(result.out_scope_child)
+    assert m["vacuous"] is True and m["stage_pass"] is True and m["episodes_run"] == 0
+    assert m["locked_threshold"] == {"min_delta": None,
+                                     "rule": VACUOUS_OUT_OF_SCOPE_THRESHOLD_TEXT}
+    assert m["allocation"]["out_scope_vacuous"] is True
+    assert m["allocation"]["family_universe"] == list(UNIVERSE)
+    assert result.out_scope_state == "vacuous" and result.passed is True
+
+
+def test_the_allocation_must_be_for_the_stored_applicability(registry, base_config):
+    """The caller's allocation says every family; the stored artifact names
+    one: the stage is not vacuous, and nothing runs."""
+    envelope = mint_envelope(registry, GENE_ID)
+    ablation = stage2(registry, base_config, envelope)
+    runner = ScriptedGateRunner()
+    with pytest.raises(ValueError, match="frozen applicability"):
+        make_evaluator(registry, base_config, envelope).evaluate(
+            ablation, out_of_scope_allocation(GENE_ID, applicability=UNIVERSE), runner)
+    assert runner.calls == []
+
+
+# -- the allocation ------------------------------------------------------------------------
+def _tasks(families, count=OUT_SCOPE_COUNT, bank=None):
+    return tuple(EvaluationTask(task_id=f"out-{j:02d}", family=families[j % len(families)],
+                                payload={"goal": "g"},
+                                bank_id=bank or f"benefit_bank[{families[j % len(families)]}]")
+                 for j in range(count))
+
+
+@pytest.mark.parametrize("kwargs,message", [
+    ({"tasks": _tasks(("clean_surface", "navigate"), 23)}, "exactly 24"),
+    ({"tasks": _tasks(("navigate", "clean_surface"))}, "slot belongs to"),
+    ({"tasks": _tasks(("clean_surface", "navigate"), bank="t_mine")}, "bank provenance"),
+    ({"tasks": _tasks(("clean_surface", "navigate"), 23)
+      + _tasks(("clean_surface",), 1)}, "distinct"),
+    ({"applicability": ("cool_and_place",)}, "non-empty subset"),
+    ({"applicability": ()}, "non-empty subset"),
+    ({"family_universe": ()}, "family universe"),
+    ({"bank_sha256": "b" * 63}, "sha256"),
+    ({"applicability": UNIVERSE}, "vacuous out-of-scope stage has no games"),
+])
+def test_the_allocation_is_checked_at_construction(kwargs, message):
+    args = {"tasks": _tasks(("clean_surface", "navigate")), "applicability": (FAMILY,),
+            "family_universe": UNIVERSE, "bank_sha256": BANK_SHA}
+    args.update(kwargs)
     with pytest.raises(ValueError, match=message):
-        vacuous_allocation(**overrides)
+        OutOfScopeAllocation(**args)
 
 
-def test_a_vacuous_stage_needs_the_stored_applicability_to_cover_the_universe(
-        tmp_path, registry, base_config):
-    """The caller declares every family, but the stored artifact names two:
-    the stage is not vacuous, and nothing runs."""
-    narrow = universal_envelope(registry, applicability=UNIVERSE[1:], gene_id="narrow_v1")
-    evaluator = make_evaluator(tmp_path, registry, base_config, narrow)
-    with pytest.raises(ValueError, match="stored applicability"):
-        evaluator.evaluate(vacuous_allocation())
-    assert evaluator._runner.calls == []
+@pytest.mark.parametrize("omitted,counts", [
+    (1, [24]), (2, [12, 12]), (3, [8, 8, 8]), (4, [6, 6, 6, 6]), (5, [5, 5, 5, 5, 4])])
+def test_the_round_robin_family_counts(omitted, counts):
+    """ADR-0012 D5: 24, 12, 8, 6, or 5/5/5/5/4 games per omitted family."""
+    universe = tuple(f"fam{i}" for i in range(omitted + 1))
+    applicability = (universe[-1],)
+    allocation = out_of_scope_allocation("g", applicability=applicability, universe=universe)
+    metadata = allocation.allocation_metadata()
+    assert [metadata["family_counts"][f] for f in universe[:-1]] == counts

@@ -47,22 +47,25 @@ def test_over_threshold_expression_overhead_rejects(tmp_path):
 
 
 def test_generalization_failure_makes_a_candidate_ineligible(tmp_path):
-    """M5: a candidate that fails stage 3 is not preliminary-eligible, so it
-    can neither be paired nor eliminate an eligible candidate."""
+    """M5: a candidate that fails stage 3 (its out-of-scope check, ADR-0012
+    D5) is not preliminary-eligible, so it can neither be paired nor
+    eliminate an eligible candidate."""
     world = build_world(tmp_path, candidates=("a", "b"),
                         ablation_deltas={"a": 0.9, "b": 0.1},
                         interaction={"both": (False, ()), "neither": (True, ())})
     orch, somatic, cig_store, runner, inputs, registry = world
-    for i in range(10):  # a's in-scope with-trait episodes fail: delta_in < 0
-        runner.set(f"in-a-{i}", "with_trait", False, ("a",))
+    for task in inputs[0].generalization_allocation.tasks:  # a loses 24 of 24 out of scope
+        runner.set(task.task_id, "with_trait", False, ("a",))
     outcome = orch.run(inputs)
     by_gene = {r.gene_id: r for r in outcome.results}
-    assert by_gene["a"].stage_results["generalization_in_scope"] is False
+    assert by_gene["a"].stage_results["generalization_out_of_scope"] is False
     assert by_gene["a"].verdict == "reject"
     # b, despite its lower contribution, is not eliminated by an ineligible a
     assert by_gene["b"].eliminated_by is None and by_gene["b"].verdict == "promote"
     interaction = by_gene["b"].stage4_child["measurements"]["interaction"]
     assert interaction["pair_count"] == 0 and interaction["vacuous"] is True
+    assert by_gene["a"].stage4_child["measurements"]["interaction"]["reason"].startswith(
+        "not evaluated")
     assert not any(cond in ("both", "neither") for _, cond in runner.calls)
 
 
@@ -118,18 +121,22 @@ def test_target_regulation_reaches_every_with_trait_episode(tmp_path):
     (lambda m: m["bootstrap"].update(lower_bound=m["bootstrap"]["lower_bound"] + 0.01),
      "lower_bound .* != recomputed"),
     (lambda m: m["bootstrap"].update(upper_bound=1.0), "upper_bound .* != recomputed"),
-    (lambda m: m.update(point_estimate_delta_success=0.6), "point estimate .* != recomputed"),
-    (lambda m: m["paired_deltas"].__setitem__(0, -1.0), "lower_bound .* != recomputed"),
-    (lambda m: m.update(paired_deltas=m["paired_deltas"][:19]), "19 paired deltas for 20"),
-    (lambda m: m["allocation"].update(task_ids=["other"] * 20), "not the allocation's tasks"),
+    (lambda m: m.update(point_estimate_delta_success=0.6), "contribution"),
+    (lambda m: m["paired_outcomes"][0]["with_trait"].update(success=False),
+     "recorded looks|stop"),
+    (lambda m: m.update(paired_outcomes=m["paired_outcomes"][:47]), "does not stop"),
+    (lambda m: m["allocation"].update(task_ids=["other"] * 192), "allocation's game"),
+    (lambda m: m["looks"][0].update(p={"exact": "1/2", "float": 0.5}), "recorded looks"),
     (lambda m: m["bootstrap"].pop("confidence"), "confidence None"),
     (lambda m: m["bootstrap"].update(confidence=0.9), "confidence 0.9"),
     (lambda m: m["bootstrap"].update(method="bca"), "method 'bca'"),
+    (lambda m: m["bootstrap"].update(descriptive=False), "descriptive False"),
 ])
-def test_the_gate_recomputes_the_ablation_bound(tmp_path, change, message):
-    """ADR-0009 D5: the gate recomputes the locked bootstrap from the child's
-    deltas; a record whose bound, estimate, tasks or method differ is no
-    evidence, and no stage-3/4 episode runs."""
+def test_the_gate_recomputes_the_stage_2_decision(tmp_path, change, message):
+    """ADR-0012 D4 (as ADR-0009 D5 did for the bootstrap): the gate
+    recomputes the sequential decision and the descriptive bootstrap from
+    the child; a record that does not recompute is no evidence, and no R5
+    episode runs."""
     world = build_world(tmp_path, candidates=("a",))
     orch, somatic, cig_store, runner, inputs, registry = world
     ablation = inputs[0].ablation_evaluation
@@ -142,7 +149,7 @@ def test_the_gate_recomputes_the_ablation_bound(tmp_path, change, message):
     assert runner.calls == []
 
 
-def test_a_stage_pass_the_recomputed_bound_does_not_give_is_rejected(tmp_path):
+def test_a_stage_pass_the_recomputed_decision_does_not_give_is_rejected(tmp_path):
     world = build_world(tmp_path, candidates=("a",))
     orch, somatic, cig_store, runner, inputs, registry = world
     ablation = inputs[0].ablation_evaluation
@@ -150,6 +157,36 @@ def test_a_stage_pass_the_recomputed_bound_does_not_give_is_rejected(tmp_path):
     child["measurements"]["stage_pass"] = False
     bad = dataclasses.replace(inputs[0], ablation_evaluation=dataclasses.replace(
         _ablation_with_child(ablation, child), _passed=False))
-    with pytest.raises(EvidenceCoherenceError, match="stage_pass False != the locked rule"):
+    with pytest.raises(EvidenceCoherenceError, match="stage_pass False != the rule's True"):
+        orch.run([bad])
+    assert runner.calls == []
+
+
+def test_an_evaluation_that_disagrees_with_its_record_is_rejected(tmp_path):
+    """The evaluation the gate consumes must carry its record's alpha_met and
+    contribution, not only its pass (ADR-0012 D4, D7)."""
+    from fractions import Fraction
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    ablation = inputs[0].ablation_evaluation
+    for change in ({"_alpha_met": False}, {"_contribution": Fraction(1, 3)}):  # the record has 1/2
+        bad = dataclasses.replace(inputs[0],
+                                  ablation_evaluation=dataclasses.replace(ablation, **change))
+        with pytest.raises(EvidenceCoherenceError, match="pass, alpha_met or contribution"):
+            orch.run([bad])
+    assert runner.calls == []
+
+
+def test_a_replay_record_off_the_expression_rule_is_rejected(tmp_path):
+    """ADR-0012 D3 recomputed: a successful source episode that did not
+    express the gene cannot pass stage 1."""
+    world = build_world(tmp_path, candidates=("a",))
+    orch, somatic, cig_store, runner, inputs, registry = world
+    replay = inputs[0].replay_evaluation
+    child = copy.deepcopy(replay.child_record)
+    child["measurements"]["episodes"][0]["expressed_gene_ids"] = []
+    bad = dataclasses.replace(inputs[0], replay_evaluation=dataclasses.replace(
+        replay, _child_record=child))
+    with pytest.raises(EvidenceCoherenceError, match="expression rule"):
         orch.run([bad])
     assert runner.calls == []

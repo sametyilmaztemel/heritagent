@@ -2,8 +2,11 @@
 Amendment A1).
 
 Locked M0 contrast: **both candidate traits vs neither trait** on the same
-10 frozen interaction tasks. One deterministic execution per task/condition
-(20 calls per unordered pair); no single-trait reruns.
+10 frozen interaction tasks. One deterministic execution per task/condition;
+no single-trait reruns. Since ADR-0012 D2 and D6 the pairs play in round R6
+and the neither side is the seed's R6 G0 cell of each game, read by every
+pair: a pair costs 10 both-trait episodes, and the neither trajectory ids
+recur across the pairs of a seed.
 
 delta_pair = mean(success_both - success_neither)
 harmful iff delta_pair < -0.05.
