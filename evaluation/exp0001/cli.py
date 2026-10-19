@@ -53,11 +53,12 @@ variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
 Python's traceback (1). A failed last snapshot leaves ``UNMIRRORED.json`` in
 the run directory, also after an error: the newest records exist only on
 this machine, and the notebooks keep the runtime. So does a SIGTERM while
-the command holds its directory (the stop button's second press). The one
-exception is another machine taking over the mirror: it holds the run now,
-and the command stops with exit 2 and no marker. ``rehearse`` and
-``rehearse-run`` leave no marker either: a rehearsal is started again, never
-resumed. The last snapshot is not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
+the command holds its directory (the stop button's second press). For
+``run``, ``pilot`` and ``snapshot`` the one exception is another machine
+taking over the mirror: it holds the run now, and the command stops with
+exit 2 and no marker. ``rehearse`` and ``rehearse-run`` never leave the
+marker: a rehearsal is started again, never resumed. The last snapshot is
+not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
 directory's one-writer lock from before they touch the mirror until after
 their last snapshot.
 
