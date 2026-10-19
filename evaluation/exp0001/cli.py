@@ -15,15 +15,23 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   each in its own message shape: G0's ReAct reply with the
                   stop sequence, and the teacher's structured output under
                   the miner's JSON schema (the teacher first runs only after
-                  the 540 lifetime episodes)
+                  the 540 lifetime episodes); ``--gate-shape`` adds the ReAct
+                  call as a gate episode sends it (temperature 0, a seed)
   pilot           the calibration pilot -> pilot-report.json
   rehearse        the pilot without a GPU or a model: the same checks, games,
                   workers, ledger, tokenizer, mirror and report against a
                   stand-in server, with an outage and a restore on the way
                   (run it on a CPU runtime before the A100 is paid for)
+  rehearse-run    the whole run without a GPU or a model, at the locked
+                  protocol: the run's code against a stand-in server that
+                  answers from a committed script, through a server death, two
+                  restores and a pause, checked against what the script makes
+                  the rule texts decide (a CPU runtime, hours; before the run)
   rehearsal-check whether a passed rehearsal covers this machine (commit,
-                  model, Python, pinned software)
-  run             EXP-0001: write (or check) the run-start record, restore the
+                  model, Python, pinned software; ``--kind run``: also the
+                  tokenizer, the protocol and the worker count)
+  run             EXP-0001: check the passed run rehearsal (``--rehearsal-
+                  passed``), write (or check) the run-start record, restore the
                   run directory from its mirror if it is missing, run or
                   resume, snapshot to the mirror
   status          a read-only summary of a run (or pilot) directory
@@ -312,23 +320,28 @@ class _Pid:
 
 def cmd_preflight(args) -> int:
     prepared = load_prepared(args.prepared)
-    print(json.dumps(_preflight(_adapter(args, prepared)), indent=2))
+    print(json.dumps(_preflight(_adapter(args, prepared), gate_shape=args.gate_shape), indent=2))
     return 0
 
 
-def _preflight(adapter: VLLMServerAdapter) -> dict:
+PREFLIGHT_TASK = ("You are in the middle of a room.\n\nYour task is to: look at the room.\n\n"
+                  "Admissible commands:\nlook")
+
+
+def _preflight(adapter: VLLMServerAdapter, *, gate_shape: bool = False) -> dict:
     """G0's own message shape (system and user, ReActPlanner) with its stop
     sequence, and the teacher's (one user message, ``teacher_messages``)
     under the miner's schema: a chat template that refuses either shape
-    fails here, before any episode."""
+    fails here, before any episode. ``gate_shape`` (the run's): the ReAct
+    call also once at temperature 0 with a mining seed, as every gate
+    episode is sent (the pilot sends none)."""
     from evaluation.benchmarks.alfworld.splits import ALFWORLD_TASK_TYPES
     from runtime.model_adapters.base import GenerationSettings
     from runtime.policies.planner_react import STOP_SEQUENCES, ReActPlanner
     from runtime.tool_adapters.alfworld import ACT_TOOL
     from traits.miner.miner import output_schema, render_teacher_prompt, teacher_messages
 
-    task = ("You are in the middle of a room.\n\nYour task is to: look at the room.\n\n"
-            "Admissible commands:\nlook")
+    task = PREFLIGHT_TASK
     planner = ReActPlanner({"style": "react", "max_plan_steps": 1})
     reply = adapter.generate(
         planner.build_messages(task=task, observations=[task], skills=(), tools=[ACT_TOOL],
@@ -336,6 +349,14 @@ def _preflight(adapter: VLLMServerAdapter) -> dict:
         GenerationSettings(temperature=0.0, max_tokens=64, seed=None, stop=STOP_SEQUENCES))
     if reply.prompt_tokens is None or reply.completion_tokens is None:
         raise CliError("the server reports no token usage; the run needs exact counts")
+    gate = None
+    if gate_shape:
+        from evaluation.exp0001.protocol import MINING_SEEDS
+        gate = adapter.generate(
+            planner.build_messages(task=task, observations=[task], skills=(), tools=[ACT_TOOL],
+                                   step=1, max_steps=1),
+            GenerationSettings(temperature=0.0, max_tokens=64, seed=MINING_SEEDS[0],
+                               stop=STOP_SEQUENCES))
     prompt = render_teacher_prompt(
         evidence_text="(a preflight call: no trajectories; propose at most one short skill)",
         family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)), max_proposals=1)
@@ -344,7 +365,8 @@ def _preflight(adapter: VLLMServerAdapter) -> dict:
         output_schema())
     return {"react_reply": reply.text[:200], "react_tokens": [
         reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
-        "teacher_finish_reason": teacher.finish_reason}
+        "teacher_finish_reason": teacher.finish_reason,
+        **({} if gate is None else {"gate_shape_reply": gate.text[:200]})}
 
 
 EXIT_UNMIRRORED = 3
@@ -774,10 +796,13 @@ def cmd_rehearse(args) -> int:
 
 def cmd_rehearsal_check(args) -> int:
     """Whether a passed rehearsal covers this machine: the same clean commit,
-    model and revision, Python and pinned software. The notebooks rehearse
-    again before the model download when it does not."""
+    model and revision, Python and pinned software (``--kind run``: also the
+    tokenizer and the protocol, as ``run`` checks them). The notebooks
+    rehearse again before the model download when it does not."""
     from evaluation.exp0001 import rehearsal
     passed = _json(args.passed)
+    if args.kind == "run":
+        return _run_rehearsal_check(args, passed)
     if passed.get("schema") != rehearsal.REHEARSAL_PASSED_SCHEMA or passed.get("passed") is not True:
         raise CliError(f"{args.passed} is not a passed rehearsal")
     commit, dirty = git_state(Path(args.repo))
@@ -796,6 +821,217 @@ def cmd_rehearsal_check(args) -> int:
     _out(f"the rehearsal of {commit} with {args.model}@{passed['model']['revision']} passed on "
          f"this Python and software ({passed['finished_at']})")
     return 0
+
+
+def _run_rehearsal_check(args, passed: Mapping) -> int:
+    from evaluation.exp0001 import run_rehearsal
+    from evaluation.exp0001.protocol import PROTOCOL
+    from evaluation.exp0001.provenance import plain
+    commit, dirty = git_state(Path(args.repo))
+    if dirty:
+        raise CliError(f"the checkout at {args.repo} has changes; a rehearsal covers a clean commit")
+    revision = args.revision
+    differ = run_rehearsal.check_run_rehearsal(
+        passed, commit=commit, python=sys.version.split()[0], software=software_stack(),
+        model_id=args.model, revision=revision,
+        tokenizer=None if revision is None else f"hf-tokenizer:{args.model}@{revision}",
+        protocol=run_rehearsal.protocol_sha256(plain(PROTOCOL)), workers=args.workers)
+    if differ:
+        raise CliError(f"the run rehearsal does not cover this machine: {json.dumps(differ)}")
+    _out(f"the run rehearsal of {commit} with {args.model}@{passed['model']['revision']} passed "
+         f"on this Python and software ({passed['finished_at']})")
+    return 0
+
+
+def cmd_rehearse_run(args) -> int:
+    """The run without a GPU or a model (``evaluation.exp0001.run_rehearsal``):
+    the run's own code at the locked protocol, with the real games, workers,
+    ledger, tokenizer, mirror and figures, against a stand-in server that
+    answers from a committed script. Three passes: a blip the adapter's
+    retries absorb, then the server's death in seed 11's round R2; a restore
+    from the mirror, then a pause inside the final evaluation; a second
+    restore, then the end. The run must then say what the script makes the
+    rule texts say (``run_rehearsal.expected_outcome``)."""
+    import shutil
+    from argparse import Namespace
+
+    from evaluation.exp0001 import rehearsal
+    from evaluation.exp0001 import run_rehearsal as rr
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
+    from evaluation.exp0001.serving import resolve_revision
+    from runtime.model_adapters.errors import BackendUnavailableError
+
+    out = Path(args.out_dir)
+    _empty_dir(out, "directory")
+    _empty_dir(args.mirror_dir, "mirror directory")
+    repo = Path(args.repo)
+    commit, dirty = git_state(repo)
+    if dirty:
+        raise CliError(f"the checkout at {repo} has changes; the run rehearsal names a clean "
+                       f"commit")
+    splits, pilot, bank = _manifests(repo)
+    verify_data(args.data_root, splits, pilot, bank)
+    script = rr.load_script(args.script)
+    try:
+        rr.validate_script(script, splits, pilot, bank)
+        expected = rr.expected_outcome(script, splits, bank)
+        plan = rr.fault_plan(script, bank, expected)
+    except rr.RehearsalScriptError as exc:
+        raise CliError(f"the rehearsal's script: {exc}") from None
+    revision = resolve_revision(args.model, args.revision)
+    counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
+    _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python "
+         f"{sys.version.split()[0]}; the run will play {expected['episodes']['total']} episodes")
+    deadline = time.monotonic() + args.max_hours * 3600
+
+    def overdue() -> bool:
+        return time.monotonic() > deadline
+
+    policy = rr.RunPolicy(script, splits, preflight_task=PREFLIGHT_TASK)
+    faults = rr.Faults(**plan, game_of=policy.game, clock=time.monotonic)
+    prepared = {"model_id": args.model, "revision": revision, "path": None,
+                "weights": {"sha256": rr.SENTINEL_WEIGHTS_SHA256,
+                            "note": "a rehearsal loads no weights"}}
+    local = out / "run"  # the figures and the record go beside it, never into it
+    checks: dict[str, bool] = {}
+    factory = AlfworldEnvFactory(args.data_root, splits, extra_games=bank_content_index(bank))
+    census = rr.census_games(splits, bank, script)
+    failures = _census(factory, census, args.workers)
+    checks["every game outside the script opens through the run's factory (the census)"] = \
+        not failures
+    _out(f"[rehearsal] census: {len(census)} games the script does not play opened, "
+         f"{len(failures)} failed" + (f" (first {failures[0]})" if failures else ""))
+    with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
+                                 template_kwargs=CHAT_TEMPLATE_KWARGS,
+                                 check_schema=rehearsal.xgrammar_check(counter.tokenizer),
+                                 check_request=rr.run_protocol_issues, fail_request=faults,
+                                 count_completion=counter.count_tokens) as server:
+        session = Namespace(repo=repo, data_root=args.data_root, local_dir=local,
+                            mirror_dir=args.mirror_dir, workers=args.workers,
+                            server_url=server.url, server_info=None,
+                            progress_every=args.progress_every, run_id=rr.RUN_REHEARSAL_RUN_ID)
+
+        def adapter():  # the run's own retries (rr.ADAPTER_OPTIONS is empty)
+            return _adapter(session, prepared, **rr.ADAPTER_OPTIONS)
+
+        def run(pause_when=None) -> int:
+            return _run(session, gpu=dict(rehearsal.REHEARSAL_GPU), prepared=prepared,
+                        adapter=adapter, counter=lambda: counter, pause_when=pause_when,
+                        disposable=True)
+
+        def summary() -> dict:
+            return RunLedger(local / "ledger.jsonl", run_id=rr.RUN_REHEARSAL_RUN_ID,
+                             clock=time.time, caps=_json(local / "run-start.json")["protocol"][
+                                 "caps"], readonly=True).summary()
+
+        preflight = _preflight(adapter(), gate_shape=True)
+        checks["preflight"] = preflight["teacher_reply"] == {"proposals": []} and \
+            policy.kinds["preflight"] == 3
+
+        def one_pass(pause=None) -> int:
+            code = run(pause_when=lambda: overdue() or (pause is not None and pause()))
+            if code == 130:
+                raise KeyboardInterrupt  # stopped: a rehearsal never resumes (main says so)
+            if overdue() and not (local / "report.json").exists():
+                raise CliError(f"the run rehearsal took more than --max-hours {args.max_hours}; "
+                               f"start it again with a new directory and mirror directory")
+            return code
+
+        # pass 1: the blip, then the server dies in seed 11's R2
+        try:
+            one_pass()
+            checks["the server's death stopped the first pass"] = False
+        except BackendUnavailableError as exc:
+            checks["the server's death stopped the first pass"] = server.url in str(exc)
+        faults.clear()
+        checks.update(rr.first_pass_checks(_ledger_lines(local / "ledger.jsonl"), faults,
+                                           aborted=summary()["aborted_attempts"]))
+        checks["the first pass left no unmirrored marker"] = not (local / UNMIRRORED).exists()
+        shutil.rmtree(local)  # the rehearsal's own directory: the next pass restores it
+        _out("[rehearsal] the first pass ended at the server's death; restoring from the mirror")
+        # pass 2: restored, through the gate, paused inside the final evaluation
+        code = one_pass(lambda: policy.kinds["final"] >= rr.PAUSE_AFTER_FINAL_REQUESTS)
+        checks.update(rr.second_pass_checks(
+            _ledger_lines(local / "ledger.jsonl"), expected, code=code,
+            report_written=(local / "report.json").exists(),
+            restores=summary()["notes"].count("restore")))
+        shutil.rmtree(local)
+        _out("[rehearsal] the second pass paused in the final evaluation; restoring again")
+        # pass 3: restored again, to the end
+        checks["the third pass finished"] = one_pass() == 0
+    if not (local / "report.json").exists():
+        raise CliError(f"the run rehearsal's last pass ended without a report: {checks}")
+    lines = _ledger_lines(local / "ledger.jsonl")
+    run_start = _json(local / "run-start.json")
+    report = _json(local / "report.json")
+    ledger = summary()
+    checks["both restores are on record"] = ledger["notes"].count("restore") == 2
+    checks["the run-start record is a rehearsal's"] = (
+        run_start["run_id"] == rr.RUN_REHEARSAL_RUN_ID
+        and run_start["weights"]["sha256"] == rr.SENTINEL_WEIGHTS_SHA256
+        and run_start["model"]["backend_version"] == rehearsal.STAND_IN_VERSION)
+    checks.update(rr.gate_checks(local, expected, run_id=rr.RUN_REHEARSAL_RUN_ID,
+                                 g0_genome_id=run_start["g0"]["genome_id"]))
+    checks.update(rr.ledger_checks(lines, expected,
+                                   interrupted=f"gate/{rr.DEATH_SEED}/R{rr.DEATH_ROUND}"))
+    checks.update(rr.report_checks(report, expected, lines))
+    checks.update(rr.policy_checks(policy, expected))
+    checks["the figures are drawn, stamped as a rehearsal's"] = _rehearsal_figures(
+        local, out / "figures", commit)
+    record = rr.passed_record(
+        checks=checks, commit=commit, python=sys.version.split()[0], software=software_stack(),
+        model={"model_id": args.model, "revision": revision, "tokenizer": counter.identity},
+        protocol_sha256=rr.protocol_sha256(run_start["protocol"]), script=script,
+        workers=args.workers, expected=expected,
+        measures={"census_games": len(census), "census_failures": failures,
+                  "stand_in_requests": server.requests, "requests_by_kind": dict(policy.kinds),
+                  "teacher_schema_compiled_with_xgrammar": server.schemas_compiled > 0,
+                  "episodes": ledger["episodes"], "model_calls": ledger["model_calls"],
+                  "aborted_attempts": ledger["aborted_attempts"]},
+        finished_at=_now())
+    _out(json.dumps(record, indent=2))
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        raise CliError(f"the run rehearsal failed: {failed}")
+    _write_json(out / rr.RUN_REHEARSAL_PASSED, record)
+    _out(f"[rehearsal] PASSED; record {out / rr.RUN_REHEARSAL_PASSED}")
+    return 0
+
+
+def _census(factory, games: list[tuple[str, str]], workers: int) -> list[str]:
+    """Open each game through the run's factory, in at most one worker
+    process per CPU (an open is CPU-bound), each opening a bounded number
+    of games (an open leaves files behind in its process); returns what
+    failed."""
+    import os
+    from evaluation.exp0001 import run_rehearsal as rr
+    jobs = ([factory] * len(games), [g[0] for g in games], [g[1] for g in games])
+    workers = min(workers, os.cpu_count() or 1)
+    if workers == 1 or not games:
+        errors = list(map(rr.open_game, *jobs))
+    else:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        options = {"max_tasks_per_child": rr.CENSUS_TASKS_PER_CHILD} \
+            if sys.version_info >= (3, 11) else {}
+        with ProcessPoolExecutor(max_workers=min(workers, len(games)),
+                                 mp_context=multiprocessing.get_context("spawn"),
+                                 **options) as pool:
+            errors = list(pool.map(rr.open_game, *jobs, chunksize=4))
+    return [f"{split}/{game}: {error}" for (split, game), error in zip(games, errors) if error]
+
+
+def _rehearsal_figures(run_dir: Path, out_dir: Path, commit: str) -> bool:
+    """The run notebook's figures, from the rehearsal's run: every one drawn,
+    each stamped as a rehearsal's."""
+    from evaluation.exp0001.figures import FiguresError, make_figures
+    try:
+        manifest = make_figures(run_dir=run_dir, out_dir=out_dir, code_commit=commit)
+    except FiguresError as exc:
+        _say(f"[rehearsal] figures: {exc}")
+        return False
+    return manifest.get("rehearsal") is True and all(
+        entry["status"] == "drawn" for entry in manifest["figures"])
 
 
 def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
@@ -837,24 +1073,75 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
 
 
 def cmd_run(args) -> int:
-    from evaluation.exp0001.pipeline import Exp0001Run
+    from evaluation.exp0001 import rehearsal, run_rehearsal
 
     gpu = require_a100_80gb(gpu_inventory())
     prepared = load_prepared(args.prepared)
+    # a rehearsal's identities are no run's (its run id, its sentinel weights)
+    if args.run_id == run_rehearsal.RUN_REHEARSAL_RUN_ID or \
+            prepared["weights"]["sha256"] == run_rehearsal.SENTINEL_WEIGHTS_SHA256:
+        raise CliError("that is a rehearsal's identity, not a run's")
+    # a passed run rehearsal of this commit, model, Python and software, before any write
+    _require_run_rehearsal(args, prepared)
+
+    def adapter():
+        served = _adapter(args, prepared)
+        if served.metadata().backend_version == rehearsal.STAND_IN_VERSION:
+            raise CliError(f"{args.server_url} is a rehearsal's stand-in server, not vLLM")
+        return served
+
+    def counter():
+        return hf_token_counter(prepared["model_id"], prepared["revision"],
+                                path=Path(prepared["path"]))
+
+    budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
+    started = time.monotonic()
+    return _run(args, gpu=gpu, prepared=prepared, adapter=adapter, counter=counter,
+                pause_when=None if budget is None
+                else (lambda: time.monotonic() - started > budget))
+
+
+def _require_run_rehearsal(args, prepared: dict) -> None:
+    """A new or resumed run starts only with a passed run rehearsal of this
+    clean commit, model, revision, tokenizer, Python, pinned software and
+    protocol (``rehearse-run``), checked before anything is written."""
+    from evaluation.exp0001 import run_rehearsal
+    from evaluation.exp0001.protocol import PROTOCOL
+    from evaluation.exp0001.provenance import plain
+    commit, dirty = git_state(Path(args.repo))
+    try:
+        passed = _json(args.rehearsal_passed)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"{args.rehearsal_passed}: not a run rehearsal's record ({exc})") from None
+    differ = run_rehearsal.check_run_rehearsal(
+        passed, commit=commit, python=sys.version.split()[0], software=software_stack(),
+        model_id=prepared["model_id"], revision=prepared["revision"],
+        tokenizer=f"hf-tokenizer:{prepared['model_id']}@{prepared['revision']}",
+        protocol=run_rehearsal.protocol_sha256(plain(PROTOCOL)), workers=args.workers)
+    if dirty:
+        differ["commit"] = {"rehearsed": "a clean checkout", "here": f"{commit} (dirty)"}
+    if differ:
+        raise CliError(f"no passed run rehearsal covers this run: {json.dumps(differ)}. Run "
+                       f"EXP-0001-run-rehearsal.ipynb on a CPU runtime with this commit")
+
+
+def _run(args, *, gpu: dict, prepared: dict, adapter, counter, pause_when=None,
+         disposable: bool = False) -> int:
+    """The run from its checks to its last snapshot; ``rehearse-run`` runs the
+    same against its stand-in server (``disposable``: no unmirrored marker)."""
+    from evaluation.exp0001.pipeline import Exp0001Run
+
     repo, local = Path(args.repo), Path(args.local_dir)
     commit, dirty = git_state(repo)
     splits, pilot, bank = _manifests(repo)
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     _restore_if_missing(local, args.mirror_dir)
-    adapter = _adapter(args, prepared)
-    counter = hf_token_counter(prepared["model_id"], prepared["revision"],
-                               path=Path(prepared["path"]))
+    adapter = adapter()
+    counter = counter()
     record = _run_start(args, local, prepared, adapter, splits, pilot, bank, commit, dirty,
                         counter.identity, _environment(verified))
-    with _run_dir_lock(local) as lock:  # one writer, before the mirror is taken over
+    with _run_dir_lock(local, marker=not disposable) as lock:  # one writer, before the mirror
         mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
-        started = time.monotonic()
-        budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
         run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits,
                          pilot_manifest=pilot, benefit_bank=bank, model=adapter,
                          teacher=adapter,
@@ -864,22 +1151,21 @@ def cmd_run(args) -> int:
                          session_info=_session_info(gpu, adapter, args.workers,
                                                     args.server_info),
                          on_ledger_append=Progress(mirror, args.progress_every),
-                         pause_when=None if budget is None
-                         else (lambda: time.monotonic() - started > budget), lock=lock)
+                         pause_when=pause_when, lock=lock)
         report, stopped, mirrored = None, False, False
         try:
             report = run.run()
         except RunPaused as exc:
-            _out(f"paused after {args.stop_after_hours} h of this session ({exc}); every "
-                 f"admitted episode is recorded. Run the same command again to resume.")
+            _out(f"paused ({exc}); every admitted episode is recorded. Run the same command "
+                 f"again to resume.")
         except KeyboardInterrupt:
             stopped = True
         finally:
-            mirrored = _final_snapshot(mirror, local)
+            mirrored = _final_snapshot(mirror, local, marker=not disposable)
             if mirror and mirror.failures:
                 _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
     if stopped:
-        return _stopped(mirrored)
+        return 130 if disposable else _stopped(mirrored)
     if report is not None:
         _out(json.dumps({k: report.get(k) for k in ("status", "stage", "reason", "episodes",
                                                       "model_calls", "aborted_attempts")},
@@ -995,6 +1281,9 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("preflight")
     p.add_argument("--prepared", type=Path, required=True)
     p.add_argument("--server-url", default=f"http://127.0.0.1:{DEFAULT_PORT}")
+    p.add_argument("--gate-shape", action="store_true",
+                   help="also send the ReAct call as a gate episode is sent (temperature 0, "
+                        "a mining seed): the run's preflight")
     p.set_defaults(func=cmd_preflight)
 
     for name, func in (("pilot", cmd_pilot), ("run", cmd_run)):
@@ -1018,6 +1307,10 @@ def parser() -> argparse.ArgumentParser:
             p.add_argument("--stop-after-hours", type=float, default=None,
                            help="admit no new episode after this many hours of this session; "
                                 "the run stays resumable (compute-unit budgeting)")
+            p.add_argument("--rehearsal-passed", type=Path, required=True,
+                           help="the run-rehearsal-passed.json of `rehearse-run` with this "
+                                "commit, model and software (checked before anything is "
+                                "written)")
         p.set_defaults(func=func)
 
     p = sub.add_parser("rehearse")
@@ -1035,8 +1328,31 @@ def parser() -> argparse.ArgumentParser:
                         "restores the pilot from it once")
     p.set_defaults(func=cmd_rehearse)
 
+    p = sub.add_parser("rehearse-run")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--revision", default=None, help="a commit, branch or tag; default the "
+                   "hub's current commit")
+    p.add_argument("--data-root", type=Path, required=True,
+                   help="ALFWorld's json_2.1.1 directory")
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--progress-every", type=int, default=200)
+    p.add_argument("--out-dir", type=Path, required=True, help="a new, empty directory")
+    p.add_argument("--mirror-dir", type=Path, required=True,
+                   help="a new, empty directory (on Colab, on Google Drive): the rehearsal "
+                        "restores the run from it twice")
+    p.add_argument("--script", type=Path, default=None,
+                   help="the scripted world (default: the committed run_rehearsal_script.json)")
+    p.add_argument("--max-hours", type=float, default=6.0,
+                   help="stop without a record after this many hours (a CPU runtime's guard)")
+    p.set_defaults(func=cmd_rehearse_run)
+
     p = sub.add_parser("rehearsal-check")
-    p.add_argument("--passed", type=Path, required=True, help="a rehearsal-passed.json")
+    p.add_argument("--passed", type=Path, required=True,
+                   help="a rehearsal-passed.json, or with --kind run a run-rehearsal-passed.json")
+    p.add_argument("--kind", choices=("pilot", "run"), default="pilot")
+    p.add_argument("--workers", type=int, default=None,
+                   help="with --kind run: the run's workers, which the rehearsal's must equal")
     p.add_argument("--repo", type=Path, default=Path("."))
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--revision", default=None, help="the revision the run will pin, if known")
@@ -1104,7 +1420,7 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"error: the model server: {type(exc).__name__}: {exc}")
         return 2
     except KeyboardInterrupt:
-        if args.func is cmd_rehearse:  # stopped outside a pass: a rehearsal never resumes
+        if args.func in (cmd_rehearse, cmd_rehearse_run):  # a rehearsal never resumes
             return _rehearsal_stopped()
         _say(STOPPED)
         return 130

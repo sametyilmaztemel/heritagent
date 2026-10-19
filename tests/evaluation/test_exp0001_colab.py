@@ -986,7 +986,9 @@ def stub_command(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "git_state", lambda repo: ("c" * 40, False))
     monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {"games": []}, {"families": {}}))
     monkeypatch.setattr(cli, "verify_data", lambda *a: {})
-    monkeypatch.setattr(cli, "_adapter", lambda args, prepared: object())
+    monkeypatch.setattr(cli, "_adapter", lambda args, prepared: types.SimpleNamespace(
+        metadata=lambda: types.SimpleNamespace(backend_version="0.29.0")))
+    monkeypatch.setattr(cli, "_require_run_rehearsal", lambda args, prepared: None)
     monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(
         identity="t", count_teacher_prompt_tokens=len))
     monkeypatch.setattr(cli, "_run_start", lambda *a: {})
@@ -1002,7 +1004,7 @@ def stub_command(monkeypatch, tmp_path):
 
 def command_argv(command, local, mirror_dir):
     return {"run": ["run", "--prepared", "p", "--data-root", "d", "--local-dir", str(local),
-                    "--mirror-dir", str(mirror_dir)],
+                    "--mirror-dir", str(mirror_dir), "--rehearsal-passed", "passed.json"],
             "pilot": ["pilot", "--prepared", "p", "--data-root", "d", "--out-dir", str(local),
                       "--mirror-dir", str(mirror_dir)],
             "snapshot": ["snapshot", "--run-dir", str(local), "--mirror-dir", str(mirror_dir)],

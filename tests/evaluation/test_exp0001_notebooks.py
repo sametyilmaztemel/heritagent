@@ -20,8 +20,10 @@ from evaluation.exp0001 import cli
 
 NOTEBOOKS = Path(__file__).resolve().parents[2] / "notebooks"
 NAMES = ["EXP-0001-pilot.ipynb", "EXP-0001-run.ipynb"]  # the A100 notebooks
-REHEARSAL = "EXP-0001-rehearsal.ipynb"  # the CPU notebook that comes first
-ALL = NAMES + [REHEARSAL]
+REHEARSAL = "EXP-0001-rehearsal.ipynb"  # the CPU notebook that comes before the pilot
+RUN_REHEARSAL = "EXP-0001-run-rehearsal.ipynb"  # the CPU notebook that comes before the run
+CPU = [REHEARSAL, RUN_REHEARSAL]
+ALL = NAMES + CPU
 # the optional flags' two branches: every other name reads as "1"
 BRANCHES = [{}, {"STOP_AFTER_HOURS": None, "revision": None}]
 
@@ -59,10 +61,15 @@ def test_every_command_of_the_notebook_parses(name):
             for branch in BRANCHES:
                 args = cli.parser().parse_args(argv(call, branch))  # an unknown flag exits
                 commands.add(args.command)
-    data = {"mirror-check", "fetch-data", "verify-data", "rehearse"}
-    expected = data if name == REHEARSAL else \
-        data | {"gpu-check", "prepare-model", "serve", "preflight", "rehearsal-check"} | \
-        ({"pilot"} if "pilot" in name else {"run", "status", "figures"})
+    data = {"mirror-check", "fetch-data", "verify-data"}
+    expected = {
+        REHEARSAL: data | {"rehearse"}, RUN_REHEARSAL: data | {"rehearse-run"},
+        # the pilot rehearses again where a passed rehearsal does not cover the machine
+        NAMES[0]: data | {"rehearse", "gpu-check", "prepare-model", "serve", "preflight",
+                          "rehearsal-check", "pilot"},
+        # the run never does: a run rehearsal takes hours of a CPU runtime
+        NAMES[1]: data | {"gpu-check", "prepare-model", "serve", "preflight", "rehearsal-check",
+                          "run", "status", "figures"}}[name]
     assert commands == expected
 
 
@@ -74,7 +81,7 @@ def test_no_cell_uses_a_shell_escape_and_the_error_handler_comes_first(name):
     handler = next(i for i, source in enumerate(cells) if "set_custom_exc" in source)
     first_command = next(i for i, source in enumerate(cells) if cli_calls(source))
     gpus = [i for i, source in enumerate(cells) if "nvidia-smi" in source]
-    if name == REHEARSAL:  # a CPU runtime: no GPU is asked for
+    if name in CPU:  # a CPU runtime: no GPU is asked for
         assert not gpus and handler < first_command
         assert "cuda.is_available" not in "".join(cells)
     else:
@@ -106,11 +113,26 @@ def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
     # only the pilot can be resumed by naming its commit
     assert ("heritagent/pilot/" in cells[required]) == ("pilot" in name)
     assert first(cells, '"verify-data"') < covers  # it needs the data
-    assert '"rehearse"' in cells[covers] and "except RuntimeError:" in cells[covers]
-    # a rehearsal repeated here is recorded where the next session's guard looks
-    fallback = cells[covers].split("except RuntimeError:", 1)[1]
-    assert fallback.index('"rehearse"') < fallback.index('/rehearsal-passed.json", PASSED)')
-    if "run" in name:  # the guard checks the commit a resumed run continues with
+    if "pilot" in name:
+        assert '"rehearse"' in cells[covers] and "except RuntimeError:" in cells[covers]
+        # a rehearsal repeated here is recorded where the next session's guard looks
+        fallback = cells[covers].split("except RuntimeError:", 1)[1]
+        assert fallback.index('"rehearse"') < fallback.index('/rehearsal-passed.json", PASSED)')
+    else:
+        # the run's guard reads the run rehearsal's record and stops where it does not cover
+        # this machine: the error handler releases the GPU, nothing is rehearsed on the A100
+        assert "rehearsal/run-passed-{COMMIT}" in cells[required]
+        assert "EXP-0001-run-rehearsal.ipynb" in cells[required]
+        assert [argv(call, {}) for call in cli_calls(cells[covers])] == [[
+            "rehearsal-check", "--kind", "run", "--passed", "1", "--repo", "1", "--model", "1",
+            "--revision", "1", "--workers", "1"]]
+        assert cells[covers].rstrip().endswith("raise")
+        assert '"rehearse' not in "".join(cells)
+        # the run itself checks the same record, and the preflight sends a gate's request
+        run = argv(cli_calls(cells[first(cells, 'cli("run"')])[0], {})
+        assert run[run.index("--rehearsal-passed") + 1] == "1"  # PASSED
+        assert "--gate-shape" in argv(cli_calls(cells[first(cells, '"preflight"')])[0], {})
+        # the guard checks the commit a resumed run continues with
         assert first(cells, '"run-commit"') < required
         assert first(cells, "COMMIT = checkout(run_commit)") < required
         assert "if run_commit:" in cells[required]  # whatever CODE_REF says
@@ -122,6 +144,13 @@ def test_the_rehearsal_writes_the_records_the_a100_notebooks_read():
     for name in ALL:
         text = "".join(code_cells(name))
         assert marker in text and revision in text, name
+    # the run reads only the run rehearsal's record, which only the run rehearsal writes
+    for name in (NAMES[1], RUN_REHEARSAL):
+        assert f"run-{marker}" in "".join(code_cells(name)), name
+    for name in (NAMES[0], REHEARSAL):
+        assert f"run-{marker}" not in "".join(code_cells(name)), name
+    run_rehearsal = "".join(code_cells(RUN_REHEARSAL))
+    assert 'shutil.copy(f"{OUT}/run-rehearsal-passed.json", target)' in run_rehearsal
     rehearsal = "".join(code_cells(REHEARSAL))
     assert "rehearsal-passed.json" in rehearsal and "shutil.copy(" in rehearsal
     pilot = "".join(code_cells(NAMES[0]))

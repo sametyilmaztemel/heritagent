@@ -25,6 +25,7 @@ def main() -> int:
     import evaluation.exp0001.benefit_bank  # noqa: F401
     import evaluation.exp0001.figures  # noqa: F401  (imports without matplotlib)
     import evaluation.exp0001.pipeline  # noqa: F401  (the whole EXP-0001 run stack)
+    from evaluation.exp0001.run_rehearsal import load_script
     import evaluation.metrics.final_statistics  # noqa: F401
     import genome
     import inheritance.gate  # noqa: F401  (imports the whole gate stack)
@@ -54,6 +55,7 @@ def main() -> int:
         load_genome(build_g0_seed_genome(registry), registry)
         g0_runtime_config(registry)
     mining_record_validator()
+    load_script()  # the run rehearsal's committed script ships as package data
     somatic.store.SomaticStore.create(None)
     print(f"OK: imported from {site}; {len(shipped)} schemas shipped "
           f"(genome schemas at {SCHEMA_DIR})")
