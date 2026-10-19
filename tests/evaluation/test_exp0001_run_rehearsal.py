@@ -650,6 +650,38 @@ def test_a_census_worker_that_dies_fails_the_census_with_advice(script):
         cli._census(DyingGameFactory(games[1][1]), games, 2, progress_every=0)
 
 
+class PoolThatBreaksAtASubmit:
+    """A census pool whose worker died between two results: the next submit
+    raises, as ProcessPoolExecutor.submit does on a broken pool."""
+
+    def __init__(self, *args, **kwargs):
+        self.submitted = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, function, *args):
+        from concurrent.futures import Future
+        from concurrent.futures.process import BrokenProcessPool
+        self.submitted += 1
+        if self.submitted > 2:
+            raise BrokenProcessPool("A child process terminated abruptly")
+        future = Future()
+        future.set_result(("0" * 64, None))
+        return future
+
+
+def test_a_census_pool_broken_at_a_submit_fails_with_advice(monkeypatch):
+    import concurrent.futures
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", PoolThatBreaksAtASubmit)
+    games = [("train", f"game-{n}") for n in range(4)]
+    with pytest.raises(cli.CliError, match="census worker process ended abruptly.*High-RAM"):
+        cli._census(object(), games, 2, progress_every=0)
+
+
 def test_a_rehearsal_fails_at_its_first_failed_check_without_a_record(
         tmp_path, splits, script, monkeypatch, capsys):  # noqa: F811
     """A failed census (a game that does not open) fails the rehearsal

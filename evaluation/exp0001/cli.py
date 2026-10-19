@@ -1090,9 +1090,17 @@ def _census(factory, games: list[tuple[str, str]], workers: int, *,
                              **options) as pool:
         pending = {}
 
+        def broken(exc: BaseException) -> CliError:
+            return CliError(f"a census worker process ended abruptly ({exc}); out of memory or "
+                            f"disk? A High-RAM runtime, or fewer workers, then a rehearsal of "
+                            f"that worker count")
+
         def submit_next() -> None:
             for index, (split, game) in queue:
-                pending[pool.submit(rr.open_game, factory, split, game)] = index
+                try:  # a worker that died since the last result breaks the pool here too
+                    pending[pool.submit(rr.open_game, factory, split, game)] = index
+                except BrokenProcessPool as exc:
+                    raise broken(exc) from None
                 return
 
         for _ in range(workers):
@@ -1105,9 +1113,7 @@ def _census(factory, games: list[tuple[str, str]], workers: int, *,
                 try:
                     results[index] = future.result()
                 except BrokenProcessPool as exc:
-                    raise CliError(f"a census worker process ended abruptly ({exc}); out of "
-                                   f"memory or disk? A High-RAM runtime, or fewer workers, then "
-                                   f"a rehearsal of that worker count") from None
+                    raise broken(exc) from None
                 done_count += 1
                 if progress_every and done_count % progress_every == 0:
                     _out(f"[rehearsal] census: {done_count}/{len(games)} games opened")
