@@ -1525,3 +1525,36 @@ def test_an_evaluator_that_cannot_be_built_stops_the_gate_before_its_first_episo
     with pytest.raises(EvaluationSetupError, match="cannot build"):
         make_run(run_dir, splits).run()
     assert not [k for k in ledger_keys(run_dir) if k.startswith("gate/")]
+
+
+class SeedTeacher(Teacher):
+    """Proposes only for the mining seeds in ``proposals_by_seed``."""
+
+    def __init__(self, proposals_by_seed):
+        super().__init__()
+        self.by_seed = proposals_by_seed
+
+    def structured_generate(self, messages, settings, schema):
+        self.proposals = self.by_seed.get(settings.seed, [])
+        return super().structured_generate(messages, settings, schema)
+
+
+def test_a_seed_whose_miner_proposes_nothing_has_an_empty_gate(tmp_path, splits):
+    """A frozen empty candidate set: no gate episode, empty rounds, B = C = G0
+    for that seed, and the run completes (the run rehearsal's seed 41)."""
+    run_dir = tmp_path / "run"
+    teacher = SeedTeacher({11: PROPOSALS, 23: PROPOSALS})
+    report = make_run(run_dir, splits, teacher=teacher).run()
+    assert report["status"] == "complete"
+    gate = json.loads((run_dir / "seed-41" / "gate.json").read_text())
+    assert gate["verdicts"] == {} and gate["children"] == {} and gate["rounds"] == {}
+    assert not [k for k in ledger_keys(run_dir) if k.startswith("gate/41/")]
+    arms = json.loads((run_dir / "seed-41" / "arms.json").read_text())
+    g0 = report_g0(run_dir)
+    assert arms["B"]["genome_id"] == arms["C"]["genome_id"] == g0
+    assert report["gates"]["41"] == {"candidates": 0, "promoted": 0, "all_family_candidates": 0,
+                                     "stage2_stops": {}, "reached_round_5": 0}
+    shared = {g["genome_id"]: g["arms"] for g in report["final_genomes"]}
+    assert set(shared[g0]) == {"A/once", "B/41", "C/41"}
+    assert make_run(run_dir, splits, teacher=SeedTeacher({11: PROPOSALS, 23: PROPOSALS})).run() \
+        == report  # read back

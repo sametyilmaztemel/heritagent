@@ -277,18 +277,35 @@ class StandInPolicy:
         return _react("Looking around.", goto[(_draw(task, seed) + done) % len(goto)])
 
 
+class _Server(ThreadingHTTPServer):
+    """16 worker processes open connections in bursts at a round's start: a
+    longer listen queue than the default 5 spares them SYN retransmits."""
+    daemon_threads = True
+    request_queue_size = 64
+
+
 class StandInServer:
     """``vllm serve``'s HTTP surface for one model, in a thread of this
     process. ``count_prompt`` counts a request's messages as the server's
     tokenizer would; ``outage_seed`` makes every request with that seed fail
-    with 503 (a server that died) until it is set back to None."""
+    with 503 (a server that died) until it is set back to None.
 
-    def __init__(self, model_id: str, policy: StandInPolicy, *,
+    The run rehearsal (``evaluation.exp0001.run_rehearsal``) plugs in its own
+    request check (``check_request``, else the pilot's ``protocol_issues``),
+    its own failures (``fail_request``: True answers 503), a policy that
+    answers whole requests (``respond(payload)`` returning a status and a
+    text, the teacher's included) and the tokenizer's completion count
+    (``count_completion``, else four characters a token)."""
+
+    def __init__(self, model_id: str, policy, *,
                  count_prompt: Callable[[list[dict]], int],
                  context_window: int = CONTEXT_WINDOW,
                  check_protocol: bool = True,
                  check_schema: Callable[[dict], None] | None = None,
-                 template_kwargs: Mapping | None = None):
+                 template_kwargs: Mapping | None = None,
+                 check_request: Callable[[Mapping], list[str]] | None = None,
+                 fail_request: Callable[[Mapping], bool] | None = None,
+                 count_completion: Callable[[str], int] | None = None):
         self.model_id = model_id
         self.template_kwargs = dict(template_kwargs or {})
         self.outage_seed = None
@@ -297,13 +314,16 @@ class StandInServer:
         self.refused = 0  # every other non-200 answer
         self.schemas_compiled = 0
         self._check_protocol = check_protocol
+        self._check_request = check_request or protocol_issues
+        self._protocol_name = "the pilot's protocol" if check_request is None else "the protocol"
+        self._fail_request = fail_request
+        self._count_completion = count_completion
         self._check_schema = check_schema
         self._policy = policy
         self._count = count_prompt
         self._window = context_window
         self._lock = threading.Lock()
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self._httpd.daemon_threads = True
+        self._httpd = _Server(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._httpd.serve_forever, name="stand-in",
                                         daemon=True)
 
@@ -331,16 +351,17 @@ class StandInServer:
     def _complete(self, payload: dict) -> tuple[int, dict]:
         with self._lock:
             self.requests += 1
-            if self.outage_seed is not None and payload.get("seed") == self.outage_seed:
+            if (self.outage_seed is not None and payload.get("seed") == self.outage_seed) or \
+                    (self._fail_request is not None and self._fail_request(payload)):
                 self.failed += 1
                 return 503, {"object": "error", "message": "the stand-in is down"}
-        issues = protocol_issues(payload) if self._check_protocol else []
+        issues = self._check_request(payload) if self._check_protocol else []
         if dict(payload.get("chat_template_kwargs") or {}) != self.template_kwargs:
             issues.append(f"chat_template_kwargs {payload.get('chat_template_kwargs')!r} are "
                           f"not the protocol's {self.template_kwargs!r}")
         if issues:
-            return self._refuse(f"the stand-in refuses a request that breaks the pilot's "
-                                f"protocol: {'; '.join(issues)}")
+            return self._refuse(f"the stand-in refuses a request that breaks "
+                                f"{self._protocol_name}: {'; '.join(issues)}")
         error = None
         with self._lock:  # tokenizers and grammar compilers are not shared across threads
             try:
@@ -361,14 +382,26 @@ class StandInServer:
             return self._refuse(
                 f"This model's maximum context length is {self._window} tokens. However, you "
                 f"requested {prompt + payload['max_tokens']} tokens.")
-        if payload.get("response_format"):
+        if hasattr(self._policy, "respond"):  # a policy that answers whole requests
+            status, text = self._policy.respond(payload)
+            if status != 200:
+                return self._refuse(text)
+        elif payload.get("response_format"):
             text = json.dumps({"proposals": []})  # the teacher's schema allows none
         else:
             text = self._policy.reply(payload["messages"], payload.get("seed"))
-        completion = max(1, len(text) // 4)
+        finish = "stop"
+        if self._count_completion is None:
+            completion = max(1, len(text) // 4)
+        else:
+            with self._lock:  # the tokenizer is not shared across threads
+                completion = self._count_completion(text)
+            if completion > payload["max_tokens"]:  # as the server: cut at the budget
+                text = text[:len(text) * payload["max_tokens"] // completion]
+                finish, completion = "length", payload["max_tokens"]
         return 200, {"id": f"stand-in-{self.requests}", "object": "chat.completion",
                      "created": int(time.time()), "model": self.model_id,
-                     "choices": [{"index": 0, "finish_reason": "stop",
+                     "choices": [{"index": 0, "finish_reason": finish,
                                   "message": {"role": "assistant", "content": text}}],
                      "usage": {"prompt_tokens": prompt, "completion_tokens": completion,
                                "total_tokens": prompt + completion}}

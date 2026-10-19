@@ -4,7 +4,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   gpu-check       the A100 80 GB check (fails closed on any other GPU)
   fetch-data      download ALFWorld release 0.2.2's data (sha256-checked), the
                   data the frozen manifests were built from
-  verify-data     hash every game of the split and pilot manifests
+  verify-data     hash every game of the split, pilot and benefit-bank
+                  manifests
   mirror-check    write, replace, read and time small files in the mirror
                   directory (on Colab, Google Drive)
   run-commit      the code commit a run started at, from its mirror (empty for
@@ -15,15 +16,24 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   each in its own message shape: G0's ReAct reply with the
                   stop sequence, and the teacher's structured output under
                   the miner's JSON schema (the teacher first runs only after
-                  the 540 lifetime episodes)
+                  the 540 lifetime episodes); ``--gate-shape`` adds the ReAct
+                  call as a gate episode sends it (temperature 0, a seed)
   pilot           the calibration pilot -> pilot-report.json
   rehearse        the pilot without a GPU or a model: the same checks, games,
                   workers, ledger, tokenizer, mirror and report against a
                   stand-in server, with an outage and a restore on the way
                   (run it on a CPU runtime before the A100 is paid for)
+  rehearse-run    the whole run without a GPU or a model, at the locked
+                  protocol: the run's code against a stand-in server that
+                  answers from a committed script, through a server death, two
+                  restores and a pause, checked against what the script makes
+                  the rule texts decide (a CPU runtime, hours; before the run)
   rehearsal-check whether a passed rehearsal covers this machine (commit,
-                  model, Python, pinned software)
-  run             EXP-0001: write (or check) the run-start record, restore the
+                  model, Python, pinned software; ``--kind run``: the check
+                  ``run`` makes, with the revision, tokenizer, protocol, worker
+                  count and the committed script)
+  run             EXP-0001: check the passed run rehearsal (``--rehearsal-
+                  passed``), write (or check) the run-start record, restore the
                   run directory from its mirror if it is missing, run or
                   resume, snapshot to the mirror
   status          a read-only summary of a run (or pilot) directory
@@ -43,10 +53,12 @@ variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
 Python's traceback (1). A failed last snapshot leaves ``UNMIRRORED.json`` in
 the run directory, also after an error: the newest records exist only on
 this machine, and the notebooks keep the runtime. So does a SIGTERM while
-the command holds its directory (the stop button's second press). The one
-exception is another machine taking over the mirror: it holds the run now,
-and the command stops with exit 2 and no marker. The last snapshot is not
-cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
+the command holds its directory (the stop button's second press). For
+``run``, ``pilot`` and ``snapshot`` the one exception is another machine
+taking over the mirror: it holds the run now, and the command stops with
+exit 2 and no marker. ``rehearse`` and ``rehearse-run`` never leave the
+marker: a rehearsal is started again, never resumed. The last snapshot is
+not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
 directory's one-writer lock from before they touch the mirror until after
 their last snapshot.
 
@@ -312,23 +324,28 @@ class _Pid:
 
 def cmd_preflight(args) -> int:
     prepared = load_prepared(args.prepared)
-    print(json.dumps(_preflight(_adapter(args, prepared)), indent=2))
+    print(json.dumps(_preflight(_adapter(args, prepared), gate_shape=args.gate_shape), indent=2))
     return 0
 
 
-def _preflight(adapter: VLLMServerAdapter) -> dict:
+PREFLIGHT_TASK = ("You are in the middle of a room.\n\nYour task is to: look at the room.\n\n"
+                  "Admissible commands:\nlook")
+
+
+def _preflight(adapter: VLLMServerAdapter, *, gate_shape: bool = False) -> dict:
     """G0's own message shape (system and user, ReActPlanner) with its stop
     sequence, and the teacher's (one user message, ``teacher_messages``)
     under the miner's schema: a chat template that refuses either shape
-    fails here, before any episode."""
+    fails here, before any episode. ``gate_shape`` (the run's): the ReAct
+    call also once at temperature 0 with a mining seed, as every gate
+    episode is sent (the pilot sends none)."""
     from evaluation.benchmarks.alfworld.splits import ALFWORLD_TASK_TYPES
     from runtime.model_adapters.base import GenerationSettings
     from runtime.policies.planner_react import STOP_SEQUENCES, ReActPlanner
     from runtime.tool_adapters.alfworld import ACT_TOOL
     from traits.miner.miner import output_schema, render_teacher_prompt, teacher_messages
 
-    task = ("You are in the middle of a room.\n\nYour task is to: look at the room.\n\n"
-            "Admissible commands:\nlook")
+    task = PREFLIGHT_TASK
     planner = ReActPlanner({"style": "react", "max_plan_steps": 1})
     reply = adapter.generate(
         planner.build_messages(task=task, observations=[task], skills=(), tools=[ACT_TOOL],
@@ -336,6 +353,14 @@ def _preflight(adapter: VLLMServerAdapter) -> dict:
         GenerationSettings(temperature=0.0, max_tokens=64, seed=None, stop=STOP_SEQUENCES))
     if reply.prompt_tokens is None or reply.completion_tokens is None:
         raise CliError("the server reports no token usage; the run needs exact counts")
+    gate = None
+    if gate_shape:
+        from evaluation.exp0001.protocol import MINING_SEEDS
+        gate = adapter.generate(
+            planner.build_messages(task=task, observations=[task], skills=(), tools=[ACT_TOOL],
+                                   step=1, max_steps=1),
+            GenerationSettings(temperature=0.0, max_tokens=64, seed=MINING_SEEDS[0],
+                               stop=STOP_SEQUENCES))
     prompt = render_teacher_prompt(
         evidence_text="(a preflight call: no trajectories; propose at most one short skill)",
         family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)), max_proposals=1)
@@ -344,7 +369,8 @@ def _preflight(adapter: VLLMServerAdapter) -> dict:
         output_schema())
     return {"react_reply": reply.text[:200], "react_tokens": [
         reply.prompt_tokens, reply.completion_tokens], "teacher_reply": json.loads(teacher.text),
-        "teacher_finish_reason": teacher.finish_reason}
+        "teacher_finish_reason": teacher.finish_reason,
+        **({} if gate is None else {"gate_shape_reply": gate.text[:200]})}
 
 
 EXIT_UNMIRRORED = 3
@@ -774,9 +800,14 @@ def cmd_rehearse(args) -> int:
 
 def cmd_rehearsal_check(args) -> int:
     """Whether a passed rehearsal covers this machine: the same clean commit,
-    model and revision, Python and pinned software. The notebooks rehearse
-    again before the model download when it does not."""
+    model and revision, Python and pinned software (``--kind run``: the
+    check ``run`` makes, with the revision, tokenizer, protocol, worker
+    count and the committed script; it needs --revision and --workers). The
+    pilot notebook rehearses again before the model download when it does
+    not; the run notebook stops."""
     from evaluation.exp0001 import rehearsal
+    if args.kind == "run":
+        return _run_rehearsal_check(args)
     passed = _json(args.passed)
     if passed.get("schema") != rehearsal.REHEARSAL_PASSED_SCHEMA or passed.get("passed") is not True:
         raise CliError(f"{args.passed} is not a passed rehearsal")
@@ -796,6 +827,331 @@ def cmd_rehearsal_check(args) -> int:
     _out(f"the rehearsal of {commit} with {args.model}@{passed['model']['revision']} passed on "
          f"this Python and software ({passed['finished_at']})")
     return 0
+
+
+def _run_rehearsal_check(args) -> int:
+    """``rehearsal-check --kind run``: the check ``run`` makes, before the
+    model download (so it needs the revision and the worker count ``run``
+    will use)."""
+    if args.revision is None or args.workers is None:
+        raise CliError("--kind run needs --revision and --workers: run checks both")
+    _require_recycled_workers(args.workers)
+    commit, dirty = git_state(Path(args.repo))
+    if dirty:
+        raise CliError(f"the checkout at {args.repo} has changes; a rehearsal covers a clean commit")
+    passed = _run_rehearsal_record(args.passed)
+    differ = _run_rehearsal_differences(passed, commit=commit, model_id=args.model,
+                                        revision=args.revision, workers=args.workers)
+    if differ:
+        raise CliError(f"the run rehearsal does not cover this machine: {json.dumps(differ)}")
+    _out(f"the run rehearsal of {commit} with {args.model}@{args.revision} and {args.workers} "
+         f"workers passed on this Python and software ({passed['finished_at']})")
+    return 0
+
+
+def _run_rehearsal_record(path: Path):
+    try:
+        return _json(path)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"{path}: not a run rehearsal's record ({exc})") from None
+
+
+def _run_rehearsal_differences(passed, *, commit: str, model_id: str, revision: str,
+                               workers: int) -> dict:
+    """What ``run`` compares, as ``run_rehearsal.check_run_rehearsal``
+    returns it: this machine's Python and software, the checkout's protocol
+    and committed script, and the run's model, revision, tokenizer and
+    workers."""
+    from evaluation.exp0001 import run_rehearsal
+    from evaluation.exp0001.protocol import PROTOCOL
+    from evaluation.exp0001.provenance import plain
+    try:
+        script = run_rehearsal.script_sha256(run_rehearsal.load_script())
+    except (OSError, ValueError) as exc:
+        raise CliError(f"the run rehearsal's committed script cannot be read: {exc}") from None
+    return run_rehearsal.check_run_rehearsal(
+        passed, commit=commit, python=sys.version.split()[0], software=software_stack(),
+        model_id=model_id, revision=revision, tokenizer=f"hf-tokenizer:{model_id}@{revision}",
+        protocol=run_rehearsal.protocol_sha256(plain(PROTOCOL)), script=script, workers=workers)
+
+
+def cmd_rehearse_run(args) -> int:
+    """The run without a GPU or a model (``evaluation.exp0001.run_rehearsal``):
+    the run's own code at the locked protocol, with the real games, workers,
+    ledger, tokenizer, mirror and figures, against a stand-in server that
+    answers from a committed script. Three passes: a blip the adapter's
+    retries absorb, then the server's death in seed 11's round R2; a restore
+    from the mirror, then a pause inside the final evaluation; a second
+    restore, then the end. The run must then say what the script makes the
+    rule texts say (``run_rehearsal.expected_outcome``)."""
+    import shutil
+    from argparse import Namespace
+
+    from evaluation.exp0001 import rehearsal
+    from evaluation.exp0001 import run_rehearsal as rr
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
+    from evaluation.exp0001.serving import resolve_revision
+    from runtime.model_adapters.errors import BackendUnavailableError
+
+    out = Path(args.out_dir)
+    _empty_dir(out, "directory")
+    _empty_dir(args.mirror_dir, "mirror directory")
+    _require_recycled_workers(args.workers)  # as `run` needs, before hours of CPU
+    _require_rehearsal_disk(args.workers, out_dir=out)
+    try:  # the figures come last: a missing matplotlib fails now, not hours later
+        import matplotlib  # noqa: F401
+    except ImportError:
+        raise CliError("the run rehearsal draws the run's figures: pip install -e .[figures]") \
+            from None
+    repo = Path(args.repo)
+    commit, dirty = git_state(repo)
+    if dirty:
+        raise CliError(f"the checkout at {repo} has changes; the run rehearsal names a clean "
+                       f"commit")
+    splits, pilot, bank = _manifests(repo)
+    try:
+        script = rr.load_script(args.script)
+        rr.validate_script(script, splits, pilot, bank)
+        expected = rr.expected_outcome(script, splits, bank)
+        plan = rr.fault_plan(script, bank, expected)
+    except (OSError, ValueError, KeyError, TypeError) as exc:  # the script error included
+        raise CliError(f"the rehearsal's script: {exc!r}") from None
+    verify_data(args.data_root, splits, pilot, bank)  # minutes on Colab: after the script
+    revision = resolve_revision(args.model, args.revision)
+    counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
+    _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python "
+         f"{sys.version.split()[0]}; the run will play {expected['episodes']['total']} episodes")
+    deadline = time.monotonic() + args.max_hours * 3600
+
+    def overdue() -> bool:
+        return time.monotonic() > deadline
+
+    policy = rr.RunPolicy(script, splits, preflight_task=PREFLIGHT_TASK)
+    faults = rr.Faults(**plan, game_of=policy.game, clock=time.monotonic)
+    prepared = {"model_id": args.model, "revision": revision, "path": None,
+                "weights": {"sha256": rr.SENTINEL_WEIGHTS_SHA256,
+                            "note": "a rehearsal loads no weights"}}
+    local = out / "run"  # the figures and the record go beside it, never into it
+    checks: dict[str, bool] = {}
+
+    def so_far(stage: str) -> None:  # a failed check fails now: the passes take hours
+        failed = [name for name, ok in checks.items() if not ok]
+        if failed:
+            raise CliError(f"the run rehearsal failed {stage}: {failed}")
+
+    factory = AlfworldEnvFactory(args.data_root, splits, extra_games=bank_content_index(bank))
+    census = rr.census_games(splits, bank)
+    failures = rr.census_failures(census, _census(factory, census, args.workers,
+                                                  overdue=overdue), script)
+    checks["every game a run may play opens through the run's factory, and the scripted "
+           "ones show the script's start texts (the census)"] = not failures
+    _out(f"[rehearsal] census: {len(census)} games opened, {len(failures)} failed"
+         + (f" (first {failures[0]})" if failures else ""))
+    so_far("the census")
+    with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
+                                 template_kwargs=CHAT_TEMPLATE_KWARGS,
+                                 check_schema=rehearsal.xgrammar_check(counter.tokenizer),
+                                 check_request=rr.run_protocol_issues, fail_request=faults,
+                                 count_completion=counter.count_tokens) as server:
+        session = Namespace(repo=repo, data_root=args.data_root, local_dir=local,
+                            mirror_dir=args.mirror_dir, workers=args.workers,
+                            server_url=server.url, server_info=None,
+                            progress_every=args.progress_every, run_id=rr.RUN_REHEARSAL_RUN_ID)
+
+        def adapter():  # the run's own retries (rr.ADAPTER_OPTIONS is empty)
+            return _adapter(session, prepared, **rr.ADAPTER_OPTIONS)
+
+        def run(pause_when=None) -> int:
+            return _run(session, gpu=dict(rehearsal.REHEARSAL_GPU), prepared=prepared,
+                        adapter=adapter, counter=lambda: counter, pause_when=pause_when,
+                        disposable=True)
+
+        def summary() -> dict:
+            return RunLedger(local / "ledger.jsonl", run_id=rr.RUN_REHEARSAL_RUN_ID,
+                             clock=time.time, caps=_json(local / "run-start.json")["protocol"][
+                                 "caps"], readonly=True).summary()
+
+        preflight = _preflight(adapter(), gate_shape=True)
+        checks["preflight"] = preflight["teacher_reply"] == {"proposals": []} and \
+            policy.kinds["preflight"] == 3
+        so_far("the preflight")
+
+        def restore_next() -> None:
+            """The next pass restores the run from the mirror: its last snapshot
+            must hold this pass's ledger, byte for byte."""
+            checks["the mirror's last snapshot holds the pass's ledger"] = \
+                snapshot_file(args.mirror_dir, "ledger.jsonl") == \
+                (local / "ledger.jsonl").read_bytes()
+            so_far("before the restore")
+            shutil.rmtree(local)  # the rehearsal's own directory: the next pass restores it
+
+        def one_pass(pause=None) -> int:
+            from concurrent.futures.process import BrokenProcessPool
+            try:
+                code = run(pause_when=lambda: overdue() or (pause is not None and pause()))
+            except BrokenProcessPool as exc:
+                raise CliError(f"a worker process of the run ended abruptly ({exc}); out of "
+                               f"memory or disk? A High-RAM runtime, or fewer workers, then a "
+                               f"rehearsal of that worker count") from None
+            if code == 130:
+                raise KeyboardInterrupt  # stopped: a rehearsal never resumes (main says so)
+            if overdue() and not (local / "report.json").exists():
+                raise CliError(f"the run rehearsal took more than --max-hours {args.max_hours}; "
+                               f"start it again with a new directory and mirror directory")
+            return code
+
+        # pass 1: the blip, then the server dies in seed 11's R2
+        try:
+            one_pass()
+            checks["the server's death stopped the first pass"] = False
+        except BackendUnavailableError as exc:
+            checks["the server's death stopped the first pass"] = server.url in str(exc)
+        faults.clear()
+        checks.update(rr.first_pass_checks(_ledger_lines(local / "ledger.jsonl"), faults,
+                                           aborted=summary()["aborted_attempts"],
+                                           blip_key=rr.blip_key(script)))
+        restore_next()
+        _out("[rehearsal] the first pass ended at the server's death; restoring from the mirror")
+        # pass 2: restored, through the gate, paused inside the final evaluation
+        code = one_pass(lambda: policy.kinds["final"] >= rr.PAUSE_AFTER_FINAL_REQUESTS)
+        checks.update(rr.second_pass_checks(
+            _ledger_lines(local / "ledger.jsonl"), expected, code=code,
+            report_written=(local / "report.json").exists(),
+            restores=summary()["notes"].count("restore")))
+        restore_next()
+        _out("[rehearsal] the second pass paused in the final evaluation; restoring again")
+        # pass 3: restored again, to the end
+        checks["the third pass finished"] = one_pass() == 0
+    if not (local / "report.json").exists():
+        raise CliError(f"the run rehearsal's last pass ended without a report: {checks}")
+    lines = _ledger_lines(local / "ledger.jsonl")
+    run_start = _json(local / "run-start.json")
+    report = _json(local / "report.json")
+    ledger = summary()
+    checks["both restores are on record"] = ledger["notes"].count("restore") == 2
+    checks["the run-start record is a rehearsal's"] = (
+        run_start["run_id"] == rr.RUN_REHEARSAL_RUN_ID
+        and run_start["weights"]["sha256"] == rr.SENTINEL_WEIGHTS_SHA256
+        and run_start["model"]["backend_version"] == rehearsal.STAND_IN_VERSION)
+    checks.update(rr.lifetime_checks(local, expected, run_id=rr.RUN_REHEARSAL_RUN_ID))
+    checks.update(rr.gate_checks(local, expected, run_id=rr.RUN_REHEARSAL_RUN_ID,
+                                 g0_genome_id=run_start["g0"]["genome_id"]))
+    checks.update(rr.ledger_checks(lines, expected,
+                                   interrupted=f"gate/{rr.DEATH_SEED}/R{rr.DEATH_ROUND}",
+                                   caps=run_start["protocol"]["caps"]))
+    checks.update(rr.report_checks(report, expected, lines))
+    checks.update(rr.policy_checks(policy, expected, lines))
+    checks.update(rr.server_checks(server.refused, policy.overflows))
+    checks["the figures are drawn, stamped as a rehearsal's"] = _rehearsal_figures(
+        local, out / "figures", commit)
+    record = rr.passed_record(
+        checks=checks, commit=commit, python=sys.version.split()[0], software=software_stack(),
+        model={"model_id": args.model, "revision": revision, "tokenizer": counter.identity},
+        protocol_sha256=rr.protocol_sha256(run_start["protocol"]), script=script,
+        workers=args.workers, expected=expected,
+        measures={"census_games": len(census), "census_failures": failures,
+                  "blip_hits": faults.blip_hits,
+                  "stand_in_requests": server.requests, "stand_in_refused": server.refused,
+                  "requests_by_kind": dict(policy.kinds),
+                  "teacher_schema_compiled_with_xgrammar": server.schemas_compiled > 0,
+                  "episodes": ledger["episodes"], "model_calls": ledger["model_calls"],
+                  "aborted_attempts": ledger["aborted_attempts"]},
+        finished_at=_now())
+    _out(json.dumps(record, indent=2))
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        raise CliError(f"the run rehearsal failed: {failed}")
+    _write_json(out / rr.RUN_REHEARSAL_PASSED, record)
+    _out(f"[rehearsal] PASSED; record {out / rr.RUN_REHEARSAL_PASSED}")
+    return 0
+
+
+def _census(factory, games: list[tuple[str, str]], workers: int, *,
+            overdue=lambda: False, progress_every: int = 100) -> list[tuple]:
+    """Open each game through the run's factory, in at most one worker
+    process per CPU (an open is CPU-bound), each replaced after a bounded
+    number of games (TextWorld keeps 32 MB of disk per opened game until its
+    process ends); returns ``run_rehearsal.open_game``'s result per game.
+    At most one game per process is in flight: with every game submitted up
+    front, a pool that replaces its workers stops replacing them on Python
+    3.11, 3.12 and 3.14 (CPython gh-115634) and never returns."""
+    import multiprocessing
+    import os
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+    from concurrent.futures.process import BrokenProcessPool
+
+    from evaluation.exp0001 import run_rehearsal as rr
+    workers = max(1, min(workers, os.cpu_count() or 1))
+    options = {"max_tasks_per_child": rr.CENSUS_TASKS_PER_CHILD} \
+        if sys.version_info >= (3, 11) else {}
+    results: list = [None] * len(games)
+    queue = iter(enumerate(games))
+    with ProcessPoolExecutor(max_workers=workers,
+                             mp_context=multiprocessing.get_context("spawn"),
+                             **options) as pool:
+        pending = {}
+
+        def broken(exc: BaseException) -> CliError:
+            return CliError(f"a census worker process ended abruptly ({exc}); out of memory or "
+                            f"disk? A High-RAM runtime, or fewer workers, then a rehearsal of "
+                            f"that worker count")
+
+        def submit_next() -> None:
+            for index, (split, game) in queue:
+                try:  # a worker that died since the last result breaks the pool here too
+                    pending[pool.submit(rr.open_game, factory, split, game)] = index
+                except BrokenProcessPool as exc:
+                    raise broken(exc) from None
+                return
+
+        for _ in range(workers):
+            submit_next()
+        done_count = 0
+        while pending:
+            done, _ = wait(pending, timeout=CENSUS_WAKE_SECONDS, return_when=FIRST_COMPLETED)
+            for future in done:
+                index = pending.pop(future)
+                try:
+                    results[index] = future.result()
+                except BrokenProcessPool as exc:
+                    raise broken(exc) from None
+                done_count += 1
+                if progress_every and done_count % progress_every == 0:
+                    _out(f"[rehearsal] census: {done_count}/{len(games)} games opened")
+                submit_next()
+            if pending and overdue():  # at every wake: a game that never opens holds no wait
+                for other in pending:
+                    other.cancel()
+                _end_workers(pool)
+                raise CliError("the run rehearsal's census took more than --max-hours")
+    return results
+
+
+CENSUS_WAKE_SECONDS = 30.0  # the census checks its deadline at least this often
+
+
+def _end_workers(pool) -> None:
+    """End a pool's worker processes, so that leaving the pool (which waits
+    for the games in flight) cannot wait on a game that never opens."""
+    terminate = getattr(pool, "terminate_workers", None)  # Python 3.14
+    if callable(terminate):
+        terminate()
+        return
+    for process in list((getattr(pool, "_processes", None) or {}).values()):
+        process.terminate()
+
+
+def _rehearsal_figures(run_dir: Path, out_dir: Path, commit: str) -> bool:
+    """The run notebook's figures, from the rehearsal's run: every one drawn,
+    each stamped as a rehearsal's."""
+    from evaluation.exp0001.figures import FiguresError, make_figures
+    try:
+        manifest = make_figures(run_dir=run_dir, out_dir=out_dir, code_commit=commit)
+    except FiguresError as exc:
+        _say(f"[rehearsal] figures: {exc}")
+        return False
+    return manifest.get("rehearsal") is True and all(
+        entry["status"] == "drawn" for entry in manifest["figures"])
 
 
 def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, splits: dict,
@@ -837,24 +1193,120 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
 
 
 def cmd_run(args) -> int:
-    from evaluation.exp0001.pipeline import Exp0001Run
+    from evaluation.exp0001 import rehearsal, run_rehearsal
 
     gpu = require_a100_80gb(gpu_inventory())
     prepared = load_prepared(args.prepared)
+    # a rehearsal's identities are no run's (its run id, its sentinel weights)
+    if args.run_id == run_rehearsal.RUN_REHEARSAL_RUN_ID or \
+            prepared["weights"]["sha256"] == run_rehearsal.SENTINEL_WEIGHTS_SHA256:
+        raise CliError("that is a rehearsal's identity, not a run's")
+    # a passed run rehearsal of this commit, model, Python and software, before any write
+    _require_run_rehearsal(args, prepared)
+    _require_recycled_workers(args.workers)
+
+    def adapter():
+        served = _adapter(args, prepared)
+        if served.metadata().backend_version == rehearsal.STAND_IN_VERSION:
+            raise CliError(f"{args.server_url} is a rehearsal's stand-in server, not vLLM")
+        return served
+
+    def counter():
+        return hf_token_counter(prepared["model_id"], prepared["revision"],
+                                path=Path(prepared["path"]))
+
+    return _run(args, gpu=gpu, prepared=prepared, adapter=adapter, counter=counter,
+                stop_after_hours=args.stop_after_hours)
+
+
+def _require_recycled_workers(workers: int) -> None:
+    """TextWorld 1.7.0 keeps a 32 MB copy of fast-downward's library per
+    opened game until its process ends (unloading it crashes the process at
+    exit): only worker processes replaced every ``WORKER_TASKS`` games
+    (Python 3.11+) bound the disk a run of thousands of games holds."""
+    from evaluation.exp0001.episodes import WORKER_TASKS
+    if workers < 2 or sys.version_info < (3, 11):
+        raise CliError(f"a run needs worker processes that are replaced every {WORKER_TASKS} "
+                       f"games (--workers 2 or more, Python 3.11 or later; here --workers "
+                       f"{workers}, Python {sys.version.split()[0]}): each opened game keeps "
+                       f"32 MB of disk until its process ends")
+
+
+GAME_DISK_BYTES = 33 * 2 ** 20  # what an opened game keeps until its process ends (measured)
+RUN_DISK_BYTES = 2 * 2 ** 30  # the rehearsal's run directory and trajectories, with room
+
+
+def _require_rehearsal_disk(workers: int, out_dir: Path | None = None) -> None:
+    """Room for what the rehearsal's processes keep under the temporary
+    directory (TextWorld's library copy per opened game, until a process is
+    replaced) and 2 GB for the run and its trajectories under ``out_dir``
+    (the same disk unless it is elsewhere): a full disk would show hours in.
+    The mirror's own disk (Drive on Colab) is not measured."""
+    import os
+    import shutil
+    import tempfile
+    from evaluation.exp0001 import run_rehearsal as rr
+    from evaluation.exp0001.episodes import WORKER_TASKS
+    census = min(workers, os.cpu_count() or 1) * rr.CENSUS_TASKS_PER_CHILD
+    games = max(workers * WORKER_TASKS, census) * GAME_DISK_BYTES
+    temp = tempfile.gettempdir()
+    needs = {temp: games + RUN_DISK_BYTES}
+    if out_dir is not None:
+        existing = next(p for p in (Path(out_dir), *Path(out_dir).absolute().parents)
+                        if p.exists())
+        if os.stat(existing).st_dev != os.stat(temp).st_dev:
+            needs = {temp: games, str(existing): RUN_DISK_BYTES}
+    for where, need in needs.items():
+        free = shutil.disk_usage(where).free
+        if free < need:
+            raise CliError(f"the run rehearsal with {workers} workers needs about "
+                           f"{need / 2 ** 30:.0f} GB of free disk under {where}; "
+                           f"{free / 2 ** 30:.0f} GB are free")
+
+
+def _require_run_rehearsal(args, prepared: dict) -> None:
+    """A new or resumed run starts only with a passed run rehearsal (every
+    check passed, the committed script) of this clean commit, model,
+    revision, tokenizer, Python, pinned software, protocol and worker count
+    (``rehearse-run``), checked before anything is written."""
+    commit, dirty = git_state(Path(args.repo))
+    differ = _run_rehearsal_differences(
+        _run_rehearsal_record(args.rehearsal_passed), commit=commit,
+        model_id=prepared["model_id"], revision=prepared["revision"], workers=args.workers)
+    if dirty:
+        differ["commit"] = {"rehearsed": "a clean checkout", "here": f"{commit} (dirty)"}
+    if differ:
+        raise CliError(f"no passed run rehearsal covers this run: {json.dumps(differ)}. Run "
+                       f"EXP-0001-run-rehearsal.ipynb on a CPU runtime with this commit")
+
+
+def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
+         stop_after_hours: float | None = None, pause_when=None,
+         disposable: bool = False) -> int:
+    """The run from its checks to its last snapshot; ``rehearse-run`` runs the
+    same against its stand-in server (``pause_when``, and ``disposable``: no
+    unmirrored marker). ``stop_after_hours`` counts from the run's start in
+    this session, after the restore, the checks and the lock."""
+    from evaluation.exp0001.pipeline import Exp0001Run
+
     repo, local = Path(args.repo), Path(args.local_dir)
     commit, dirty = git_state(repo)
     splits, pilot, bank = _manifests(repo)
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     _restore_if_missing(local, args.mirror_dir)
-    adapter = _adapter(args, prepared)
-    counter = hf_token_counter(prepared["model_id"], prepared["revision"],
-                               path=Path(prepared["path"]))
+    adapter = adapter()
+    counter = counter()
     record = _run_start(args, local, prepared, adapter, splits, pilot, bank, commit, dirty,
                         counter.identity, _environment(verified))
-    with _run_dir_lock(local) as lock:  # one writer, before the mirror is taken over
+    with _run_dir_lock(local, marker=not disposable) as lock:  # one writer, before the mirror
         mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
         started = time.monotonic()
-        budget = None if args.stop_after_hours is None else args.stop_after_hours * 3600
+        budget = None if stop_after_hours is None else stop_after_hours * 3600
+
+        def pause() -> bool:
+            return (budget is not None and time.monotonic() - started > budget) or \
+                (pause_when is not None and bool(pause_when()))
+
         run = Exp0001Run(run_dir=local, run_start=record, split_manifest=splits,
                          pilot_manifest=pilot, benefit_bank=bank, model=adapter,
                          teacher=adapter,
@@ -864,22 +1316,25 @@ def cmd_run(args) -> int:
                          session_info=_session_info(gpu, adapter, args.workers,
                                                     args.server_info),
                          on_ledger_append=Progress(mirror, args.progress_every),
-                         pause_when=None if budget is None
-                         else (lambda: time.monotonic() - started > budget), lock=lock)
+                         pause_when=pause if budget is not None or pause_when is not None
+                         else None,
+                         lock=lock)
         report, stopped, mirrored = None, False, False
         try:
             report = run.run()
         except RunPaused as exc:
-            _out(f"paused after {args.stop_after_hours} h of this session ({exc}); every "
-                 f"admitted episode is recorded. Run the same command again to resume.")
+            after = "" if stop_after_hours is None else \
+                f" after {stop_after_hours} h of this session"
+            _out(f"paused{after} ({exc}); every admitted episode is recorded. Run the same "
+                 f"command again to resume.")
         except KeyboardInterrupt:
             stopped = True
         finally:
-            mirrored = _final_snapshot(mirror, local)
+            mirrored = _final_snapshot(mirror, local, marker=not disposable)
             if mirror and mirror.failures:
                 _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
     if stopped:
-        return _stopped(mirrored)
+        return 130 if disposable else _stopped(mirrored)
     if report is not None:
         _out(json.dumps({k: report.get(k) for k in ("status", "stage", "reason", "episodes",
                                                       "model_calls", "aborted_attempts")},
@@ -995,6 +1450,9 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser("preflight")
     p.add_argument("--prepared", type=Path, required=True)
     p.add_argument("--server-url", default=f"http://127.0.0.1:{DEFAULT_PORT}")
+    p.add_argument("--gate-shape", action="store_true",
+                   help="also send the ReAct call as a gate episode is sent (temperature 0, "
+                        "a mining seed): the run's preflight")
     p.set_defaults(func=cmd_preflight)
 
     for name, func in (("pilot", cmd_pilot), ("run", cmd_run)):
@@ -1018,6 +1476,10 @@ def parser() -> argparse.ArgumentParser:
             p.add_argument("--stop-after-hours", type=float, default=None,
                            help="admit no new episode after this many hours of this session; "
                                 "the run stays resumable (compute-unit budgeting)")
+            p.add_argument("--rehearsal-passed", type=Path, required=True,
+                           help="the run-rehearsal-passed.json of `rehearse-run` with this "
+                                "commit, model and software (checked before anything is "
+                                "written)")
         p.set_defaults(func=func)
 
     p = sub.add_parser("rehearse")
@@ -1035,11 +1497,37 @@ def parser() -> argparse.ArgumentParser:
                         "restores the pilot from it once")
     p.set_defaults(func=cmd_rehearse)
 
+    p = sub.add_parser("rehearse-run")
+    p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--revision", default=None, help="a commit, branch or tag; default the "
+                   "hub's current commit. The record covers only a run that pins the same "
+                   "commit")
+    p.add_argument("--data-root", type=Path, required=True,
+                   help="ALFWorld's json_2.1.1 directory")
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.add_argument("--workers", type=int, default=16,
+                   help="the run's --workers: the record covers only a run with as many")
+    p.add_argument("--progress-every", type=int, default=200)
+    p.add_argument("--out-dir", type=Path, required=True, help="a new, empty directory")
+    p.add_argument("--mirror-dir", type=Path, required=True,
+                   help="a new, empty directory (on Colab, on Google Drive): the rehearsal "
+                        "restores the run from it twice")
+    p.add_argument("--script", type=Path, default=None,
+                   help="the scripted world (default: the committed run_rehearsal_script.json)")
+    p.add_argument("--max-hours", type=float, default=6.0,
+                   help="stop without a record after this many hours (a CPU runtime's guard)")
+    p.set_defaults(func=cmd_rehearse_run)
+
     p = sub.add_parser("rehearsal-check")
-    p.add_argument("--passed", type=Path, required=True, help="a rehearsal-passed.json")
+    p.add_argument("--passed", type=Path, required=True,
+                   help="a rehearsal-passed.json, or with --kind run a run-rehearsal-passed.json")
+    p.add_argument("--kind", choices=("pilot", "run"), default="pilot")
+    p.add_argument("--workers", type=int, default=None,
+                   help="with --kind run: the run's workers, which the rehearsal's must equal")
     p.add_argument("--repo", type=Path, default=Path("."))
     p.add_argument("--model", default=DEFAULT_MODEL)
-    p.add_argument("--revision", default=None, help="the revision the run will pin, if known")
+    p.add_argument("--revision", default=None, help="the revision the run will pin, if known "
+                   "(required with --kind run)")
     p.set_defaults(func=cmd_rehearsal_check)
 
     p = sub.add_parser("status")
@@ -1104,7 +1592,7 @@ def main(argv: list[str] | None = None) -> int:
         _say(f"error: the model server: {type(exc).__name__}: {exc}")
         return 2
     except KeyboardInterrupt:
-        if args.func is cmd_rehearse:  # stopped outside a pass: a rehearsal never resumes
+        if args.func in (cmd_rehearse, cmd_rehearse_run):  # a rehearsal never resumes
             return _rehearsal_stopped()
         _say(STOPPED)
         return 130

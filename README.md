@@ -4,7 +4,7 @@
 
 Model-independent research framework for **causally-gated assimilation of acquired skills into functional genomes** for evolvable LLM agents. Full specification: [SPEC.md](SPEC.md) (source document, v0.1).
 
-## Status (2026-10-15) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
+## Status (2026-10-19) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
 
 Phase 0 (SPEC §40, research grounding, 2026-10-02) is complete: related-work notes in `research/related-work/`, the novelty ledger, and the cross-reviewed ADR-0001 (EAG v0.1 schema) and ADR-0002 (EXP-0001 pre-registered design).
 
@@ -25,7 +25,7 @@ Not done yet:
 - single-lineage inheritance and the EXP-0001 run (#13);
 - filling the pre-registration fields (#6).
 
-The ALFWorld adapter (`runtime/tool_adapters/alfworld.py`) and the EXP-0001 orchestration (`evaluation/exp0001/`, run on Colab through `notebooks/`) exist. No pilot or EXP-0001 episode has run, so nothing here supports a research claim (SPEC §34).
+The ALFWorld adapter (`runtime/tool_adapters/alfworld.py`) and the EXP-0001 orchestration (`evaluation/exp0001/`, run on Colab through `notebooks/`) exist. The calibration pilot ran on 2026-10-16 (127 episodes, see below); no EXP-0001 episode has run, so nothing here supports a research claim (SPEC §34).
 
 ## Repository rules (SPEC §31–34)
 
@@ -84,4 +84,4 @@ Repo: https://github.com/sametyilmaztemel/heritagent (public). Tracking:
 
 ## Suggested next step
 
-#13 Phase A (the EXP-0001 orchestration, pre-run artifacts and run protocol, ADR-0006 and ADR-0007) is merged. The run executes on one Colab A100 80 GB with parallel episodes (ADR-0008); `notebooks/EXP-0001-pilot.ipynb` and `notebooks/EXP-0001-run.ipynb` drive it through `python -m evaluation.exp0001.cli`. Both stop before the install unless `notebooks/EXP-0001-rehearsal.ipynb` passed on a CPU runtime for the same commit and model. The model is Qwen3.8-27B, served text-only with thinking off (ADR-0011). No EXP-0001 or pilot episode has run. Next: the rehearsal on a CPU runtime, then the calibration pilot, then the owner's decision if G0 is above 60 % or the temperature-0 repeats differ (ADR-0011 D6), then the compute-cap decision, then the EXP-0001 run.
+#13 Phase A (the EXP-0001 orchestration, pre-run artifacts and run protocol, ADR-0006 and ADR-0007) is merged. The run executes on one Colab A100 80 GB with parallel episodes (ADR-0008); `notebooks/EXP-0001-pilot.ipynb` and `notebooks/EXP-0001-run.ipynb` drive it through `python -m evaluation.exp0001.cli`. The pilot notebook stops before the install unless `notebooks/EXP-0001-rehearsal.ipynb` passed on a CPU runtime for the same commit and model. The run notebook stops before the install without a passed `notebooks/EXP-0001-run-rehearsal.ipynb` (the whole run against a stand-in server, at the locked protocol) for the commit and model, and before the model download unless that record covers this machine's Python, software, revision and worker count; `run` itself checks the same. The model is Qwen3.8-27B, served text-only with thinking off (ADR-0011). The calibration pilot ran on 2026-10-16 (127 episodes); its ADR-0011 D6 triggers fired and led to ADR-0012, the gate's recalibration, accepted on 2026-10-19 and implemented. No EXP-0001 episode has run. Next: the run rehearsal on a CPU runtime (`notebooks/EXP-0001-run-rehearsal.ipynb`, hours), then the run notebook's other preconditions (its first cell), then the EXP-0001 run.

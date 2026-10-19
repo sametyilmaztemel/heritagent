@@ -17,7 +17,9 @@ that keep them faithful to the pre-registered analysis (ADR-0006, ADR-0009):
 - rule outcomes are quoted from the record (``met``), never re-decided
   from rounded numbers, and carry ``claim_status``;
 - an incomplete or unfinished run gets descriptive rates only, marked
-  as such (ADR-0006 D5).
+  as such (ADR-0006 D5);
+- a rehearsal's run (``cli rehearse-run``: a stand-in server, no model)
+  is stamped as one on every figure, its captions and its manifest.
 
 Each figure is written as ``<name>.pdf`` (for the paper), ``<name>.png``
 and ``<name>.csv`` (its table view). ``captions.md`` holds the captions with
@@ -64,6 +66,9 @@ OUTPUT_NAMES = ("fig1_t_eval_contrasts", "fig2_t_reg", "fig3_seed_direction",
 STATES = {"complete": "complete run",
           "incomplete": "INCOMPLETE run: descriptive rates only, no primary outcome",
           "unfinished": "UNFINISHED run (interim): descriptive only, no primary outcome"}
+
+
+REHEARSAL_STAMP = "REHEARSAL: a stand-in server played this run; it measures no model"
 
 
 class FiguresError(RuntimeError):
@@ -183,7 +188,15 @@ def collect(files: RunFiles) -> dict:
         notes.append(f"gate records missing for mining seeds {missing}; the report lists them")
     return {"run_start": run_start, "report": report, "ledger": ledger, "gates": gates,
             "missing_gates": missing, "notes": notes, "state": _state(report, ledger),
-            "genomes": _arm_genomes(report) if report else {}}
+            "genomes": _arm_genomes(report) if report else {},
+            "rehearsal": is_rehearsal(run_start)}
+
+
+def is_rehearsal(run_start: Mapping) -> bool:
+    """A run of ``cli rehearse-run``: its run id or its sentinel weights."""
+    from evaluation.exp0001.run_rehearsal import RUN_REHEARSAL_RUN_ID, SENTINEL_WEIGHTS_SHA256
+    return run_start.get("run_id") == RUN_REHEARSAL_RUN_ID or \
+        (run_start.get("weights") or {}).get("sha256") == SENTINEL_WEIGHTS_SHA256
 
 
 # -- the tables behind the figures ---------------------------------------------
@@ -585,7 +598,7 @@ def draw_gate(Figure, rows, state):
         ax.axvline(k, color=AXIS, linewidth=0.8, zorder=1)  # every candidate
         ax.set_xlim(0, max(k, 1) * 1.6)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_title(f"seed {seed}: {k} candidates", fontsize=8, loc="left")
+        ax.set_title(f"seed {seed}: {k} candidate{'' if k == 1 else 's'}", fontsize=8, loc="left")
         ax.set_xlabel("candidates passing")
         ax.grid(axis="x")
         ax.set_axisbelow(True)
@@ -695,7 +708,8 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
     state, run_start = data["state"], data["run_start"]
     complete = state == "complete"
     claim = statistics.get("claim_status") or ""
-    lines = [f"# EXP-0001 figures: {run_start['run_id']}", "",
+    lines = [f"# EXP-0001 figures: {run_start['run_id']}", ""] + \
+        ([f"**{REHEARSAL_STAMP}.**", ""] if data.get("rehearsal") else []) + [
              f"State: {STATES[state]}"
              + (" (the report is complete; the ledger's terminal record is missing)"
                 if state == "unfinished" and report.get("status") == "complete" else "")
@@ -821,6 +835,24 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     path.write_text(buffer.getvalue(), encoding="utf-8")
 
 
+STAMP_STRIP_INCHES = 0.2
+
+
+def _stamp(fig) -> None:
+    """A rehearsal's stamp, in a strip added under the figure's layout: it
+    covers no axis label or legend (a legend below the axes, which sits at
+    the figure's edge, moves up by the strip)."""
+    height = fig.get_figheight()
+    fig.set_figheight(height + STAMP_STRIP_INCHES)
+    strip = STAMP_STRIP_INCHES / (height + STAMP_STRIP_INCHES)
+    fig.get_layout_engine().set(rect=(0, strip, 1, 1 - strip))
+    for legend in fig.legends:
+        if getattr(legend, "_outside_loc", None) == "lower":
+            legend.borderaxespad += STAMP_STRIP_INCHES * 72 / legend.prop.get_size_in_points()
+    fig.text(0.99, strip / 2, REHEARSAL_STAMP, ha="right", va="center", fontsize=7,
+             color="#b3261e", fontweight="bold")
+
+
 def _save(fig, out_dir: Path, name: str) -> None:
     fig.savefig(out_dir / f"{name}.pdf", metadata={"CreationDate": None, "Creator": None,
                                                     "Producer": None})
@@ -939,7 +971,7 @@ def _draw_all(data, files, out_dir: Path, Figure, matplotlib, code_commit) -> di
          else None, "needs a complete run"),
     ]
     manifest = {"schema": FIGURES_SCHEMA, "run_id": data["run_start"]["run_id"],
-                "state": state, "drawn_by": {"code_commit": code_commit},
+                "state": state, "rehearsal": data["rehearsal"], "drawn_by": {"code_commit": code_commit},
                 "source": {"kind": files.kind, "snapshot_seq": files.snapshot_seq},
                 "figures": [], "notes": list(data["notes"])}
     drawn: dict[str, str] = {}
@@ -953,7 +985,10 @@ def _draw_all(data, files, out_dir: Path, Figure, matplotlib, code_commit) -> di
                 continue
             rows, draw = planned
             _write_csv(out_dir / f"{name}.csv", rows)
-            _save(draw(), out_dir, name)
+            fig = draw()
+            if data["rehearsal"]:
+                _stamp(fig)
+            _save(fig, out_dir, name)
             drawn[name] = f"{name}.pdf"
             manifest["figures"].append({"name": name, "status": "drawn"})
     _write_csv(out_dir / "run_accounting.csv", accounting_rows(data))

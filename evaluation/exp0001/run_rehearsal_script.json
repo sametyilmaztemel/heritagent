@@ -1,0 +1,1506 @@
+{
+ "candidates": {
+  "11": [
+   {
+    "applicability": {
+     "task_families": [
+      "look_at_obj_in_light",
+      "pick_and_place_simple",
+      "pick_clean_then_place_in_recep",
+      "pick_cool_then_place_in_recep",
+      "pick_heat_then_place_in_recep",
+      "pick_two_obj_and_place"
+     ]
+    },
+    "estimated_generality": 0.9,
+    "loses": [],
+    "name": "rehearsal skill one",
+    "principle": "Check the receptacle named in the task first; then act on the object.",
+    "procedure": [
+     {
+      "id": "S1",
+      "text": "look around, then act"
+     }
+    ],
+    "when_to_apply": "household tasks with objects to move",
+    "wins": [
+     "look_at_obj_in_light-AlarmClock-None-DeskLamp-323/trial_T20190909_044736_929512",
+     "look_at_obj_in_light-Laptop-None-DeskLamp-301/trial_T20190907_185618_889790",
+     "look_at_obj_in_light-Statue-None-DeskLamp-304/trial_T20190909_035310_552898",
+     "pick_and_place_simple-CreditCard-None-Shelf-316/trial_T20190909_092853_746076",
+     "pick_and_place_simple-SoapBar-None-Drawer-409/trial_T20190909_100430_737876",
+     "pick_clean_then_place_in_recep-Bowl-None-Microwave-30/trial_T20190907_063358_779511",
+     "pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-30/trial_T20190909_072524_128648",
+     "pick_cool_then_place_in_recep-Lettuce-None-DiningTable-18/trial_T20190909_122703_212954",
+     "pick_cool_then_place_in_recep-Plate-None-DiningTable-17/trial_T20190909_122939_032098",
+     "pick_heat_then_place_in_recep-Bread-None-CounterTop-15/trial_T20190907_000358_854333",
+     "pick_heat_then_place_in_recep-Mug-None-Cabinet-25/trial_T20190909_095516_427126",
+     "pick_heat_then_place_in_recep-Plate-None-Fridge-13/trial_T20190907_035716_975895"
+    ]
+   },
+   {
+    "applicability": {
+     "task_families": [
+      "pick_two_obj_and_place"
+     ]
+    },
+    "estimated_generality": 0.8,
+    "loses": [],
+    "name": "rehearsal skill two",
+    "principle": "Check the receptacle named in the task first; then carry both objects.",
+    "procedure": [
+     {
+      "id": "S1",
+      "text": "look around, then act"
+     }
+    ],
+    "when_to_apply": "household tasks with objects to move",
+    "wins": [
+     "pick_two_obj_and_place-Candle-None-CounterTop-402/trial_T20190909_082809_314519",
+     "pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212046_809746",
+     "pick_two_obj_and_place-CellPhone-None-Sofa-218/trial_T20190907_232123_370650",
+     "pick_two_obj_and_place-KeyChain-None-SideTable-322/trial_T20190909_095643_442738",
+     "pick_two_obj_and_place-Newspaper-None-CoffeeTable-212/trial_T20190907_211537_017302",
+     "pick_two_obj_and_place-Pan-None-CounterTop-14/trial_T20190918_175910_161432",
+     "pick_two_obj_and_place-PepperShaker-None-DiningTable-21/trial_T20190918_193649_729348",
+     "pick_two_obj_and_place-RemoteControl-None-ArmChair-214/trial_T20190909_020949_765614",
+     "pick_two_obj_and_place-RemoteControl-None-Sofa-206/trial_T20190909_095001_569701",
+     "pick_two_obj_and_place-SprayBottle-None-CounterTop-411/trial_T20190909_045033_783510",
+     "pick_two_obj_and_place-SprayBottle-None-GarbageCan-418/trial_T20190909_071533_543818"
+    ]
+   },
+   {
+    "applicability": {
+     "task_families": [
+      "pick_two_obj_and_place"
+     ]
+    },
+    "estimated_generality": 0.7,
+    "loses": [],
+    "name": "rehearsal skill three",
+    "principle": "Check the receptacle named in the task first; then place them together.",
+    "procedure": [
+     {
+      "id": "S1",
+      "text": "look around, then act"
+     }
+    ],
+    "when_to_apply": "household tasks with objects to move",
+    "wins": [
+     "pick_two_obj_and_place-Candle-None-Drawer-411/trial_T20190909_060014_389023",
+     "pick_two_obj_and_place-Newspaper-None-CoffeeTable-212/trial_T20190907_211537_017302",
+     "pick_two_obj_and_place-Pan-None-CounterTop-14/trial_T20190918_175910_161432",
+     "pick_two_obj_and_place-PepperShaker-None-DiningTable-21/trial_T20190918_193649_729348",
+     "pick_two_obj_and_place-RemoteControl-None-ArmChair-214/trial_T20190909_020949_765614",
+     "pick_two_obj_and_place-RemoteControl-None-ArmChair-224/trial_T20190908_141327_239129",
+     "pick_two_obj_and_place-RemoteControl-None-Sofa-212/trial_T20190907_235309_480100",
+     "pick_two_obj_and_place-SoapBar-None-GarbageCan-416/trial_T20190907_143756_457606",
+     "pick_two_obj_and_place-SoapBottle-None-Toilet-405/trial_T20190909_014901_056414",
+     "pick_two_obj_and_place-Vase-None-DiningTable-227/trial_T20190910_072914_747890"
+    ]
+   },
+   {
+    "applicability": {
+     "task_families": [
+      "pick_two_obj_and_place"
+     ]
+    },
+    "estimated_generality": 0.6,
+    "loses": [
+     "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034908_319218",
+     "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034918_885162",
+     "look_at_obj_in_light-Statue-None-DeskLamp-319/trial_T20190907_035529_591053",
+     "pick_and_place_simple-Book-None-Bed-312/trial_T20190908_103648_829231"
+    ],
+    "name": "rehearsal skill four",
+    "principle": "Check the receptacle named in the task first; then look twice.",
+    "procedure": [
+     {
+      "id": "S1",
+      "text": "look around, then act"
+     }
+    ],
+    "when_to_apply": "household tasks with objects to move",
+    "wins": [
+     "pick_two_obj_and_place-Candle-None-Cabinet-403/trial_T20190909_065744_416414",
+     "pick_two_obj_and_place-CreditCard-None-Dresser-311/trial_T20190907_201834_073281",
+     "pick_two_obj_and_place-Newspaper-None-CoffeeTable-212/trial_T20190907_211537_017302",
+     "pick_two_obj_and_place-Pan-None-CounterTop-14/trial_T20190918_175910_161432",
+     "pick_two_obj_and_place-PepperShaker-None-DiningTable-21/trial_T20190918_193649_729348",
+     "pick_two_obj_and_place-RemoteControl-None-ArmChair-214/trial_T20190909_020949_765614",
+     "pick_two_obj_and_place-SoapBar-None-GarbageCan-416/trial_T20190907_143756_457606",
+     "pick_two_obj_and_place-SprayBottle-None-GarbageCan-413/trial_T20190907_233227_626299",
+     "pick_two_obj_and_place-ToiletPaper-None-Drawer-421/trial_T20190908_184549_278817"
+    ]
+   },
+   {
+    "applicability": {
+     "task_families": [
+      "pick_two_obj_and_place"
+     ]
+    },
+    "estimated_generality": 0.5,
+    "loses": [
+     "pick_two_obj_and_place-Plate-None-CoffeeTable-201/trial_T20190907_170428_254428"
+    ],
+    "name": "rehearsal skill five",
+    "overhead": "fail",
+    "principle": "Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; Before every action, list each receptacle in the room, recall what was seen in it, and say why the next action follows from that list; ",
+    "procedure": [
+     {
+      "id": "S1",
+      "text": "look around, then act"
+     }
+    ],
+    "when_to_apply": "household tasks with objects to move",
+    "wins": [
+     "pick_two_obj_and_place-Pan-None-CounterTop-14/trial_T20190918_175910_161432"
+    ]
+   }
+  ],
+  "23": [
+   {
+    "applicability": {
+     "task_families": [
+      "pick_two_obj_and_place"
+     ]
+    },
+    "estimated_generality": 0.5,
+    "loses": [
+     "pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212202_833108",
+     "pick_two_obj_and_place-Plate-None-CoffeeTable-201/trial_T20190907_170428_254428"
+    ],
+    "name": "rehearsal skill six",
+    "principle": "Check the receptacle named in the task first; then wait.",
+    "procedure": [
+     {
+      "id": "S1",
+      "text": "look around, then act"
+     }
+    ],
+    "when_to_apply": "household tasks with objects to move",
+    "wins": []
+   }
+  ],
+  "41": []
+ },
+ "cells": {
+  "11": [
+   "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034908_319218",
+   "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034918_885162",
+   "look_at_obj_in_light-Statue-None-DeskLamp-319/trial_T20190907_035529_591053",
+   "pick_and_place_simple-Book-None-Bed-312/trial_T20190908_103648_829231",
+   "pick_and_place_simple-Pen-None-SideTable-322/trial_T20190909_055255_667967",
+   "pick_two_obj_and_place-Plate-None-CoffeeTable-201/trial_T20190907_170428_254428"
+  ],
+  "23": [
+   "pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212202_833108",
+   "pick_two_obj_and_place-Plate-None-CoffeeTable-201/trial_T20190907_170428_254428"
+  ]
+ },
+ "final": {
+  "extra_wins": {
+   "rehearsal skill one": [
+    "pick_and_place_simple-PepperShaker-None-Drawer-10/trial_T20190918_154326_823501",
+    "pick_and_place_simple-SaltShaker-None-Drawer-10/trial_T20190909_021728_339782",
+    "pick_and_place_simple-SoapBottle-None-Toilet-424/trial_T20190907_004321_405868"
+   ]
+  },
+  "g0_wins": [
+   "look_at_obj_in_light-AlarmClock-None-DeskLamp-308/trial_T20190908_222951_616606",
+   "look_at_obj_in_light-Bowl-None-DeskLamp-308/trial_T20190907_133953_562557",
+   "look_at_obj_in_light-CD-None-DeskLamp-308/trial_T20190908_141942_810052",
+   "look_at_obj_in_light-Mug-None-DeskLamp-308/trial_T20190908_161733_213242",
+   "look_at_obj_in_light-Pen-None-DeskLamp-305/trial_T20190907_115838_075745",
+   "look_at_obj_in_light-Pencil-None-DeskLamp-308/trial_T20190908_220545_153480",
+   "look_at_obj_in_light-Pencil-None-DeskLamp-328/trial_T20190906_201143_149707",
+   "pick_and_place_simple-Fork-None-Drawer-12/trial_T20190907_151014_567960",
+   "pick_and_place_simple-Laptop-None-SideTable-221/trial_T20190908_110920_231907",
+   "pick_and_place_simple-Mug-None-Desk-308/trial_T20190909_203041_433487",
+   "pick_and_place_simple-PepperShaker-None-Drawer-5/trial_T20190908_195236_701456",
+   "pick_and_place_simple-Pillow-None-ArmChair-321/trial_T20190908_104920_763828"
+  ],
+  "losses": {
+   "rehearsal skill five": [
+    "look_at_obj_in_light-AlarmClock-None-DeskLamp-308/trial_T20190908_222951_616606"
+   ]
+  }
+ },
+ "generator": {
+  "planner": "TextWorld policy_commands, replayed through the run's environment factory (won)",
+  "played_games": 456,
+  "python": "3.13.16",
+  "script": "scripts/exp0001/build_run_rehearsal_script.py",
+  "text_unique": 307,
+  "versions": {
+   "alfworld": "0.4.2",
+   "textworld": "1.7.0"
+  },
+  "winning_plans": 303
+ },
+ "lifetime": {
+  "L": [
+   "look_at_obj_in_light-AlarmClock-None-DeskLamp-323/trial_T20190909_044736_929512",
+   "look_at_obj_in_light-Bowl-None-DeskLamp-307/trial_T20190908_204857_408911",
+   "look_at_obj_in_light-CD-None-DeskLamp-324/trial_T20190907_230921_208592",
+   "look_at_obj_in_light-CD-None-DeskLamp-327/trial_T20190909_065723_365410",
+   "look_at_obj_in_light-Laptop-None-DeskLamp-216/trial_T20190907_185541_681881",
+   "look_at_obj_in_light-Newspaper-None-DeskLamp-210/trial_T20190906_234500_634705",
+   "look_at_obj_in_light-Pencil-None-DeskLamp-307/trial_T20190909_014411_219923",
+   "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034908_319218",
+   "look_at_obj_in_light-Statue-None-DeskLamp-319/trial_T20190907_035529_591053",
+   "pick_and_place_simple-AlarmClock-None-Desk-310/trial_T20190908_002100_024659",
+   "pick_and_place_simple-Candle-None-Dresser-413/trial_T20190909_040614_977988",
+   "pick_and_place_simple-DishSponge-None-Toilet-430/trial_T20190907_144839_536922",
+   "pick_and_place_simple-Fork-None-Drawer-12/trial_T20190907_151014_567960",
+   "pick_and_place_simple-Kettle-None-StoveBurner-2/trial_T20190918_152051_373060",
+   "pick_and_place_simple-Laptop-None-SideTable-221/trial_T20190908_110920_231907",
+   "pick_and_place_simple-PepperShaker-None-Drawer-5/trial_T20190908_195236_701456",
+   "pick_and_place_simple-Pillow-None-ArmChair-321/trial_T20190908_104920_763828",
+   "pick_and_place_simple-SoapBottle-None-CounterTop-428/trial_T20190909_114242_588264",
+   "pick_and_place_simple-SprayBottle-None-GarbageCan-428/trial_T20190909_101535_306889",
+   "pick_and_place_simple-Statue-None-CoffeeTable-228/trial_T20190906_185540_904069",
+   "pick_clean_then_place_in_recep-Apple-None-DiningTable-19/trial_T20190907_230051_730842",
+   "pick_clean_then_place_in_recep-Apple-None-DiningTable-21/trial_T20190907_210640_211972",
+   "pick_clean_then_place_in_recep-Cloth-None-Toilet-408/trial_T20190906_221323_589436",
+   "pick_clean_then_place_in_recep-Egg-None-Microwave-14/trial_T20190907_232727_134338",
+   "pick_clean_then_place_in_recep-Knife-None-DiningTable-15/trial_T20190908_162445_886312",
+   "pick_clean_then_place_in_recep-Knife-None-DiningTable-23/trial_T20190908_142059_634306",
+   "pick_clean_then_place_in_recep-Potato-None-Microwave-2/trial_T20190908_102004_349533",
+   "pick_clean_then_place_in_recep-SoapBar-None-GarbageCan-420/trial_T20190906_201023_015139",
+   "pick_clean_then_place_in_recep-SoapBar-None-Toilet-408/trial_T20190908_122359_761879",
+   "pick_clean_then_place_in_recep-Tomato-None-DiningTable-23/trial_T20190909_000808_543184",
+   "pick_cool_then_place_in_recep-Apple-None-Microwave-23/trial_T20190908_051110_010210",
+   "pick_cool_then_place_in_recep-Bread-None-DiningTable-11/trial_T20190908_005202_990135",
+   "pick_cool_then_place_in_recep-Cup-None-SideTable-21/trial_T20190906_192855_164902",
+   "pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-30/trial_T20190907_153036_598316",
+   "pick_cool_then_place_in_recep-Pan-None-DiningTable-11/trial_T20190908_204347_530034",
+   "pick_cool_then_place_in_recep-Pan-None-StoveBurner-15/trial_T20190907_071217_746222",
+   "pick_cool_then_place_in_recep-Plate-None-Cabinet-27/trial_T20190906_173151_702668",
+   "pick_cool_then_place_in_recep-Pot-None-Cabinet-5/trial_T20190906_235356_747730",
+   "pick_cool_then_place_in_recep-Potato-None-GarbageCan-18/trial_T20190909_044254_735750",
+   "pick_cool_then_place_in_recep-Tomato-None-Microwave-5/trial_T20190908_132219_315033",
+   "pick_heat_then_place_in_recep-Apple-None-DiningTable-23/trial_T20190909_082324_376707",
+   "pick_heat_then_place_in_recep-Apple-None-DiningTable-26/trial_T20190907_060258_549114",
+   "pick_heat_then_place_in_recep-Cup-None-Cabinet-12/trial_T20190908_145944_296356",
+   "pick_heat_then_place_in_recep-Cup-None-Cabinet-30/trial_T20190906_200308_075401",
+   "pick_heat_then_place_in_recep-Cup-None-Shelf-1/trial_T20190906_230132_658755"
+  ]
+ },
+ "manifests": {
+  "bank_sha256": "fd44bb361e7e0176f281f14b75e7381f4bbf68a0b7b73eee33d50b44323ca545",
+  "pilot_sha256": "4fc2b6fe1766dec7bad7795a2f0169fa354b67baab4a569c3d1fcb92700daa52",
+  "split_manifest_sha256": "2f74d1882c1a0032dae3bed3bbd0b9cbc3bdd6bed7496522f984bf4028d1ed9c"
+ },
+ "pair_losses": [
+  {
+   "games": [
+    "pick_and_place_simple-Pen-None-SideTable-322/trial_T20190909_055255_667967"
+   ],
+   "names": [
+    "rehearsal skill one",
+    "rehearsal skill two"
+   ]
+  }
+ ],
+ "plans": {
+  "look_at_obj_in_light-AlarmClock-None-DeskLamp-308/trial_T20190908_222951_616606": [
+   "go to desk 1",
+   "use desklamp 1",
+   "take alarmclock 1 from desk 1"
+  ],
+  "look_at_obj_in_light-AlarmClock-None-DeskLamp-323/trial_T20190909_044736_929512": [
+   "go to sidetable 1",
+   "take alarmclock 1 from sidetable 1",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Bowl-None-DeskLamp-307/trial_T20190908_204857_408911": [
+   "go to desk 1",
+   "take bowl 2 from desk 1",
+   "go to sidetable 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Bowl-None-DeskLamp-308/trial_T20190907_133953_562557": [
+   "go to desk 2",
+   "take bowl 3 from desk 2",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-CD-None-DeskLamp-308/trial_T20190908_141942_810052": [
+   "go to desk 2",
+   "take cd 1 from desk 2",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-CD-None-DeskLamp-324/trial_T20190907_230921_208592": [
+   "go to garbagecan 1",
+   "take cd 1 from garbagecan 1",
+   "go to dresser 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-CD-None-DeskLamp-327/trial_T20190909_065723_365410": [
+   "go to drawer 7",
+   "use desklamp 1",
+   "take cd 4 from dresser 1"
+  ],
+  "look_at_obj_in_light-Laptop-None-DeskLamp-216/trial_T20190907_185541_681881": [
+   "go to sofa 1",
+   "take laptop 1 from sofa 1",
+   "go to sidetable 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Laptop-None-DeskLamp-301/trial_T20190907_185618_889790": [
+   "go to bed 1",
+   "take laptop 2 from bed 1",
+   "go to dresser 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Mug-None-DeskLamp-308/trial_T20190908_161733_213242": [
+   "go to desk 2",
+   "take mug 3 from desk 2",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Newspaper-None-DeskLamp-210/trial_T20190906_234500_634705": [
+   "go to sofa 1",
+   "take newspaper 1 from sofa 1",
+   "go to coffeetable 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Pen-None-DeskLamp-305/trial_T20190907_115838_075745": [
+   "go to dresser 1",
+   "use desklamp 1",
+   "take pen 4 from dresser 1"
+  ],
+  "look_at_obj_in_light-Pencil-None-DeskLamp-307/trial_T20190909_014411_219923": [
+   "go to sidetable 1",
+   "use desklamp 1",
+   "take pencil 4 from sidetable 1"
+  ],
+  "look_at_obj_in_light-Pencil-None-DeskLamp-308/trial_T20190908_220545_153480": [
+   "go to drawer 5",
+   "take pencil 2 from drawer 5",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Pencil-None-DeskLamp-328/trial_T20190906_201143_149707": [
+   "go to desk 1",
+   "use desklamp 1",
+   "take pencil 4 from desk 1"
+  ],
+  "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034908_319218": [
+   "go to bed 1",
+   "take pillow 1 from bed 1",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034918_885162": [
+   "go to bed 1",
+   "take pillow 1 from bed 1",
+   "go to desk 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Statue-None-DeskLamp-304/trial_T20190909_035310_552898": [
+   "go to desk 1",
+   "take statue 1 from desk 1",
+   "go to shelf 1",
+   "use desklamp 1"
+  ],
+  "look_at_obj_in_light-Statue-None-DeskLamp-319/trial_T20190907_035529_591053": [
+   "go to dresser 1",
+   "use desklamp 1",
+   "take statue 1 from dresser 1"
+  ],
+  "pick_and_place_simple-AlarmClock-None-Desk-310/trial_T20190908_002100_024659": [
+   "go to sidetable 1",
+   "take alarmclock 1 from sidetable 1",
+   "go to desk 1",
+   "put alarmclock 1 in/on desk 1"
+  ],
+  "pick_and_place_simple-Book-None-Bed-312/trial_T20190908_103648_829231": [
+   "go to desk 1",
+   "take book 1 from desk 1",
+   "go to bed 1",
+   "put book 1 in/on bed 1"
+  ],
+  "pick_and_place_simple-Candle-None-Dresser-413/trial_T20190909_040614_977988": [
+   "go to toilet 1",
+   "take candle 1 from toilet 1",
+   "go to drawer 4",
+   "put candle 1 in/on dresser 1"
+  ],
+  "pick_and_place_simple-CreditCard-None-Shelf-316/trial_T20190909_092853_746076": [
+   "go to desk 1",
+   "take creditcard 1 from desk 1",
+   "go to shelf 1",
+   "put creditcard 1 in/on shelf 1"
+  ],
+  "pick_and_place_simple-DishSponge-None-Toilet-430/trial_T20190907_144839_536922": [
+   "go to bathtubbasin 1",
+   "take dishsponge 2 from bathtubbasin 1",
+   "go to toilet 1",
+   "put dishsponge 2 in/on toilet 1"
+  ],
+  "pick_and_place_simple-Fork-None-Drawer-12/trial_T20190907_151014_567960": [
+   "go to countertop 3",
+   "take fork 1 from countertop 3",
+   "go to drawer 4",
+   "open drawer 4",
+   "put fork 1 in/on drawer 4"
+  ],
+  "pick_and_place_simple-Kettle-None-StoveBurner-2/trial_T20190918_152051_373060": [
+   "go to sinkbasin 1",
+   "take kettle 2 from sinkbasin 1",
+   "go to stoveburner 3",
+   "put kettle 2 in/on stoveburner 3"
+  ],
+  "pick_and_place_simple-Laptop-None-SideTable-221/trial_T20190908_110920_231907": [
+   "go to coffeetable 1",
+   "take laptop 1 from coffeetable 1",
+   "go to sidetable 1",
+   "put laptop 1 in/on sidetable 1"
+  ],
+  "pick_and_place_simple-Mug-None-Desk-308/trial_T20190909_203041_433487": [
+   "go to shelf 1",
+   "take mug 1 from shelf 1",
+   "go to desk 2",
+   "put mug 1 in/on desk 2"
+  ],
+  "pick_and_place_simple-Pen-None-SideTable-322/trial_T20190909_055255_667967": [
+   "go to dresser 1",
+   "take pen 3 from dresser 1",
+   "go to sidetable 1",
+   "put pen 3 in/on sidetable 1"
+  ],
+  "pick_and_place_simple-PepperShaker-None-Drawer-10/trial_T20190918_154326_823501": [
+   "go to coffeemachine 1",
+   "take peppershaker 1 from countertop 1",
+   "go to drawer 1",
+   "open drawer 1",
+   "put peppershaker 1 in/on drawer 1"
+  ],
+  "pick_and_place_simple-PepperShaker-None-Drawer-5/trial_T20190908_195236_701456": [
+   "go to countertop 1",
+   "take peppershaker 1 from countertop 1",
+   "go to drawer 2",
+   "open drawer 2",
+   "put peppershaker 1 in/on drawer 2"
+  ],
+  "pick_and_place_simple-Pillow-None-ArmChair-321/trial_T20190908_104920_763828": [
+   "go to bed 1",
+   "take pillow 2 from bed 1",
+   "go to armchair 1",
+   "put pillow 2 in/on armchair 1"
+  ],
+  "pick_and_place_simple-SaltShaker-None-Drawer-10/trial_T20190909_021728_339782": [
+   "go to countertop 3",
+   "take saltshaker 1 from countertop 3",
+   "go to drawer 1",
+   "open drawer 1",
+   "put saltshaker 1 in/on drawer 1"
+  ],
+  "pick_and_place_simple-SoapBar-None-Drawer-409/trial_T20190909_100430_737876": [
+   "go to countertop 1",
+   "take soapbar 1 from countertop 1",
+   "go to drawer 2",
+   "open drawer 2",
+   "put soapbar 1 in/on drawer 2"
+  ],
+  "pick_and_place_simple-SoapBottle-None-CounterTop-428/trial_T20190909_114242_588264": [
+   "go to toilet 1",
+   "take soapbottle 2 from toilet 1",
+   "go to countertop 1",
+   "put soapbottle 2 in/on countertop 1"
+  ],
+  "pick_and_place_simple-SoapBottle-None-Toilet-424/trial_T20190907_004321_405868": [
+   "go to countertop 1",
+   "take soapbottle 3 from countertop 1",
+   "go to toilet 1",
+   "put soapbottle 3 in/on toilet 1"
+  ],
+  "pick_and_place_simple-SprayBottle-None-GarbageCan-428/trial_T20190909_101535_306889": [
+   "go to countertop 1",
+   "take spraybottle 1 from countertop 1",
+   "go to garbagecan 1",
+   "put spraybottle 1 in/on garbagecan 1"
+  ],
+  "pick_and_place_simple-Statue-None-CoffeeTable-228/trial_T20190906_185540_904069": [
+   "go to diningtable 1",
+   "take statue 2 from diningtable 1",
+   "go to coffeetable 1",
+   "put statue 2 in/on coffeetable 1"
+  ],
+  "pick_clean_then_place_in_recep-Apple-None-DiningTable-19/trial_T20190907_230051_730842": [
+   "go to countertop 1",
+   "take apple 2 from countertop 1",
+   "go to sinkbasin 1",
+   "clean apple 2 with sinkbasin 1",
+   "go to diningtable 1",
+   "put apple 2 in/on diningtable 1"
+  ],
+  "pick_clean_then_place_in_recep-Apple-None-DiningTable-21/trial_T20190907_210640_211972": [
+   "go to diningtable 3",
+   "take apple 2 from diningtable 3",
+   "go to sinkbasin 1",
+   "clean apple 2 with sinkbasin 1",
+   "go to diningtable 3",
+   "put apple 2 in/on diningtable 3"
+  ],
+  "pick_clean_then_place_in_recep-Bowl-None-Microwave-30/trial_T20190907_063358_779511": [
+   "go to microwave 1",
+   "open microwave 1",
+   "take bowl 2 from microwave 1",
+   "go to sinkbasin 1",
+   "clean bowl 2 with sinkbasin 1",
+   "go to microwave 1",
+   "put bowl 2 in/on microwave 1"
+  ],
+  "pick_clean_then_place_in_recep-Cloth-None-Toilet-408/trial_T20190906_221323_589436": [
+   "go to bathtubbasin 1",
+   "take cloth 2 from bathtubbasin 1",
+   "go to sinkbasin 1",
+   "clean cloth 2 with sinkbasin 1",
+   "go to toilet 1",
+   "put cloth 2 in/on toilet 1"
+  ],
+  "pick_clean_then_place_in_recep-Egg-None-Microwave-14/trial_T20190907_232727_134338": [
+   "go to microwave 1",
+   "open microwave 1",
+   "take egg 1 from microwave 1",
+   "go to sinkbasin 1",
+   "clean egg 1 with sinkbasin 1",
+   "go to microwave 1",
+   "put egg 1 in/on microwave 1"
+  ],
+  "pick_clean_then_place_in_recep-Knife-None-DiningTable-15/trial_T20190908_162445_886312": [
+   "go to diningtable 1",
+   "take knife 3 from diningtable 1",
+   "go to sinkbasin 1",
+   "clean knife 3 with sinkbasin 1",
+   "go to diningtable 1",
+   "put knife 3 in/on diningtable 1"
+  ],
+  "pick_clean_then_place_in_recep-Knife-None-DiningTable-23/trial_T20190908_142059_634306": [
+   "go to diningtable 1",
+   "take knife 2 from diningtable 1",
+   "go to sinkbasin 1",
+   "clean knife 2 with sinkbasin 1",
+   "go to diningtable 1",
+   "put knife 2 in/on diningtable 1"
+  ],
+  "pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-30/trial_T20190909_072524_128648": [
+   "go to countertop 1",
+   "take mug 1 from countertop 1",
+   "go to sinkbasin 1",
+   "clean mug 1 with sinkbasin 1"
+  ],
+  "pick_clean_then_place_in_recep-Potato-None-Microwave-2/trial_T20190908_102004_349533": [
+   "go to fridge 1",
+   "open fridge 1",
+   "take potato 1 from fridge 1",
+   "go to sinkbasin 1",
+   "clean potato 1 with sinkbasin 1",
+   "go to microwave 1",
+   "open microwave 1",
+   "put potato 1 in/on microwave 1"
+  ],
+  "pick_clean_then_place_in_recep-SoapBar-None-GarbageCan-420/trial_T20190906_201023_015139": [
+   "go to toilet 1",
+   "take soapbar 2 from toilet 1",
+   "go to bathtubbasin 1",
+   "clean soapbar 2 with bathtubbasin 1",
+   "go to garbagecan 1",
+   "put soapbar 2 in/on garbagecan 1"
+  ],
+  "pick_clean_then_place_in_recep-SoapBar-None-Toilet-408/trial_T20190908_122359_761879": [
+   "go to toilet 1",
+   "take soapbar 1 from toilet 1",
+   "go to sinkbasin 1",
+   "clean soapbar 1 with sinkbasin 1",
+   "go to toilet 1",
+   "put soapbar 1 in/on toilet 1"
+  ],
+  "pick_clean_then_place_in_recep-Tomato-None-DiningTable-23/trial_T20190909_000808_543184": [
+   "go to diningtable 1",
+   "take tomato 1 from diningtable 1",
+   "go to sinkbasin 1",
+   "clean tomato 1 with sinkbasin 1",
+   "go to diningtable 1",
+   "put tomato 1 in/on diningtable 1"
+  ],
+  "pick_cool_then_place_in_recep-Apple-None-Microwave-23/trial_T20190908_051110_010210": [
+   "go to sinkbasin 1",
+   "take apple 2 from sinkbasin 1",
+   "go to fridge 1",
+   "cool apple 2 with fridge 1",
+   "go to microwave 1",
+   "open microwave 1",
+   "put apple 2 in/on microwave 1"
+  ],
+  "pick_cool_then_place_in_recep-Bread-None-DiningTable-11/trial_T20190908_005202_990135": [
+   "go to countertop 3",
+   "take bread 1 from countertop 3",
+   "go to fridge 1",
+   "cool bread 1 with fridge 1",
+   "go to diningtable 1",
+   "put bread 1 in/on diningtable 1"
+  ],
+  "pick_cool_then_place_in_recep-Cup-None-SideTable-21/trial_T20190906_192855_164902": [
+   "go to countertop 1",
+   "take cup 1 from countertop 1",
+   "go to fridge 1",
+   "cool cup 1 with fridge 1",
+   "go to sidetable 1",
+   "put cup 1 in/on sidetable 1"
+  ],
+  "pick_cool_then_place_in_recep-Lettuce-None-DiningTable-18/trial_T20190909_122703_212954": [
+   "go to diningtable 1",
+   "take lettuce 1 from diningtable 1",
+   "go to fridge 1",
+   "cool lettuce 1 with fridge 1",
+   "go to diningtable 1",
+   "put lettuce 1 in/on diningtable 1"
+  ],
+  "pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-30/trial_T20190907_153036_598316": [
+   "go to countertop 1",
+   "take mug 1 from countertop 1",
+   "go to fridge 1",
+   "cool mug 1 with fridge 1"
+  ],
+  "pick_cool_then_place_in_recep-Pan-None-DiningTable-11/trial_T20190908_204347_530034": [
+   "go to stoveburner 4",
+   "take pan 1 from stoveburner 4",
+   "go to fridge 1",
+   "cool pan 1 with fridge 1",
+   "go to diningtable 1",
+   "put pan 1 in/on diningtable 1"
+  ],
+  "pick_cool_then_place_in_recep-Pan-None-StoveBurner-15/trial_T20190907_071217_746222": [
+   "go to stoveburner 3",
+   "take pan 2 from stoveburner 3",
+   "go to fridge 1",
+   "cool pan 2 with fridge 1",
+   "go to stoveburner 2",
+   "put pan 2 in/on stoveburner 2"
+  ],
+  "pick_cool_then_place_in_recep-Plate-None-Cabinet-27/trial_T20190906_173151_702668": [
+   "go to cabinet 10",
+   "open cabinet 10",
+   "take plate 1 from cabinet 10",
+   "go to fridge 1",
+   "cool plate 1 with fridge 1",
+   "go to cabinet 10",
+   "put plate 1 in/on cabinet 10"
+  ],
+  "pick_cool_then_place_in_recep-Plate-None-DiningTable-17/trial_T20190909_122939_032098": [
+   "go to cabinet 9",
+   "open cabinet 9",
+   "take plate 1 from cabinet 9",
+   "go to fridge 1",
+   "cool plate 1 with fridge 1",
+   "go to diningtable 2",
+   "put plate 1 in/on diningtable 2"
+  ],
+  "pick_cool_then_place_in_recep-Pot-None-Cabinet-5/trial_T20190906_235356_747730": [
+   "go to stoveburner 4",
+   "take pot 1 from stoveburner 4",
+   "go to fridge 1",
+   "cool pot 1 with fridge 1",
+   "go to cabinet 16",
+   "open cabinet 16",
+   "put pot 1 in/on cabinet 16"
+  ],
+  "pick_cool_then_place_in_recep-Potato-None-GarbageCan-18/trial_T20190909_044254_735750": [
+   "go to diningtable 1",
+   "take potato 1 from diningtable 1",
+   "go to fridge 1",
+   "cool potato 1 with fridge 1",
+   "go to garbagecan 1",
+   "put potato 1 in/on garbagecan 1"
+  ],
+  "pick_cool_then_place_in_recep-Tomato-None-Microwave-5/trial_T20190908_132219_315033": [
+   "go to sinkbasin 1",
+   "take tomato 2 from sinkbasin 1",
+   "go to fridge 1",
+   "cool tomato 2 with fridge 1",
+   "go to microwave 1",
+   "open microwave 1",
+   "put tomato 2 in/on microwave 1"
+  ],
+  "pick_heat_then_place_in_recep-Apple-None-DiningTable-23/trial_T20190909_082324_376707": [
+   "go to diningtable 1",
+   "take apple 1 from diningtable 1",
+   "go to microwave 1",
+   "heat apple 1 with microwave 1",
+   "go to diningtable 1",
+   "put apple 1 in/on diningtable 1"
+  ],
+  "pick_heat_then_place_in_recep-Apple-None-DiningTable-26/trial_T20190907_060258_549114": [
+   "go to countertop 2",
+   "take apple 1 from countertop 2",
+   "go to microwave 1",
+   "heat apple 1 with microwave 1",
+   "go to diningtable 2",
+   "put apple 1 in/on diningtable 2"
+  ],
+  "pick_heat_then_place_in_recep-Bread-None-CounterTop-15/trial_T20190907_000358_854333": [
+   "go to coffeemachine 1",
+   "take bread 1 from countertop 1",
+   "go to microwave 1",
+   "heat bread 1 with microwave 1",
+   "go to coffeemachine 1",
+   "put bread 1 in/on countertop 1"
+  ],
+  "pick_heat_then_place_in_recep-Cup-None-Cabinet-12/trial_T20190908_145944_296356": [
+   "go to cabinet 4",
+   "take cup 1 from cabinet 4",
+   "go to microwave 1",
+   "heat cup 1 with microwave 1",
+   "go to cabinet 4",
+   "put cup 1 in/on cabinet 4"
+  ],
+  "pick_heat_then_place_in_recep-Cup-None-Cabinet-30/trial_T20190906_200308_075401": [
+   "go to countertop 2",
+   "take cup 4 from countertop 2",
+   "go to microwave 1",
+   "heat cup 4 with microwave 1",
+   "go to cabinet 12",
+   "open cabinet 12",
+   "put cup 4 in/on cabinet 12"
+  ],
+  "pick_heat_then_place_in_recep-Cup-None-Shelf-1/trial_T20190906_230132_658755": [
+   "go to cabinet 9",
+   "open cabinet 9",
+   "take cup 1 from cabinet 9",
+   "go to microwave 1",
+   "heat cup 1 with microwave 1",
+   "go to shelf 2",
+   "put cup 1 in/on shelf 2"
+  ],
+  "pick_heat_then_place_in_recep-Mug-None-Cabinet-25/trial_T20190909_095516_427126": [
+   "go to cabinet 9",
+   "open cabinet 9",
+   "take mug 1 from cabinet 9",
+   "go to microwave 1",
+   "heat mug 1 with microwave 1",
+   "go to cabinet 13",
+   "put mug 1 in/on cabinet 13"
+  ],
+  "pick_heat_then_place_in_recep-Plate-None-Fridge-13/trial_T20190907_035716_975895": [
+   "go to sinkbasin 1",
+   "take plate 1 from sinkbasin 1",
+   "go to microwave 1",
+   "heat plate 1 with microwave 1",
+   "go to fridge 1",
+   "open fridge 1",
+   "put plate 1 in/on fridge 1"
+  ],
+  "pick_two_obj_and_place-Candle-None-Cabinet-403/trial_T20190909_065744_416414": [
+   "go to toilet 1",
+   "take candle 4 from toilet 1",
+   "go to cabinet 4",
+   "open cabinet 4",
+   "put candle 4 in/on cabinet 4",
+   "go to shelf 1",
+   "take candle 1 from shelf 1",
+   "go to cabinet 4",
+   "put candle 1 in/on cabinet 4"
+  ],
+  "pick_two_obj_and_place-Candle-None-CounterTop-402/trial_T20190909_082809_314519": [
+   "go to cabinet 3",
+   "open cabinet 1",
+   "take candle 3 from cabinet 1",
+   "go to countertop 1",
+   "put candle 3 in/on countertop 1",
+   "go to shelf 1",
+   "take candle 1 from shelf 1",
+   "go to countertop 1",
+   "put candle 1 in/on countertop 1"
+  ],
+  "pick_two_obj_and_place-Candle-None-Drawer-411/trial_T20190909_060014_389023": [
+   "go to countertop 2",
+   "take candle 1 from countertop 2",
+   "go to drawer 2",
+   "open drawer 2",
+   "put candle 1 in/on drawer 2",
+   "go to toilet 1",
+   "take candle 2 from toilet 1",
+   "go to drawer 2",
+   "put candle 2 in/on drawer 2"
+  ],
+  "pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212046_809746": [
+   "go to bed 1",
+   "take cellphone 2 from bed 1",
+   "go to drawer 8",
+   "open drawer 6",
+   "put cellphone 2 in/on drawer 6",
+   "go to dresser 1",
+   "take cellphone 1 from dresser 1",
+   "go to drawer 8",
+   "put cellphone 1 in/on drawer 6"
+  ],
+  "pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212202_833108": [
+   "go to dresser 1",
+   "take cellphone 3 from dresser 1",
+   "go to drawer 8",
+   "open drawer 6",
+   "put cellphone 3 in/on drawer 6",
+   "go to dresser 1",
+   "take cellphone 2 from dresser 1",
+   "go to drawer 8",
+   "put cellphone 2 in/on drawer 6"
+  ],
+  "pick_two_obj_and_place-CellPhone-None-Sofa-218/trial_T20190907_232123_370650": [
+   "go to diningtable 1",
+   "take cellphone 2 from diningtable 1",
+   "go to sofa 1",
+   "put cellphone 2 in/on sofa 1",
+   "go to diningtable 1",
+   "take cellphone 1 from diningtable 1",
+   "go to sofa 1",
+   "put cellphone 1 in/on sofa 1"
+  ],
+  "pick_two_obj_and_place-CreditCard-None-Dresser-311/trial_T20190907_201834_073281": [
+   "go to armchair 1",
+   "take creditcard 1 from armchair 1",
+   "go to dresser 1",
+   "put creditcard 1 in/on dresser 1",
+   "go to countertop 1",
+   "take creditcard 4 from countertop 1",
+   "go to dresser 1",
+   "put creditcard 4 in/on dresser 1"
+  ],
+  "pick_two_obj_and_place-KeyChain-None-SideTable-322/trial_T20190909_095643_442738": [
+   "go to drawer 3",
+   "open drawer 3",
+   "take keychain 3 from drawer 3",
+   "go to sidetable 1",
+   "put keychain 3 in/on sidetable 1",
+   "go to dresser 1",
+   "take keychain 1 from dresser 1",
+   "go to sidetable 1",
+   "put keychain 1 in/on sidetable 1"
+  ],
+  "pick_two_obj_and_place-Newspaper-None-CoffeeTable-212/trial_T20190907_211537_017302": [
+   "go to sofa 1",
+   "take newspaper 2 from sofa 1",
+   "go to coffeetable 1",
+   "put newspaper 2 in/on coffeetable 1",
+   "go to sofa 1",
+   "take newspaper 1 from sofa 1",
+   "go to coffeetable 1",
+   "put newspaper 1 in/on coffeetable 1"
+  ],
+  "pick_two_obj_and_place-Pan-None-CounterTop-14/trial_T20190918_175910_161432": [
+   "go to stoveburner 2",
+   "take pan 1 from stoveburner 2",
+   "go to coffeemachine 1",
+   "put pan 1 in/on countertop 2",
+   "go to stoveburner 4",
+   "take pan 2 from stoveburner 4",
+   "go to coffeemachine 1",
+   "put pan 2 in/on countertop 2"
+  ],
+  "pick_two_obj_and_place-PepperShaker-None-DiningTable-21/trial_T20190918_193649_729348": [
+   "go to cabinet 2",
+   "open cabinet 2",
+   "take peppershaker 2 from cabinet 2",
+   "go to diningtable 3",
+   "put peppershaker 2 in/on diningtable 3",
+   "go to cabinet 1",
+   "open cabinet 1",
+   "take peppershaker 1 from cabinet 1",
+   "go to diningtable 3",
+   "put peppershaker 1 in/on diningtable 3"
+  ],
+  "pick_two_obj_and_place-Plate-None-CoffeeTable-201/trial_T20190907_170428_254428": [
+   "go to diningtable 2",
+   "take plate 2 from diningtable 2",
+   "go to coffeetable 1",
+   "put plate 2 in/on coffeetable 1",
+   "go to diningtable 2",
+   "take plate 1 from diningtable 2",
+   "go to coffeetable 1",
+   "put plate 1 in/on coffeetable 1"
+  ],
+  "pick_two_obj_and_place-RemoteControl-None-ArmChair-214/trial_T20190909_020949_765614": [
+   "go to sofa 1",
+   "take remotecontrol 1 from sofa 1",
+   "go to armchair 1",
+   "put remotecontrol 1 in/on armchair 1",
+   "go to shelf 1",
+   "take remotecontrol 2 from shelf 1",
+   "go to armchair 1",
+   "put remotecontrol 2 in/on armchair 1"
+  ],
+  "pick_two_obj_and_place-RemoteControl-None-ArmChair-224/trial_T20190908_141327_239129": [
+   "go to sidetable 4",
+   "take remotecontrol 1 from sidetable 4",
+   "go to armchair 1",
+   "put remotecontrol 1 in/on armchair 1",
+   "go to dresser 1",
+   "take remotecontrol 4 from dresser 1",
+   "go to armchair 1",
+   "put remotecontrol 4 in/on armchair 1"
+  ],
+  "pick_two_obj_and_place-RemoteControl-None-Sofa-206/trial_T20190909_095001_569701": [
+   "go to coffeetable 1",
+   "take remotecontrol 3 from coffeetable 1",
+   "go to sofa 1",
+   "put remotecontrol 3 in/on sofa 1",
+   "go to coffeetable 1",
+   "take remotecontrol 2 from coffeetable 1",
+   "go to sofa 1",
+   "put remotecontrol 2 in/on sofa 1"
+  ],
+  "pick_two_obj_and_place-RemoteControl-None-Sofa-212/trial_T20190907_235309_480100": [
+   "go to coffeetable 1",
+   "take remotecontrol 2 from coffeetable 1",
+   "go to sofa 1",
+   "put remotecontrol 2 in/on sofa 1",
+   "go to coffeetable 1",
+   "take remotecontrol 1 from coffeetable 1",
+   "go to sofa 1",
+   "put remotecontrol 1 in/on sofa 1"
+  ],
+  "pick_two_obj_and_place-SoapBar-None-GarbageCan-416/trial_T20190907_143756_457606": [
+   "go to countertop 1",
+   "take soapbar 4 from countertop 1",
+   "go to garbagecan 1",
+   "put soapbar 4 in/on garbagecan 1",
+   "go to countertop 1",
+   "take soapbar 2 from countertop 1",
+   "go to garbagecan 1",
+   "put soapbar 2 in/on garbagecan 1"
+  ],
+  "pick_two_obj_and_place-SoapBottle-None-Toilet-405/trial_T20190909_014901_056414": [
+   "go to garbagecan 1",
+   "take soapbottle 2 from garbagecan 1",
+   "go to toilet 1",
+   "put soapbottle 2 in/on toilet 1",
+   "go to countertop 1",
+   "take soapbottle 4 from countertop 1",
+   "go to toilet 1",
+   "put soapbottle 4 in/on toilet 1"
+  ],
+  "pick_two_obj_and_place-SprayBottle-None-CounterTop-411/trial_T20190909_045033_783510": [
+   "go to garbagecan 1",
+   "take spraybottle 1 from garbagecan 1",
+   "go to countertop 1",
+   "put spraybottle 1 in/on countertop 1",
+   "go to toilet 1",
+   "take spraybottle 4 from toilet 1",
+   "go to countertop 1",
+   "put spraybottle 4 in/on countertop 1"
+  ],
+  "pick_two_obj_and_place-SprayBottle-None-GarbageCan-413/trial_T20190907_233227_626299": [
+   "go to toilet 1",
+   "take spraybottle 2 from toilet 1",
+   "go to cabinet 2",
+   "put spraybottle 2 in/on garbagecan 1",
+   "go to toilet 1",
+   "take spraybottle 1 from toilet 1",
+   "go to cabinet 2",
+   "put spraybottle 1 in/on garbagecan 1"
+  ],
+  "pick_two_obj_and_place-SprayBottle-None-GarbageCan-418/trial_T20190909_071533_543818": [
+   "go to toilet 1",
+   "take spraybottle 4 from toilet 1",
+   "go to garbagecan 1",
+   "put spraybottle 4 in/on garbagecan 1",
+   "go to toilet 1",
+   "take spraybottle 3 from toilet 1",
+   "go to garbagecan 1",
+   "put spraybottle 3 in/on garbagecan 1"
+  ],
+  "pick_two_obj_and_place-ToiletPaper-None-Drawer-421/trial_T20190908_184549_278817": [
+   "go to toilet 1",
+   "take toiletpaper 4 from toilet 1",
+   "go to drawer 7",
+   "put toiletpaper 4 in/on drawer 7",
+   "go to countertop 1",
+   "take toiletpaper 3 from countertop 1",
+   "go to drawer 7",
+   "put toiletpaper 3 in/on drawer 7"
+  ],
+  "pick_two_obj_and_place-Vase-None-DiningTable-227/trial_T20190910_072914_747890": [
+   "go to shelf 12",
+   "take vase 6 from shelf 12",
+   "go to diningtable 1",
+   "put vase 6 in/on diningtable 1",
+   "go to shelf 11",
+   "take vase 5 from shelf 11",
+   "go to diningtable 1",
+   "put vase 5 in/on diningtable 1"
+  ]
+ },
+ "schema": "heritagent/exp0001-run-rehearsal-script/0.1",
+ "teacher": {
+  "11": {
+   "overflow_task": "look_at_obj_in_light-Bowl-None-DeskLamp-307/trial_T20190908_204857_408911",
+   "pair_task": "look_at_obj_in_light-AlarmClock-None-DeskLamp-323/trial_T20190909_044736_929512"
+  },
+  "23": {
+   "pair_task": "look_at_obj_in_light-CD-None-DeskLamp-324/trial_T20190907_230921_208592"
+  }
+ },
+ "texts": {
+  "train/look_at_obj_in_light-AlarmClock-None-DeskLamp-323/trial_T20190909_044736_929512": "b9c6783d72719a9971323c04a2a05cd22d4043b2ec1f3dd63cb5c250cb328f5b",
+  "train/look_at_obj_in_light-Book-None-DeskLamp-324/trial_T20190907_014456_476409": "b82d53b77c0b705c61444ffad9dbe9766e7380a8e76e118571838b258bf50e14",
+  "train/look_at_obj_in_light-Bowl-None-DeskLamp-307/trial_T20190908_204857_408911": "cdef64ba8ea468f56f79fda01757258bad1f72d759a29a3241eb1f637d656353",
+  "train/look_at_obj_in_light-CD-None-DeskLamp-324/trial_T20190907_230921_208592": "c7a052b7a1ce247526891a1a0e7aa5f8db4606b1a1779b78859965bab6ea8256",
+  "train/look_at_obj_in_light-CD-None-DeskLamp-327/trial_T20190909_065723_365410": "376a1346633ce32a2fd3d5469f7e706e7eb0226b8efb8e5501b63f616bf02b63",
+  "train/look_at_obj_in_light-Laptop-None-DeskLamp-216/trial_T20190907_185541_681881": "9a63e17308e903eeda22a13c7cfe2d1c643c7978f9704468316029f6cd0fccf4",
+  "train/look_at_obj_in_light-Laptop-None-DeskLamp-301/trial_T20190907_185618_889790": "88997ee8e95cdbabee80bf176d8dd0f2807b1b35760694e9e5b8ca16efb7d01a",
+  "train/look_at_obj_in_light-Newspaper-None-DeskLamp-210/trial_T20190906_234500_634705": "9d006cf06282167447230090696c56f3ca26c0373c7388f5d0566991296e7970",
+  "train/look_at_obj_in_light-Newspaper-None-DeskLamp-225/trial_T20190909_085713_995585": "2b8a977dce69565ad961119dd827c306a144c14575e2be03aa462edf61ca66c2",
+  "train/look_at_obj_in_light-Pen-None-DeskLamp-305/trial_T20190907_115838_075745": "707b867796d0370c74e6ba725df6c387957199ff1850e043d8aced80d4d266b8",
+  "train/look_at_obj_in_light-Pencil-None-DeskLamp-307/trial_T20190909_014411_219923": "509d12480302c1628aaa3a6ff498c022efb37cf3bc6ce77fb4d03e4b49efb68a",
+  "train/look_at_obj_in_light-Pencil-None-DeskLamp-328/trial_T20190906_201143_149707": "a80a51bd2c720f10dd44423dbb3eb5412d5ff292dff0ca8aca1fefe5c8754c38",
+  "train/look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034908_319218": "9727bfb6087db20e50a2eb0946ef78ace8bfeb2349e2370d752ae60d697af98b",
+  "train/look_at_obj_in_light-Pillow-None-DeskLamp-303/trial_T20190907_034918_885162": "b0d29319e4768a0e8877dc7d5bf93bd00ab3402551da95f2bfd28563831b4a14",
+  "train/look_at_obj_in_light-Pillow-None-DeskLamp-320/trial_T20190906_225849_878033": "d280a1d75d0e9756c0809534d6d7509af0f5201dcc4ddff5a8fd2b2745745743",
+  "train/look_at_obj_in_light-Pillow-None-DeskLamp-320/trial_T20190906_225908_972390": "d280a1d75d0e9756c0809534d6d7509af0f5201dcc4ddff5a8fd2b2745745743",
+  "train/look_at_obj_in_light-Statue-None-DeskLamp-304/trial_T20190909_035310_552898": "0420d24a42b36758ac8d28a980b85b9a7ecf5ea614f38d64fbd898d5f24a1661",
+  "train/look_at_obj_in_light-Statue-None-DeskLamp-319/trial_T20190907_035529_591053": "162c5ff86512004c74a072e9b92750ae6d7d50707d86e40089cd0c61f538b4bb",
+  "train/look_at_obj_in_light-Statue-None-DeskLamp-319/trial_T20190907_035546_167548": "23769e54c3260aa4a69db13601f6ba75e17618c8210061e0fdbaad51daf42664",
+  "train/look_at_obj_in_light-TissueBox-None-DeskLamp-225/trial_T20190906_192815_299058": "7af670b332d4fc3b6616fb690921162aef579d03e56e1239ea5209a5b58b81c6",
+  "train/pick_and_place_simple-AlarmClock-None-Desk-310/trial_T20190908_002100_024659": "6b2c5581c75cf5654bbf40e96c76377c2a68728c5f46bd45e348c718dbe85f15",
+  "train/pick_and_place_simple-Book-None-Bed-312/trial_T20190908_103648_829231": "c59af7353417dd35695d237d3568a45fd3c798804699599336259c56168f96f2",
+  "train/pick_and_place_simple-Candle-None-Dresser-413/trial_T20190909_040614_977988": "58082230cc3438413ebee11d9bc79aa21f98d213d6ed345e82d1cc3051df63f0",
+  "train/pick_and_place_simple-Candle-None-Toilet-413/trial_T20190909_104025_525772": "967c07d5cbed94a4dd0277e81b089332741e6fea6cc7215c54ca3b6ded3fa7e5",
+  "train/pick_and_place_simple-CellPhone-None-Desk-312/trial_T20190908_021820_773170": "5bc72c82795f139b2e089d497663b8adbe99d6bdcfcb1d21f41fdda40cbd412b",
+  "train/pick_and_place_simple-CellPhone-None-Drawer-324/trial_T20190907_225624_710237": "074d09b239ac5208def3a32537c9d1a2db103b0b6278223c077105e73a8c8a73",
+  "train/pick_and_place_simple-CreditCard-None-Shelf-316/trial_T20190909_092853_746076": "332c3c174502b0d387590a69c260e2a035f16d73ca459689163d4886de52f4e8",
+  "train/pick_and_place_simple-DishSponge-None-Toilet-430/trial_T20190907_144839_536922": "a656406fb656aa73fc61e9dee9cc1edf46b9b9a111660d4bdc9a6188f5649851",
+  "train/pick_and_place_simple-Fork-None-Drawer-12/trial_T20190907_151014_567960": "795bb2ac16ca9bb299d5aa19a521bfcdf842ae9cf112c61296194935c2cbe77d",
+  "train/pick_and_place_simple-Kettle-None-StoveBurner-2/trial_T20190918_152051_373060": "54d8d96db8f37979009cf3d5c4d711be2944fc88398473e18174e0bab71f4e8f",
+  "train/pick_and_place_simple-Knife-None-SideTable-3/trial_T20190906_214318_430974": "7b01f7c341616ad73985ed325deb1e167cdda8325ff1e358a8a68e2468ad7707",
+  "train/pick_and_place_simple-Laptop-None-SideTable-221/trial_T20190908_110920_231907": "9522d29156f76df53f696a59753fff3a9ff43e1d8d633d78f499ce601d37b90c",
+  "train/pick_and_place_simple-Pen-None-Shelf-330/trial_T20190908_145416_946403": "bb69e7121e6c343723096f3510d13214d121ae4643f3e28ee63aa3bda3443e62",
+  "train/pick_and_place_simple-Pen-None-SideTable-322/trial_T20190909_055255_667967": "a543247d46cd4106a8eb375d3b61e13d277872ee3f7cb52a0e6d158b9cdd13ce",
+  "train/pick_and_place_simple-Pencil-None-Shelf-313/trial_T20190908_182711_300162": "a63fa414cbdcc92fc3d1f026f6972e837eeb59d7fca58abea57c798c786ba52e",
+  "train/pick_and_place_simple-Pencil-None-Shelf-313/trial_T20190908_182722_927182": "fe45c43798c5493a82351f280b00caf1f92ef83853f7e1b456a892d7161b2474",
+  "train/pick_and_place_simple-PepperShaker-None-Drawer-5/trial_T20190908_195236_701456": "47dde4d2223da4d89554a0582c19da73825dd51c1ac78702df9174c855b0e23c",
+  "train/pick_and_place_simple-Pillow-None-ArmChair-321/trial_T20190908_104920_763828": "bc07357b8f0ac17c703891db47b4ad8666acb5d4564a770c0ce897329a9938ed",
+  "train/pick_and_place_simple-RemoteControl-None-ArmChair-206/trial_T20190909_035950_335914": "5466e19a60fd7c937e93a153c74669e98a1f541b8b4413f028c34871fb390383",
+  "train/pick_and_place_simple-SoapBar-None-Drawer-409/trial_T20190909_100430_737876": "b3ffa076412dbf706260c3c1543be8c837cdc3fe4461ae18c2b6281cad830874",
+  "train/pick_and_place_simple-SoapBottle-None-CounterTop-428/trial_T20190909_114242_588264": "e081e6555221ad9fec9d166f3f3f0b5847a8c70e03e23ceb43fb0ad431fa7f12",
+  "train/pick_and_place_simple-SprayBottle-None-CounterTop-417/trial_T20190909_091251_521581": "e208e4f4e5ebaeb5a24a970372a96d57f756b0856163e664dfb0a0b2fd62e216",
+  "train/pick_and_place_simple-SprayBottle-None-GarbageCan-428/trial_T20190909_101535_306889": "d68a92d571a3c6d812ee8c5e2d44295e8b36dc149f102d4004833f3e91dee660",
+  "train/pick_and_place_simple-Statue-None-CoffeeTable-228/trial_T20190906_185540_904069": "64924e93642982fd983dbbc9c4abadad2875c8179bdb3ca5df8962bd95b3e0b8",
+  "train/pick_and_place_simple-Statue-None-Dresser-319/trial_T20190909_122415_877633": "7ff9c9115d044bc4095b92790a4b311e39568863d40462c9490d39ec4a4489e5",
+  "train/pick_clean_then_place_in_recep-Apple-None-DiningTable-19/trial_T20190907_230051_730842": "1162cb46b144752c90d734b9401cc15860a5065ef2c9ce1bc69cf2556d8ff447",
+  "train/pick_clean_then_place_in_recep-Apple-None-DiningTable-21/trial_T20190907_210640_211972": "60cb3a673b993598660eb21dd9ecc3587d9f7b050166bfa1334cdee3a9a47467",
+  "train/pick_clean_then_place_in_recep-Apple-None-Microwave-24/trial_T20190907_133121_308801": "cc7626a7e8aaf4006a739ba633a42aabf43aaeacb5084ae9f80feaace41e432d",
+  "train/pick_clean_then_place_in_recep-Bowl-None-Microwave-30/trial_T20190907_063358_779511": "af2c52933ab8df50ab9ca016483eecfe9af41c8e988ce58bb2c02b77e321a832",
+  "train/pick_clean_then_place_in_recep-Cloth-None-Drawer-415/trial_T20190906_190057_260207": "3a5aeefdc4a7049bd6717b71a07b6f71a114499a1fcc8fcbbadd76bbe18363cf",
+  "train/pick_clean_then_place_in_recep-Cloth-None-Toilet-408/trial_T20190906_221323_589436": "a281a2a48a7ca38a8bbb6f9aaea207c6a50c68e598547346e43c3321c874af47",
+  "train/pick_clean_then_place_in_recep-DishSponge-None-Cabinet-414/trial_T20190909_061502_436342": "dfbc32f4c5329c5f7c8752988bee99f351e6f4f65827da6deb608df490a3b2b7",
+  "train/pick_clean_then_place_in_recep-Egg-None-Microwave-14/trial_T20190907_232727_134338": "e8a5747e08ecf55452d61b70101c04f37b5bbb3dcbf496f7619acbd56ec2a7e7",
+  "train/pick_clean_then_place_in_recep-Knife-None-DiningTable-15/trial_T20190908_162445_886312": "67fc32d38498a1b3b741abbe6222017c947aaf9a6bb00bffdf9f39554b77d781",
+  "train/pick_clean_then_place_in_recep-Knife-None-DiningTable-23/trial_T20190908_142059_634306": "9a96653e2cc4ebf1c0539c30abc8251cde0dc9c9079d9210ae7043be36cf89a3",
+  "train/pick_clean_then_place_in_recep-Ladle-None-CounterTop-8/trial_T20190909_121844_285394": "d91f9f4a2b29b0dcd512e82e840cc337f6b0bdd1a13435492cc9a47eae33977a",
+  "train/pick_clean_then_place_in_recep-Lettuce-None-GarbageCan-17/trial_T20190907_163631_504901": "daf71721e141fc91b95a1270c9d161e53c45935eaabfb794023ba6c36e3b2dc3",
+  "train/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-30/trial_T20190909_072524_128648": "9beedf58266fc2a21deb61f1d2e88db6f0783f3e8f746040649061740e66c714",
+  "train/pick_clean_then_place_in_recep-Pot-None-StoveBurner-26/trial_T20190907_210619_616849": "35e7b7a3bad5248a86f3512a1673b4bf5d0fb542431655119afb415d1a5c5d70",
+  "train/pick_clean_then_place_in_recep-Potato-None-Microwave-2/trial_T20190908_102004_349533": "81883ba3ef6c4db7e85df1550e61e9ac91f592a66853d5d591b67f0f9e593747",
+  "train/pick_clean_then_place_in_recep-SoapBar-None-Cabinet-403/trial_T20190906_161918_796066": "fd5b7f6279655793260f786ecd7e83ed58ea92440db073b1077fb1811f9a9568",
+  "train/pick_clean_then_place_in_recep-SoapBar-None-Cart-430/trial_T20190907_075738_959822": "358a67129ee8682f026f2e92b34e4f9b2aab62138727976a0d223cfddc260e74",
+  "train/pick_clean_then_place_in_recep-SoapBar-None-GarbageCan-420/trial_T20190906_201023_015139": "1104ed3281aeaa1bd29a684269b9cc545d6e2dfb1e040af450ab9885cd2c5739",
+  "train/pick_clean_then_place_in_recep-SoapBar-None-Toilet-408/trial_T20190908_122359_761879": "1b0e5b836532087955e7aa2455851776b98201aa6b5039c7d4bfd717282a7820",
+  "train/pick_clean_then_place_in_recep-Spatula-None-CounterTop-13/trial_T20190909_023111_578127": "b75a49e7c2a4a738f00863d457e664342e168267494be88c699bcae6336a89d7",
+  "train/pick_clean_then_place_in_recep-Spatula-None-DiningTable-19/trial_T20190909_081145_746450": "12893b3cf1491d96f9da3acd5570f0669f1bfc4c10504a570576fce77b6bd197",
+  "train/pick_clean_then_place_in_recep-Spoon-None-Drawer-8/trial_T20190907_151947_378545": "db1c409914b16fc6dc39343e8cb891aa717d4839f2bda9692d8a16d321be78cb",
+  "train/pick_clean_then_place_in_recep-Tomato-None-DiningTable-23/trial_T20190909_000808_543184": "5283ce09dd5aa71b406ff5fc8ee67be42983267e81b88f729ae5aa14716f07cd",
+  "train/pick_clean_then_place_in_recep-Tomato-None-Fridge-20/trial_T20190909_091626_928669": "43e9d0ce33bc542e39709ea6ca835f475300ba005b7c5ae09c20ed2253f5d256",
+  "train/pick_cool_then_place_in_recep-Apple-None-GarbageCan-19/trial_T20190908_121503_882955": "9c5216919b52a7a37fc61d4e109007d14a7a755b852d9d32e0f2fd301cde9640",
+  "train/pick_cool_then_place_in_recep-Apple-None-GarbageCan-2/trial_T20190906_195910_686523": "5ec66fa9968610e49acc617206da9741f3b984caf9dace3731e63fba94a4093d",
+  "train/pick_cool_then_place_in_recep-Apple-None-GarbageCan-5/trial_T20190908_111747_660187": "41aba42caf73a34ebd9094f40b2dabade7caadb564d0aaef76a44e1e2e1ca62e",
+  "train/pick_cool_then_place_in_recep-Apple-None-Microwave-23/trial_T20190908_051110_010210": "316186866239cf351f6ae7c71b2ef8507dc1c3571e1e793d2d69e9074fb9ee6b",
+  "train/pick_cool_then_place_in_recep-Bread-None-DiningTable-11/trial_T20190908_005202_990135": "2a3634314215b14d14fb8441df3fbd4bb8306b8b9674f414db31f9bfe2c1f229",
+  "train/pick_cool_then_place_in_recep-Cup-None-SideTable-21/trial_T20190906_192855_164902": "901b33ab7d824ea26d820ffc8d129bd745683b2d80c13086696a8aeb0bd4c4c5",
+  "train/pick_cool_then_place_in_recep-Egg-None-Microwave-30/trial_T20190908_232626_369557": "1afacf7ec05e4d3a6cce43d04364306d8871a60e98fe03bd2acf111e2040c0b5",
+  "train/pick_cool_then_place_in_recep-Lettuce-None-CounterTop-1/trial_T20190908_042822_616396": "502e2180cfcd5e65ca299f12c93b2a69aeba7dbca5422084816d0e6ca7f7d701",
+  "train/pick_cool_then_place_in_recep-Lettuce-None-DiningTable-18/trial_T20190909_122703_212954": "e523b465661e5105956783a55493be3b473dac498dc3bbde0e207f8b8752bb91",
+  "train/pick_cool_then_place_in_recep-Mug-None-Cabinet-6/trial_T20190908_224403_664612": "d2b6bab02e03f73c9048af584193dde40ca776e4f8d1d78ee6f8b054506b29a0",
+  "train/pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-11/trial_T20190908_225745_649876": "907b5956d95e45a091059ca7ca3075fb756806646eab3ae81c50f0f08be69e5c",
+  "train/pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-30/trial_T20190907_153036_598316": "19cba450af0db3584639ab31a25e3d6e76c126749270ecd0dbfda6e7e9172386",
+  "train/pick_cool_then_place_in_recep-Mug-None-Shelf-1/trial_T20190908_073555_430020": "a2a2ba88ae4395257e3ad4cd1cae5efe3fdb6030edf1b2a55e93cd01df9b8f0a",
+  "train/pick_cool_then_place_in_recep-Pan-None-CounterTop-7/trial_T20190909_072619_689367": "b59b610d6017f8a3efb39cdf50609c570d6366670830e23707edb7d0e5c8b534",
+  "train/pick_cool_then_place_in_recep-Pan-None-DiningTable-11/trial_T20190908_204347_530034": "d17334e674eb682925bcd77fe9c90bcd1684358fd80be1b629faf742a9752563",
+  "train/pick_cool_then_place_in_recep-Pan-None-StoveBurner-15/trial_T20190907_071217_746222": "b969a51181daede0623e0117400ea9dd57a1b3c5458e2951408fb21877563ca3",
+  "train/pick_cool_then_place_in_recep-Plate-None-Cabinet-27/trial_T20190906_173151_702668": "9e31f84c2f6fc041c84a4f8de0c2eda68ff8ce7f6d8b47f8ba090b6a5cd8bc6b",
+  "train/pick_cool_then_place_in_recep-Plate-None-DiningTable-17/trial_T20190909_122939_032098": "d5644e04deede0c1265606b0aee543b30b886ff11d129347f5b42db04fac796f",
+  "train/pick_cool_then_place_in_recep-Pot-None-Cabinet-5/trial_T20190906_235356_747730": "b7714de68f940f6431c8667794d018209aaf642ec1e8ab5201e930fb5496c49f",
+  "train/pick_cool_then_place_in_recep-Potato-None-DiningTable-19/trial_T20190908_010036_401629": "5f257e9b7fad5a8bbb644d3e74208545b2697b880b77894ecb746bca74843e2a",
+  "train/pick_cool_then_place_in_recep-Potato-None-GarbageCan-18/trial_T20190909_044254_735750": "18a758676b192718c3f12bef3ccebb17634cb43468ff021c807837d1501e39a1",
+  "train/pick_cool_then_place_in_recep-Tomato-None-Microwave-5/trial_T20190908_132219_315033": "200ee6a9e3720754723c57828d10c445df1485da890cf82300962c2f6b379488",
+  "train/pick_cool_then_place_in_recep-WineBottle-None-GarbageCan-16/trial_T20190907_014947_369000": "25db7a5e0b872bb08ace86849364f754024f66440644a15507b6300da0d25b18",
+  "train/pick_heat_then_place_in_recep-Apple-None-DiningTable-23/trial_T20190909_082324_376707": "999edd419283140016f35faf8965836b709a745b8225119a0198ea05de96ccfb",
+  "train/pick_heat_then_place_in_recep-Apple-None-DiningTable-26/trial_T20190907_060258_549114": "5d2087e98d0e999ca6f20216bc8c77ee3212eb50ca291119f21a209f7712b1e4",
+  "train/pick_heat_then_place_in_recep-Bread-None-CounterTop-15/trial_T20190907_000358_854333": "e328639c62f8b955a11fe866a2be4c9a75b1c5f6c444dd19559184df94cca375",
+  "train/pick_heat_then_place_in_recep-Bread-None-DiningTable-15/trial_T20190907_030821_134146": "4f7bcb72009d3474ca0e95370e3407b41803072745b31c4f37f8dee0e5065135",
+  "train/pick_heat_then_place_in_recep-Cup-None-Cabinet-12/trial_T20190908_145944_296356": "769aa02f0a616cf1db3eb82801ebcf83e1055413d002c1d7cc858eb14f9c1db7",
+  "train/pick_heat_then_place_in_recep-Cup-None-Cabinet-3/trial_T20190908_233045_285903": "2f53f133ceaa62f1596b3bd676a5c35eb2b388f4703081c19b7cf0faa96bacf1",
+  "train/pick_heat_then_place_in_recep-Cup-None-Cabinet-30/trial_T20190906_200308_075401": "75258222296d06ec81cda17278091633cd78a356bc490451df81464170abe139",
+  "train/pick_heat_then_place_in_recep-Cup-None-Shelf-1/trial_T20190906_230132_658755": "a0fd1b309a629ba3b0f9bdc66b5a477dbe03143efaa87ad3d10158237f615f22",
+  "train/pick_heat_then_place_in_recep-Egg-None-Fridge-17/trial_T20190909_130902_238935": "33c1ede16773d5523389cef480246296f1fc5ac8266811aa44933ad3c427f61a",
+  "train/pick_heat_then_place_in_recep-Egg-None-Fridge-6/trial_T20190907_184715_099476": "330345753f3e546f3a591c3d93ff22f26df8ab7b265c7f8433a1658ce660ddb7",
+  "train/pick_heat_then_place_in_recep-Egg-None-GarbageCan-12/trial_T20190910_151939_914332": "cb842213ac70ae9852266d4aa911c0d9c628382b911a74ce55a437bd372a11f9",
+  "train/pick_heat_then_place_in_recep-Egg-None-SideTable-3/trial_T20190906_204538_172764": "217410dad2bf275e09effd2790cf6592fe1ecc4fb2e8c5c210e21987bf558f94",
+  "train/pick_heat_then_place_in_recep-Mug-None-Cabinet-25/trial_T20190909_095516_427126": "c4107679979bb4da5ef6077b37edcefa56c9e25e008dd33a1c4e227f7222b664",
+  "train/pick_heat_then_place_in_recep-Mug-None-Cabinet-30/trial_T20190909_044620_608726": "d6534700d6f203b08de4db5ac383ad93f1376fd64b20cbd861333fa88f02d4f6",
+  "train/pick_heat_then_place_in_recep-Mug-None-Cabinet-6/trial_T20190908_034250_033547": "a66ad13602ed185872a9973e71812de6ed49824da96f159271d3f8ba0977cf3c",
+  "train/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-12/trial_T20190907_034122_883943": "c1326f68c21940a6bf7cbe510e57e28156ea26536b978b624e7b5301b11bec8a",
+  "train/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-14/trial_T20190907_012050_928961": "c85de882807d76b708d1ff40fddad76c8dc7edab5e4e3efaaabe32c6af269af1",
+  "train/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-6/trial_T20190906_214148_552057": "eddf5c484f6f2e355e6d43e3633f83af9e6805b4f89ea17556c54e8f0a76242d",
+  "train/pick_heat_then_place_in_recep-Plate-None-DiningTable-7/trial_T20190907_223811_005665": "4283eed3f50ced0696407b2884ced1145c1e46f8428a43f8fab07df042eb882b",
+  "train/pick_heat_then_place_in_recep-Plate-None-Fridge-13/trial_T20190907_035716_975895": "196b0fdb09ee8d7001082dadd9d6b09f9bf6ba7d5caa8df3ad8d60494b49bc6e",
+  "train/pick_heat_then_place_in_recep-Potato-None-Fridge-11/trial_T20190909_011301_653669": "605c97817a6828052d677caf29710dc97b9e6a93079463034721927d15c1933e",
+  "train/pick_two_obj_and_place-AlarmClock-None-Desk-304/trial_T20190910_021303_108559": "6fd7fc821454358047bb5bb9c0c31c7ae58bfa1047a82a690cc26abb369833d5",
+  "train/pick_two_obj_and_place-AlarmClock-None-Desk-316/trial_T20190909_091102_448579": "f0231128d9e77ec2dc124f611f32521717913db0c7bedbc68527f54547e547db",
+  "train/pick_two_obj_and_place-AlarmClock-None-Dresser-305/trial_T20190907_165758_902037": "adb984916914b2c83b4957940b4a3543f508a457c4f7015c3516b30e8b9777af",
+  "train/pick_two_obj_and_place-AlarmClock-None-Shelf-316/trial_T20190909_010454_432892": "af6ce2f549bc137fa53301436c6c1f6669fbc77ab7bc13f819244126511fa363",
+  "train/pick_two_obj_and_place-Book-None-Bed-304/trial_T20190908_104725_283867": "0bd1d680f8b19d14915ce50b504135eb3ec4ead37fd225e69adb71e52657e0f6",
+  "train/pick_two_obj_and_place-Book-None-Bed-316/trial_T20190909_035341_047789": "568dfe639e24a3a468d2aeadf78a8363f85d3216b4e1a1d2b4f786f9a901ff9a",
+  "train/pick_two_obj_and_place-Book-None-Bed-328/trial_T20190907_060413_124569": "568dfe639e24a3a468d2aeadf78a8363f85d3216b4e1a1d2b4f786f9a901ff9a",
+  "train/pick_two_obj_and_place-Book-None-Bed-328/trial_T20190912_065434_217065": "40108e133a3dbf089bf0a2c17307f15121713e7109e603af102999b5cb508236",
+  "train/pick_two_obj_and_place-Book-None-Desk-313/trial_T20190908_125756_350093": "e6f19344ba1f41ed6e74ee24e233e7d9e98a62ea896d061de1693414e5eb597c",
+  "train/pick_two_obj_and_place-Bowl-None-CoffeeTable-203/trial_T20190907_153332_888821": "1afa8bd23a9a00772e6c42c8de25cad1c3b4015e071cadb9b0699b06ca12f5bc",
+  "train/pick_two_obj_and_place-Box-None-CoffeeTable-213/trial_T20190906_200820_481009": "9698e51d1c8fe7fbd373fee8a7ede31d8fe8215afa2812fc81c580a9ff2d50c2",
+  "train/pick_two_obj_and_place-Bread-None-Fridge-7/trial_T20190907_101019_173249": "0c45630285252df8907f2bd57258244100d4426189779ce9fc688e126972a43a",
+  "train/pick_two_obj_and_place-CD-None-Desk-328/trial_T20190908_100845_792307": "074f963f7076f097a664175119e7a4b400eaa7270e05c0862ecb0658aa74bddb",
+  "train/pick_two_obj_and_place-CD-None-Desk-328/trial_T20190919_024512_841562": "d0adf50c6e5de6cdcdfb4b46d347be8072063b34e1561092c0770414262282df",
+  "train/pick_two_obj_and_place-CD-None-Drawer-319/trial_T20190907_145515_348252": "8fcd30da6b1cb95edc102aafa1521fa3e7789a14fdcdaba0cc187082afd0e3ff",
+  "train/pick_two_obj_and_place-CD-None-Dresser-303/trial_T20190908_085759_424304": "fcef15b3b251d6be58b7ee13c6e6f84e3004a871e785a6ead0a018048c5db3d2",
+  "train/pick_two_obj_and_place-CD-None-GarbageCan-321/trial_T20190908_132548_772538": "8a847f237063a69311ba7fc14d0c1b781f77b515b9d23943d3e4db4518b3ace2",
+  "train/pick_two_obj_and_place-CD-None-Shelf-303/trial_T20190907_200622_451724": "efc5219cce34d0ef3782b4d02bfa77f7d9acc5aa13ccfbe4986e7f7d50cef50e",
+  "train/pick_two_obj_and_place-CD-None-Shelf-326/trial_T20190908_173629_751639": "4aff653baf4a834b82526f02913f31df13a9399b09cba5ef1d06e07c1b7596cd",
+  "train/pick_two_obj_and_place-CD-None-Shelf-326/trial_T20190908_173701_248776": "4aff653baf4a834b82526f02913f31df13a9399b09cba5ef1d06e07c1b7596cd",
+  "train/pick_two_obj_and_place-CD-None-SideTable-321/trial_T20190912_055724_501328": "34c9ecd09a33dfd18c2674ffaa02c22eb11f06c3bf071f54b516940317810471",
+  "train/pick_two_obj_and_place-Candle-None-Cabinet-402/trial_T20190909_084818_682608": "3d8804a2b72df3445d9f91faed7fb9d180a75b7d3a63c667d49f5b3b7a2dc648",
+  "train/pick_two_obj_and_place-Candle-None-Cabinet-402/trial_T20190909_084844_114031": "cb6ace058ef46ba4d0e2d81311cff8da337fcd6e1834a1fe712675dc9b2abb7d",
+  "train/pick_two_obj_and_place-Candle-None-Cabinet-403/trial_T20190909_065744_416414": "525cbaa064ce2756d1044ef397e937a91944ec636632c6d5fd1f1e1cd59ce640",
+  "train/pick_two_obj_and_place-Candle-None-Cabinet-414/trial_T20190908_190717_343206": "a430ee51b3b5cc1176a1524943ebab8fe4ad486c203edf823b39047aec39d728",
+  "train/pick_two_obj_and_place-Candle-None-Cabinet-428/trial_T20190909_053754_615376": "a37a1040873f1f828d0dc7901d1194200490f737b5ec05852d3fc877391d152f",
+  "train/pick_two_obj_and_place-Candle-None-CounterTop-402/trial_T20190909_082809_314519": "d47d965e9becacca67fe1e22b842f5c2783d8474e37f026a50ce10bc2abf1403",
+  "train/pick_two_obj_and_place-Candle-None-Drawer-409/trial_T20190909_060356_759253": "d8d771b6b263d5bd9da7a0dd19c0dbcbeee5853408251c84fc0ffd7ae7c008bc",
+  "train/pick_two_obj_and_place-Candle-None-Drawer-411/trial_T20190909_060014_389023": "c2f47c9d15259bd70f55c7d09d23c02125d98c5d79aef7e4a367c87dc4925609",
+  "train/pick_two_obj_and_place-Candle-None-Drawer-426/trial_T20190907_133447_661538": "9a6f6dbc97c2f72d3e7022f02e39ad8b4ae1fba0f6f940c721654b803d8f333a",
+  "train/pick_two_obj_and_place-Candle-None-Drawer-427/trial_T20190909_043940_867553": "967c51448512a32f5b78ee1a3cbb3cec3feaf40791507a94fd3f5c2900b46cc6",
+  "train/pick_two_obj_and_place-Candle-None-Shelf-429/trial_T20190909_075215_332862": "9951b01d43951861f66e7219338d8dc70b067ebf9e3bd77da032a2e1e82a99b2",
+  "train/pick_two_obj_and_place-CellPhone-None-Desk-312/trial_T20190908_122207_451470": "f6f76c654742bf3326db06703a84d6402c4236f5986c4e125ac52f1b242faf0a",
+  "train/pick_two_obj_and_place-CellPhone-None-Desk-312/trial_T20190908_122308_202330": "f6f76c654742bf3326db06703a84d6402c4236f5986c4e125ac52f1b242faf0a",
+  "train/pick_two_obj_and_place-CellPhone-None-DiningTable-326/trial_T20190907_125954_586140": "f042a9f0709e8b25bdda27b594101677efb920c1f8d1ab75c92c6f8d38793685",
+  "train/pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212046_809746": "1ed5eb598bd1070bcba9e7ed71f2a55a5cfe861ae6f21b5764de64dc59064dbb",
+  "train/pick_two_obj_and_place-CellPhone-None-Drawer-324/trial_T20190907_212202_833108": "8b13cd93cf3d23f62fbbe5336116b35e3892b551571e4b326629381967526f37",
+  "train/pick_two_obj_and_place-CellPhone-None-Drawer-329/trial_T20190909_002000_414199": "20dd24a487352544e77e0e40cba96139c35093d65bc100a147e38e331fd880b1",
+  "train/pick_two_obj_and_place-CellPhone-None-Drawer-329/trial_T20190909_030006_191201": "8de4061ff05034ea52f799c7bcc25fa529c41bc63dce09875b0a1e226df282e2",
+  "train/pick_two_obj_and_place-CellPhone-None-Dresser-229/trial_T20190908_122634_511704": "039daab80beab80981f9f50391e2aeda808bec344f528780b84a4d3f0f16085c",
+  "train/pick_two_obj_and_place-CellPhone-None-Dresser-229/trial_T20190911_131523_783089": "d2c1e25d9ac101c136552512e689346e46712ad38044d8c319d1a097da03f355",
+  "train/pick_two_obj_and_place-CellPhone-None-Dresser-327/trial_T20190908_042553_191155": "d6b995a0585e24f93e491a8370eb6dd4ab3aa870824da98c49b2407e7c043d0a",
+  "train/pick_two_obj_and_place-CellPhone-None-Dresser-327/trial_T20190908_042648_141419": "d6b995a0585e24f93e491a8370eb6dd4ab3aa870824da98c49b2407e7c043d0a",
+  "train/pick_two_obj_and_place-CellPhone-None-Dresser-330/trial_T20190909_060750_241366": "d6eb1375fa0d8e0145f0ddaaf875fb3b3987f9e22f1ded602b01039d7ebbea17",
+  "train/pick_two_obj_and_place-CellPhone-None-Dresser-330/trial_T20190909_061014_837929": "d6eb1375fa0d8e0145f0ddaaf875fb3b3987f9e22f1ded602b01039d7ebbea17",
+  "train/pick_two_obj_and_place-CellPhone-None-Shelf-320/trial_T20190908_032642_582646": "7dd7c7b8f611027653249a5d4915ce2f7222d7f810ecf0582dd16f19f5fcfad4",
+  "train/pick_two_obj_and_place-CellPhone-None-Sofa-218/trial_T20190907_231953_945601": "4519a51422e3d7d940f787a06bdd3feeacab8c954959fb72bd6572aa3e8b450b",
+  "train/pick_two_obj_and_place-CellPhone-None-Sofa-218/trial_T20190907_232123_370650": "20571db5827b5fa7bba396f7d041fdd6fe7cf1462e6f79aa54d6ae4263e38538",
+  "train/pick_two_obj_and_place-CreditCard-None-ArmChair-209/trial_T20190909_024833_526897": "f9da14ef26de1360b4db29d3bc75b4dc7caccffedc30d061c77fa4f4c5146098",
+  "train/pick_two_obj_and_place-CreditCard-None-ArmChair-217/trial_T20190909_114113_703471": "ad8adef4d4b4c9c75e1d58bf20b500be95596fa18c7aef47f90a83fdae1a5ad7",
+  "train/pick_two_obj_and_place-CreditCard-None-ArmChair-311/trial_T20190908_071737_479055": "ff89862077338c12aaebf68771af9c7597bc9ce1f2c328529e39a3cd45dc2a7f",
+  "train/pick_two_obj_and_place-CreditCard-None-CoffeeTable-217/trial_T20190909_053611_198561": "c4cf6c2ca41d9944b0b542ca5a748df1d95761f66bade5f2e8dd961a3d05007e",
+  "train/pick_two_obj_and_place-CreditCard-None-CoffeeTable-217/trial_T20190911_185442_429428": "c4cf6c2ca41d9944b0b542ca5a748df1d95761f66bade5f2e8dd961a3d05007e",
+  "train/pick_two_obj_and_place-CreditCard-None-Desk-313/trial_T20190909_104559_503324": "bab19cfb9c8bb6ebff9e5701188f5fb1195ef91596492584961d482ee5c6293b",
+  "train/pick_two_obj_and_place-CreditCard-None-DiningTable-329/trial_T20190918_154254_505630": "c49ca4086325c83c69c5cf5c505c479581214283030f234ab8d56b306ede1b6c",
+  "train/pick_two_obj_and_place-CreditCard-None-Drawer-213/trial_T20190909_020235_777494": "0676a2e4dd068809274d499d402ccf30935330674c09e2f10a7a8cd2ebbbd556",
+  "train/pick_two_obj_and_place-CreditCard-None-Dresser-217/trial_T20190909_082036_407168": "105c6ab8a33c4940f2e6d5ded016f6a906bc64ca70b3c5c31afe143691ea2e81",
+  "train/pick_two_obj_and_place-CreditCard-None-Dresser-311/trial_T20190907_201834_073281": "aba2d12d56b1ca16f12eae46d886abc16b4239df438ff1b07fa7d00598d59073",
+  "train/pick_two_obj_and_place-CreditCard-None-Sofa-207/trial_T20190909_085924_009925": "b8f61e06203a6048ada2a78a2ddc7849aee4fbb0497a12644c9506fe5f82a17c",
+  "train/pick_two_obj_and_place-CreditCard-None-Sofa-216/trial_T20190909_150017_974673": "d6e75fc73247fcab7dff86576c75aa2bead454c81d6528a83ee0f798d1cb6409",
+  "train/pick_two_obj_and_place-Cup-None-Cabinet-2/trial_T20190908_030921_984551": "23119c45796d0b86b5a6a5b4a9fcd29eadc59b60fd6c13f831195bd13d390abe",
+  "train/pick_two_obj_and_place-Cup-None-Cabinet-2/trial_T20190908_031003_719573": "f04ab59b65e9172767134ed4c734ae0815accf6fee3d0a7a5e31bdbf212d4307",
+  "train/pick_two_obj_and_place-Cup-None-CounterTop-4/trial_T20190908_095215_349573": "1f59f56a5f8756284794c6871ee5972d4b51817fac88b4151b5cb0e97cd6fcf8",
+  "train/pick_two_obj_and_place-Cup-None-Shelf-1/trial_T20190908_015241_045631": "d351c3f92e3256d9dfb9695c8cc95dd379facfd7d12ea6ca327e1b911263992f",
+  "train/pick_two_obj_and_place-Cup-None-Shelf-1/trial_T20190908_015321_582840": "d351c3f92e3256d9dfb9695c8cc95dd379facfd7d12ea6ca327e1b911263992f",
+  "train/pick_two_obj_and_place-DishSponge-None-GarbageCan-421/trial_T20190907_163320_744037": "24384ddbadcf42a113cfeb04c7039302254ca880a0c22ecddb9fcfb58d537cd6",
+  "train/pick_two_obj_and_place-Glassbottle-None-Fridge-1/trial_T20190906_210518_664798": "d10c1071b8801407fd628312fccd1975ac3eecab45b47bbe3bdb187ecc80e0a1",
+  "train/pick_two_obj_and_place-HandTowel-None-CounterTop-409/trial_T20190909_065401_647882": "0fabb3fd94f5922a49507ee0248dec5d5be746320663c6bd3ad352e967abf327",
+  "train/pick_two_obj_and_place-HandTowel-None-CounterTop-418/trial_T20190909_102717_628280": "743d4781b36dac2d2f388b1267b08dbcecb532171a49e47ea3f9e4d85f7c8e50",
+  "train/pick_two_obj_and_place-HandTowel-None-Toilet-412/trial_T20190907_011351_027508": "d59d18c9aff7bb35daa3cb7944a7018230e3f459cfa795c6ab377ac754549819",
+  "train/pick_two_obj_and_place-HandTowel-None-Toilet-412/trial_T20190907_011444_964972": "d59d18c9aff7bb35daa3cb7944a7018230e3f459cfa795c6ab377ac754549819",
+  "train/pick_two_obj_and_place-Kettle-None-DiningTable-18/trial_T20190906_233847_462015": "8e3fe9d2d96f3b1c3428aeeb197cdaa1e1440edfb178f374ea93c110926cda6d",
+  "train/pick_two_obj_and_place-KeyChain-None-ArmChair-217/trial_T20190906_213125_603187": "79f08d516d15d219fef43c463ad108e88897ab6b48f3583f487bb133fcdbbfb1",
+  "train/pick_two_obj_and_place-KeyChain-None-ArmChair-217/trial_T20190906_213211_993051": "79f08d516d15d219fef43c463ad108e88897ab6b48f3583f487bb133fcdbbfb1",
+  "train/pick_two_obj_and_place-KeyChain-None-Drawer-307/trial_T20190909_035451_649886": "9ace35e64ee8eaf9e15a5539dce27ddf175c71498cba05b9806611445416be5c",
+  "train/pick_two_obj_and_place-KeyChain-None-SideTable-322/trial_T20190909_034001_524438": "0a17f1874e7d3402537020811ecd1445de0e8856ec7347c0dde8dfd59f429f55",
+  "train/pick_two_obj_and_place-KeyChain-None-SideTable-322/trial_T20190909_095643_442738": "4a7c17d86b156f4f9b3003ffce0c1bec56118f79163d1568f6941937bb5f197c",
+  "train/pick_two_obj_and_place-KeyChain-None-SideTable-326/trial_T20190908_160925_942963": "0f2c8204e22463fec26c67870764f6ff8512dddfd687718ddfcc92515e563c12",
+  "train/pick_two_obj_and_place-Knife-None-Drawer-18/trial_T20190907_065141_173514": "1a87cc559278c353b618640c766e4301c206f5dd90f04409fab4b287239e4ad3",
+  "train/pick_two_obj_and_place-Ladle-None-Drawer-2/trial_T20190906_162705_748756": "c319833ac23c35621e08584fd0c8bdd54a626ad4812ebab5871c329dc440eb57",
+  "train/pick_two_obj_and_place-Ladle-None-Drawer-2/trial_T20190906_162750_791095": "c319833ac23c35621e08584fd0c8bdd54a626ad4812ebab5871c329dc440eb57",
+  "train/pick_two_obj_and_place-Laptop-None-Desk-307/trial_T20190909_005147_179324": "89690a8ffa2890ca383cb0ee658578c4db6a1e923468f3a05c9b869d64979005",
+  "train/pick_two_obj_and_place-Laptop-None-Desk-309/trial_T20190907_151137_619046": "488a6565f48ad0fa34b26a67b708ec5124610de5a0686cfdd21db1746f65a51a",
+  "train/pick_two_obj_and_place-Laptop-None-Ottoman-203/trial_T20190907_034519_385647": "49dccc935f2068e70018b81e19ce1737fa265b02f47aaad7aaae71980786f0ca",
+  "train/pick_two_obj_and_place-Lettuce-None-Fridge-15/trial_T20190909_005238_033025": "51d43fee2fb17e41a0535da59aee2ef8c8917152983b1cefa934fc26981e895b",
+  "train/pick_two_obj_and_place-Lettuce-None-Fridge-27/trial_T20190907_212302_910644": "cd17c0a44cd5f65a240fc88becf16c848be727a19a8a62761d7d28221dfb86fb",
+  "train/pick_two_obj_and_place-Lettuce-None-Fridge-6/trial_T20190918_184629_005371": "d6e42decf7d1bfc3fe7f7d23043249b462f037609b2bc909c0e5bfa1089f42fb",
+  "train/pick_two_obj_and_place-Mug-None-Cabinet-318/trial_T20190907_222852_159147": "9c915df87a707f77fb4b15264751848a39c0c4f1687cf3844b7c5b4c04da7789",
+  "train/pick_two_obj_and_place-Mug-None-Desk-313/trial_T20190910_075020_522324": "0aee4ad6bb5b3b7d176d80ed4f40943338ad5c5561fa212bf836509b09681410",
+  "train/pick_two_obj_and_place-Newspaper-None-ArmChair-222/trial_T20190907_044124_447733": "a81b839135bb1f4afa9b205a026208410d872b47985da952cfc7825b1c568bcb",
+  "train/pick_two_obj_and_place-Newspaper-None-ArmChair-230/trial_T20190908_001805_404666": "b41919f4c70a1d264d0ef1815a42fd6e4020f3484d0b1f184e5679c0173bacd0",
+  "train/pick_two_obj_and_place-Newspaper-None-CoffeeTable-212/trial_T20190907_211537_017302": "ba367b6312e858f281e46e4be9ed78028ff33ad34b774b7d2d7028b7c6109a06",
+  "train/pick_two_obj_and_place-Newspaper-None-Sofa-201/trial_T20190906_190045_063430": "6d33d1d17a68190fab809621f6ab814063dad6933cc801cda2e205d11b7d2aea",
+  "train/pick_two_obj_and_place-Newspaper-None-Sofa-212/trial_T20190908_112632_208041": "70ff281dc628206dcbd63a51a757459113c52cd2271613675451c9fb9ec616dd",
+  "train/pick_two_obj_and_place-Pan-None-CounterTop-14/trial_T20190918_175910_161432": "2e8e17e4ee998f8f9b968b0cf50be775d43431637e3a8c9e0daca1a7623c8b9e",
+  "train/pick_two_obj_and_place-Pen-None-Drawer-311/trial_T20190908_072156_978372": "cf698e8b92bd52517a4b749299fc3441a0d43a384d1d8d0cdce4c66d1c53f005",
+  "train/pick_two_obj_and_place-Pen-None-Drawer-311/trial_T20190908_072309_675103": "9b891bcc9643600b300ccc36a61be243168c71dd855d28f012144ad4d5daa4cd",
+  "train/pick_two_obj_and_place-Pen-None-Dresser-327/trial_T20190907_212826_574375": "baf1cdb809986d4dbbeced5a7bea040d4696867a59e8d60d6a73fc65e97c0759",
+  "train/pick_two_obj_and_place-Pen-None-Dresser-327/trial_T20190912_025637_251961": "baf1cdb809986d4dbbeced5a7bea040d4696867a59e8d60d6a73fc65e97c0759",
+  "train/pick_two_obj_and_place-Pen-None-Shelf-320/trial_T20190910_131856_812100": "8f5214d53b5a37204a9611ce508f709752bc0ab4399c0f30d1d3688902007ffa",
+  "train/pick_two_obj_and_place-Pen-None-SideTable-326/trial_T20190908_050658_829567": "b8c1f23a79d3b05178a4baaf8a273759cdcbaa89185beccb719d307c73559e7b",
+  "train/pick_two_obj_and_place-Pen-None-SideTable-329/trial_T20190906_203209_061579": "270289ef15f1867e3c7d6f3a58e36afe89301ba3cdc058c54df4ece1280b3a1e",
+  "train/pick_two_obj_and_place-Pencil-None-CoffeeTable-229/trial_T20190910_231706_006365": "f673b9a11393af7aff30cd941156c391460d41ad9ba5f1ebd481fba1a4b43e6e",
+  "train/pick_two_obj_and_place-Pencil-None-Desk-303/trial_T20190908_220248_075224": "8cf45f10018c6aeca75c13e0cb221464135850677ec3854a3b46fdb29f28b3ca",
+  "train/pick_two_obj_and_place-Pencil-None-Desk-303/trial_T20190908_220314_534721": "8cf45f10018c6aeca75c13e0cb221464135850677ec3854a3b46fdb29f28b3ca",
+  "train/pick_two_obj_and_place-Pencil-None-Desk-314/trial_T20190907_044915_976409": "7f5dd0f4c114425f557d087b711e4ec86694968c51f23c0c4592b7fdc371fee4",
+  "train/pick_two_obj_and_place-Pencil-None-Drawer-312/trial_T20190908_014532_759040": "b5f42d28b8d03f9188b33a28de22762d85404e75cd5da5857569e1cf678b2497",
+  "train/pick_two_obj_and_place-Pencil-None-Drawer-316/trial_T20190907_003920_143354": "6931afc5b22ff1a551deef1bd18f3e2cceb914fbc35875dfa0d718ec210e13ad",
+  "train/pick_two_obj_and_place-Pencil-None-Drawer-327/trial_T20190918_171204_045094": "e49e52a3320ea0ea81a3238fa00bd44dabd3a23a0c012c3aa8da53a0f41fdee7",
+  "train/pick_two_obj_and_place-Pencil-None-Shelf-301/trial_T20190909_011323_432966": "9773435bc9c2afce7e8583aa1c1a895e929800eb8953d296e71f27c806d434da",
+  "train/pick_two_obj_and_place-Pencil-None-Shelf-301/trial_T20190909_011401_611613": "9773435bc9c2afce7e8583aa1c1a895e929800eb8953d296e71f27c806d434da",
+  "train/pick_two_obj_and_place-Pencil-None-SideTable-329/trial_T20190909_001354_318049": "f241824248e7b7d974fe352da90051beff5c298b3799adbda081841260d2bb66",
+  "train/pick_two_obj_and_place-PepperShaker-None-Cabinet-8/trial_T20190912_115301_827103": "d96df0a026cae2f3c7976f1f4a22ff74722c36a309f5624e089733f950e4f4c6",
+  "train/pick_two_obj_and_place-PepperShaker-None-DiningTable-19/trial_T20190906_191855_392122": "76a775b8bc168485faaa3cc14f8bf7d216cfd414caaf6dfbed2e7c73ddfef7d1",
+  "train/pick_two_obj_and_place-PepperShaker-None-DiningTable-21/trial_T20190918_193649_729348": "76e484c6d9349173fabf96f00b99a2ae8f53cb4177e0f2b4f2a58774e8e2c83b",
+  "train/pick_two_obj_and_place-PepperShaker-None-Drawer-15/trial_T20190909_022741_011150": "42f186b072d43417438918446428d6fe9067352d77601eb046c2bd10ab93a7c2",
+  "train/pick_two_obj_and_place-PepperShaker-None-Drawer-15/trial_T20190909_051727_474470": "42f186b072d43417438918446428d6fe9067352d77601eb046c2bd10ab93a7c2",
+  "train/pick_two_obj_and_place-PepperShaker-None-SideTable-28/trial_T20190908_021522_563008": "441db4602ae258791c0428e4c6b389479fde12b1f986742e272eb6f1268250be",
+  "train/pick_two_obj_and_place-Pillow-None-ArmChair-321/trial_T20190907_121735_217785": "bc68c7a5f450077c927d6da8e399237433eb5aa75e0c32f277b59cc416decbe6",
+  "train/pick_two_obj_and_place-Plate-None-CoffeeTable-201/trial_T20190907_170428_254428": "ace1398e7e2ab8b3c4e9870239298c12c5aceed8f89b2fc9377879cf52248ef0",
+  "train/pick_two_obj_and_place-Plate-None-CoffeeTable-218/trial_T20190907_220626_298465": "715cdd7407ff8b5894bd7d73e4124e144ae203774676fdf602c46fd09a59e201",
+  "train/pick_two_obj_and_place-Pot-None-Shelf-1/trial_T20190908_170636_981445": "3ae20e6995c6b9472302c89a1f51d0534ce3c5f1fffbe8696ba306eb65edaeac",
+  "train/pick_two_obj_and_place-RemoteControl-None-ArmChair-214/trial_T20190909_011022_706846": "f0f07b53c920e96e62227274c703bbfb0e2678cbb83ebd744e25de67f78b8a79",
+  "train/pick_two_obj_and_place-RemoteControl-None-ArmChair-214/trial_T20190909_020949_765614": "4c561bdac70135169e3798d010aded5f9daa49454d541cfdb9a8d83b7fcdba6f",
+  "train/pick_two_obj_and_place-RemoteControl-None-ArmChair-217/trial_T20190909_115806_934559": "65c291daaa2197b0132324578269134eef7168cb07e9b6f6ad67dc0c1b55a1e2",
+  "train/pick_two_obj_and_place-RemoteControl-None-ArmChair-220/trial_T20190906_190318_357577": "e8a95076a06a58a1801d5856444b34f9cb28fee4245d3a1bd3af6beea5cc2f14",
+  "train/pick_two_obj_and_place-RemoteControl-None-ArmChair-224/trial_T20190908_141327_239129": "dfbd0426a1de58c81facdb1e143880c62c5c465f900afab9025a0e4ec96d78f7",
+  "train/pick_two_obj_and_place-RemoteControl-None-Ottoman-208/trial_T20190908_004505_362807": "b299b280a3177a7f209f2ea86b7915f58bf7be0995a1e26adb27e0dd64b9dd4e",
+  "train/pick_two_obj_and_place-RemoteControl-None-Ottoman-210/trial_T20190906_202039_464241": "91a8eb22d129668c46b7ae3165db62a0c92a2b88631a4dbbd09bcda1ecb904c6",
+  "train/pick_two_obj_and_place-RemoteControl-None-Sofa-201/trial_T20190911_210231_723670": "1ea0137b9a15b7ab63289a9f7a4d530fbf0798fb8201b9c31241cac2bbce2896",
+  "train/pick_two_obj_and_place-RemoteControl-None-Sofa-206/trial_T20190909_095001_569701": "fc68edb5dc1e8fa619735ee810b58a307fc44ed4f9555fe34c7417bb07fee363",
+  "train/pick_two_obj_and_place-RemoteControl-None-Sofa-212/trial_T20190907_235309_480100": "9a31771c17b65102f364dbcee83387a7541a4f7b4f6cafc8a3f67176bdfd07fb",
+  "train/pick_two_obj_and_place-RemoteControl-None-Sofa-228/trial_T20190908_132850_717728": "c701ad341c643a63662d5a6e27ec2eb0051a9f29068b84da4a46d3437b627f73",
+  "train/pick_two_obj_and_place-SaltShaker-None-Cabinet-3/trial_T20190908_102210_822954": "e852672d18c5427b30d727bcbdcb2c29d12fee9cd8e87b8667d41d5871de4536",
+  "train/pick_two_obj_and_place-SaltShaker-None-Drawer-15/trial_T20190909_021339_652839": "b63b20b5c20edecda111346ab8342d14daa02196a3cd4943e07ff95df4455e1a",
+  "train/pick_two_obj_and_place-SaltShaker-None-Drawer-5/trial_T20190907_151125_358475": "a38642d307568c29386c1cc8e26b1674208b44396cb39ae6b0ba945c561662d6",
+  "train/pick_two_obj_and_place-SoapBar-None-GarbageCan-416/trial_T20190907_143756_457606": "307de9573b66b74c74db965d2f6787236ce6555cb9c0a1c269c0b434cc95c56d",
+  "train/pick_two_obj_and_place-SoapBar-None-GarbageCan-420/trial_T20190908_143325_889991": "de6d64fe5c2d640841bd5539a45c660e3a44f04ff2bd8dedae2b33dd5084dbd8",
+  "train/pick_two_obj_and_place-SoapBar-None-Shelf-415/trial_T20190908_070525_956427": "c58579ce4d3f85fd23f462fbed26ea3967e2ec1a9b1f3c5e6ad710d2fb3635e4",
+  "train/pick_two_obj_and_place-SoapBar-None-Shelf-415/trial_T20190908_070656_373737": "c58579ce4d3f85fd23f462fbed26ea3967e2ec1a9b1f3c5e6ad710d2fb3635e4",
+  "train/pick_two_obj_and_place-SoapBottle-None-Cabinet-414/trial_T20190908_044724_423724": "ec166ee3bc3279ef92a7951209b2fc703ecd9125a1b45525ff728c981d7d3a3b",
+  "train/pick_two_obj_and_place-SoapBottle-None-Cabinet-414/trial_T20190908_044804_530285": "ec166ee3bc3279ef92a7951209b2fc703ecd9125a1b45525ff728c981d7d3a3b",
+  "train/pick_two_obj_and_place-SoapBottle-None-Cabinet-417/trial_T20190909_122015_285026": "a3bb1da50e721c5e849f4d70a1e5debadc8eb49388241cefa28c7ce2c50ddd9a",
+  "train/pick_two_obj_and_place-SoapBottle-None-CounterTop-407/trial_T20190908_055449_353538": "946e0ee0f02f540336fbe8317b180fb031564f2e1ca11027b4f831e4c114f839",
+  "train/pick_two_obj_and_place-SoapBottle-None-CounterTop-407/trial_T20190908_055536_681478": "946e0ee0f02f540336fbe8317b180fb031564f2e1ca11027b4f831e4c114f839",
+  "train/pick_two_obj_and_place-SoapBottle-None-Drawer-423/trial_T20190909_080613_840469": "47ba9750d42ae002cdf2a3b52a3c2da25338ab7738afe7444c6cccc8ec87ce26",
+  "train/pick_two_obj_and_place-SoapBottle-None-GarbageCan-418/trial_T20190909_071019_309386": "b046b3d6a746ff43dc8b3d4b4b585741fbda694ea5787378461a46768c5e1f4d",
+  "train/pick_two_obj_and_place-SoapBottle-None-GarbageCan-428/trial_T20190909_105731_241727": "6f260fd525e060efa40f4676c2a8a1c0506408f81f27a0e1b713c0490981f463",
+  "train/pick_two_obj_and_place-SoapBottle-None-GarbageCan-428/trial_T20190909_232825_221391": "6f260fd525e060efa40f4676c2a8a1c0506408f81f27a0e1b713c0490981f463",
+  "train/pick_two_obj_and_place-SoapBottle-None-GarbageCan-428/trial_T20190909_232903_234334": "6f260fd525e060efa40f4676c2a8a1c0506408f81f27a0e1b713c0490981f463",
+  "train/pick_two_obj_and_place-SoapBottle-None-Toilet-405/trial_T20190909_014901_056414": "38fa8d3fa3932d4df5a88c5ff1baface4c0e6db95f6538adc74d720f07c42fc9",
+  "train/pick_two_obj_and_place-SoapBottle-None-Toilet-408/trial_T20190906_201715_052500": "e6b36bf4261aa10bd91e0a13a5a856cd902327c82aa649b0bf7a7ec2c4c7f3e9",
+  "train/pick_two_obj_and_place-SoapBottle-None-Toilet-422/trial_T20190908_113826_070070": "c43bf4e541ecc237d9e1395adcf5fb42c47858c26c9e75bfec8e8a0974d4f258",
+  "train/pick_two_obj_and_place-SoapBottle-None-Toilet-426/trial_T20190907_184810_041356": "c37841919283dcddeffa4418a8be3ec1d224e31d483e770ea7719162fe17e78e",
+  "train/pick_two_obj_and_place-Spoon-None-Drawer-6/trial_T20190908_041242_397364": "c7744b3f5fcc0bf918ff9b6b58dc767a237ec1b609ff7e3b2a5326bc42fcd373",
+  "train/pick_two_obj_and_place-Spoon-None-SideTable-3/trial_T20190908_123320_379413": "e7d7e38b168e4c0fd5d14cd282102df3c4ae7ec521dc22f0c7ab5becaaa72fc3",
+  "train/pick_two_obj_and_place-SprayBottle-None-Cabinet-417/trial_T20190909_112634_915921": "8bf85be0ce3fd292381d7098e261307bf322b4bd03b615f7a479a43ec5341873",
+  "train/pick_two_obj_and_place-SprayBottle-None-Cabinet-417/trial_T20190909_112708_722705": "407ddf5ab1927f1c12a686d192ff422d04741d389b6d820e4ed8ed0902f7908e",
+  "train/pick_two_obj_and_place-SprayBottle-None-Cart-401/trial_T20190906_193428_881063": "629e34c2c91a7cad82aef80ea20e467cebdd05275e8011694c9c210103389e5c",
+  "train/pick_two_obj_and_place-SprayBottle-None-CounterTop-410/trial_T20190908_161608_081694": "ba03e12f9e1bdd6ae5df8fc846782d4230133107f57bb047338b0b1e90a0c74c",
+  "train/pick_two_obj_and_place-SprayBottle-None-CounterTop-411/trial_T20190909_045033_783510": "8af661e2acaec7aca0ce53d2ebe0054d7091d2c6c0e3e33008d0270662370018",
+  "train/pick_two_obj_and_place-SprayBottle-None-Drawer-423/trial_T20190909_025758_640014": "367d56cc28579a4b7838b0db1d9e24d2747942faa05ba93434f33b2c7a4a0cb9",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-408/trial_T20190909_033220_609500": "680bedfc7e608f94163a656672973b3a3da0e5252367d4cd2848f479f5bb8633",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-413/trial_T20190907_233227_626299": "71b3d843cba3ea9938e6b4206348ac30d3b59a898682061cea6586a5cc074388",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-416/trial_T20190909_001550_668945": "25a8a7b8358d76c37775e18bec12159f9e9542232c68e8b5be8c3d6a0d97a5f7",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-418/trial_T20190909_051110_474114": "548f3735fbad0aaa121ad0a847758078f00bb795106754a127e0432b4469aaae",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-418/trial_T20190909_071533_543818": "22bd61be24c441ff6d498e1a0d25dbb1577d6fcea57773cbbf6788e1cb7df390",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-420/trial_T20190909_141726_511777": "44532e5edb8c8fe3c0e588a0d2f144886e913ff9496da74c0f210b1e4986cb9a",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-420/trial_T20190909_141746_420846": "44532e5edb8c8fe3c0e588a0d2f144886e913ff9496da74c0f210b1e4986cb9a",
+  "train/pick_two_obj_and_place-SprayBottle-None-GarbageCan-428/trial_T20190909_055216_429116": "31919e0422d2a283cb068ba34e7f2332b66d2ed495ae6c065143e45f78397d29",
+  "train/pick_two_obj_and_place-SprayBottle-None-Toilet-405/trial_T20190907_151208_870860": "ed95eab7e65dccd518e3b7ae2d5faeaf3ff2d151b87a469bedbfd2f8566de311",
+  "train/pick_two_obj_and_place-SprayBottle-None-Toilet-405/trial_T20190907_151246_155544": "247e5d4e3dfeb331bb244d6511a08350f9601e9d71adb5cac89f4224d4fe34a5",
+  "train/pick_two_obj_and_place-SprayBottle-None-Toilet-429/trial_T20190907_033947_142227": "2bdc932b7e550523d7f33e77f2a14dbfea1addfc3fd981756d1cad873960446d",
+  "train/pick_two_obj_and_place-Statue-None-DiningTable-228/trial_T20190906_222607_743673": "c0d5571aceaf67f431527c35595347c78564ba01a1c533082cfe36b44ea9f7fa",
+  "train/pick_two_obj_and_place-Statue-None-Dresser-213/trial_T20190909_065343_750913": "8003bb24ef2ca9a7cc06b19f968aeac9da1b4d185a4694f27edd9c210f5c05fa",
+  "train/pick_two_obj_and_place-Statue-None-Dresser-213/trial_T20190909_065419_372851": "2d505dc1ca95a93cb3e893cdc095dc128b62ce07fc921f9e761a1691cb3f60b4",
+  "train/pick_two_obj_and_place-Statue-None-SideTable-214/trial_T20190909_065635_751813": "4c5d6cf21167cc8897da1261f232bd72b6c1340508ce31dc921e65e96ebee319",
+  "train/pick_two_obj_and_place-Statue-None-SideTable-214/trial_T20190909_065706_103190": "4c5d6cf21167cc8897da1261f232bd72b6c1340508ce31dc921e65e96ebee319",
+  "train/pick_two_obj_and_place-TissueBox-None-Cart-430/trial_T20190906_172408_729431": "28ed155d3a0118e0a53036b3204f95aa594e9ba66dacf07fc80513bed54b582f",
+  "train/pick_two_obj_and_place-TissueBox-None-DiningTable-230/trial_T20190909_145505_799057": "b5114acb61d867de43420eb3a4f404660402bec262fdda44ad3fcdd5e0dc6a71",
+  "train/pick_two_obj_and_place-TissueBox-None-DiningTable-230/trial_T20190914_012602_275826": "9715b26ae0161039b35e1b2e35b12cd9752879bdf71f2f64174c8591cf37b719",
+  "train/pick_two_obj_and_place-TissueBox-None-Drawer-216/trial_T20190908_150448_341154": "e7bfa5dfb9ab2258eeba224e8ea296e4558ae542d66234e0b2609d89837ca4d0",
+  "train/pick_two_obj_and_place-TissueBox-None-GarbageCan-230/trial_T20190908_050824_374809": "cf000d433b0b847e305ba042bb992af9ab407ff8e46048b6c1dda0b819bc1356",
+  "train/pick_two_obj_and_place-TissueBox-None-SideTable-321/trial_T20190908_025939_647835": "356e5c217cc1e7fba694ce1dcc84b06b06bd1d3536698b11de51223b323e172f",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Cabinet-414/trial_T20190909_090515_748255": "e3aff08ac61c255fba243ce8a33e14157e2ad0258bde00c2d93bdae8bb5ab805",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Cabinet-417/trial_T20190909_115011_963684": "564807ab4db8dfec803d986a143e0804a3639919ba4d1c10161780abfc98af0a",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Cabinet-417/trial_T20190909_115038_213553": "564807ab4db8dfec803d986a143e0804a3639919ba4d1c10161780abfc98af0a",
+  "train/pick_two_obj_and_place-ToiletPaper-None-CounterTop-402/trial_T20190912_052310_164968": "e63c8a45ea75fdfc53c6de6ce90182ce7809ee6907a82ca32dd6616ee82cbc05",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Drawer-410/trial_T20190908_111346_211082": "03137fd391f3f77ce26eaa2c3004cbe390ef8ac952e88cb01d8a13cd7fcd2260",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Drawer-410/trial_T20190908_111427_862927": "03137fd391f3f77ce26eaa2c3004cbe390ef8ac952e88cb01d8a13cd7fcd2260",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Drawer-416/trial_T20190908_013040_862247": "fade62ac49d9851e00607b26610b7e9a2594286709b668d2ca464712a916b807",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Drawer-421/trial_T20190908_184549_278817": "1f2710be12be050c16969ec81cb050dee92e82d6b3eeea905431a6895f0ce0ab",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Shelf-422/trial_T20190908_070044_078336": "761c8da46ee3d4ff6415a72ffb5378d0a77fbad08699094695ee4fb90050731b",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Toilet-405/trial_T20190909_070123_655113": "980993cbf0e26b8d53d45ef3725abb8de22480c6cbef5adeb03bf0eae1831e74",
+  "train/pick_two_obj_and_place-ToiletPaper-None-Toilet-413/trial_T20190908_032023_125360": "adddc25b4ee443606ea12384c49efa8dec933bf751b4fd2d0baef9226f353543",
+  "train/pick_two_obj_and_place-Tomato-None-CounterTop-19/trial_T20190907_144603_396680": "505d862f436ca64af4d2da8c41cc5269ce2d19d393437afbf917bead7a193356",
+  "train/pick_two_obj_and_place-Vase-None-CoffeeTable-209/trial_T20190906_192158_361652": "30b8a45b15407a9a699b5897eb2d802f52c37a6e92b475b4cdfbbb4f88f8576f",
+  "train/pick_two_obj_and_place-Vase-None-CoffeeTable-214/trial_T20190910_173303_364989": "67ba35abff4a8ca523a700f13860c02b1277ced2df8bdb520663de9f7b7497b4",
+  "train/pick_two_obj_and_place-Vase-None-DiningTable-227/trial_T20190909_050706_578681": "1d1d4cb07d3a9b3fd13f7e26d3b6e2d11c0cb2114eda170962f1381a40921ad0",
+  "train/pick_two_obj_and_place-Vase-None-DiningTable-227/trial_T20190910_072914_747890": "da6ce85753d03cb1e999cf4b7c4ab4be131f0e5410837e60cdb3df90a54fab35",
+  "train/pick_two_obj_and_place-Vase-None-SideTable-330/trial_T20190907_052246_310066": "c95169bfe54fe1bfab73c9360a5af10d1445e598d3379b53c5e0184e5c0f0519",
+  "train/pick_two_obj_and_place-Watch-None-Dresser-205/trial_T20190907_182257_096741": "c0c59c59649f055b0264a79bda422ced90b5d11280829eeee6b650b28bef79eb",
+  "train/pick_two_obj_and_place-Watch-None-Dresser-301/trial_T20190906_180154_425245": "cf85614ebb19e20b30a9d7c9cecc5e045368e2a076ee4d92045b42a9dd752ade",
+  "train/pick_two_obj_and_place-Watch-None-Shelf-326/trial_T20190906_201415_685426": "41f1065ca129a488eff448667dcca7705b5702f5423769bf8491e8cba5ffe75b",
+  "train/pick_two_obj_and_place-Watch-None-SideTable-217/trial_T20190909_122056_142455": "a650e2bf85e8d835e31d92f23e3ef2b6dc189d4493723915ed53de69ed981370",
+  "train/pick_two_obj_and_place-Watch-None-SideTable-217/trial_T20190909_122153_816722": "d6c73d38b8059fc801cec5bdfa6c731f0c134dc871ad0f06cc55e9d21b2c6b1b",
+  "train/pick_two_obj_and_place-Watch-None-SideTable-217/trial_T20190909_122228_511454": "a650e2bf85e8d835e31d92f23e3ef2b6dc189d4493723915ed53de69ed981370",
+  "train/pick_two_obj_and_place-WateringCan-None-Shelf-214/trial_T20190907_031116_150490": "34f5b2ae6ac8120a75fd5a611321e59a1ab5a4dd4f7eeaf9b6f06b0d3d946c6e",
+  "train/pick_two_obj_and_place-WateringCan-None-Shelf-214/trial_T20190907_031145_289164": "2719ee2f672a12ccf3cfad8270f02dbbb5c2a39f69f7ccb74242467f6729129e",
+  "valid_unseen/look_at_obj_in_light-AlarmClock-None-DeskLamp-308/trial_T20190908_222917_366542": "0bb8934377267496f774b8a1dd0905435854516c135391ddb35ba14bdfd03047",
+  "valid_unseen/look_at_obj_in_light-AlarmClock-None-DeskLamp-308/trial_T20190908_222933_607649": "0bb8934377267496f774b8a1dd0905435854516c135391ddb35ba14bdfd03047",
+  "valid_unseen/look_at_obj_in_light-AlarmClock-None-DeskLamp-308/trial_T20190908_222951_616606": "6aa836101e7088ad517d0515bb5461d0a4bc3cb28468b25f4c49d05d6aa3a62e",
+  "valid_unseen/look_at_obj_in_light-Book-None-DeskLamp-308/trial_T20190908_020029_636862": "ceb87b4ee97acbfb7ca8431ce094ad16e213a5b46769c22100ccf3f893b3e969",
+  "valid_unseen/look_at_obj_in_light-Book-None-DeskLamp-308/trial_T20190908_020048_814402": "ceb87b4ee97acbfb7ca8431ce094ad16e213a5b46769c22100ccf3f893b3e969",
+  "valid_unseen/look_at_obj_in_light-Book-None-DeskLamp-308/trial_T20190908_144951_587345": "ceb87b4ee97acbfb7ca8431ce094ad16e213a5b46769c22100ccf3f893b3e969",
+  "valid_unseen/look_at_obj_in_light-Bowl-None-DeskLamp-308/trial_T20190907_133919_856963": "2ed1d26638728e35a72b356a6071455ea4e07d9fb1d65a07e9ed915363f60d0d",
+  "valid_unseen/look_at_obj_in_light-Bowl-None-DeskLamp-308/trial_T20190907_133935_066606": "2ed1d26638728e35a72b356a6071455ea4e07d9fb1d65a07e9ed915363f60d0d",
+  "valid_unseen/look_at_obj_in_light-Bowl-None-DeskLamp-308/trial_T20190907_133953_562557": "7f5f19897a9b4c8a2ca8e99f91c7a294ead42f944db52235053e6d8acfe0391f",
+  "valid_unseen/look_at_obj_in_light-CD-None-DeskLamp-308/trial_T20190908_141942_810052": "b838f0998f8496e4afe6493a1e41f8976d354c705e5cef5ac377780593388771",
+  "valid_unseen/look_at_obj_in_light-CD-None-DeskLamp-308/trial_T20190908_141958_463362": "4163a4ec6ad95403bce4cbde536429a41d4d80621703d7d9c39e2c9a64dcddec",
+  "valid_unseen/look_at_obj_in_light-CD-None-DeskLamp-308/trial_T20190908_142046_281296": "4163a4ec6ad95403bce4cbde536429a41d4d80621703d7d9c39e2c9a64dcddec",
+  "valid_unseen/look_at_obj_in_light-Mug-None-DeskLamp-308/trial_T20190908_161733_213242": "32a2d659fb1843d5c132eee5eb64e9824b27f1876266d05235ca341a3ff9cbf5",
+  "valid_unseen/look_at_obj_in_light-Mug-None-DeskLamp-308/trial_T20190908_201421_021646": "804f40170c5f9b1a90b9712b5b9f5b4e15ae621cfe04b8a840446818c8b4d128",
+  "valid_unseen/look_at_obj_in_light-Mug-None-DeskLamp-308/trial_T20190908_201444_037645": "804f40170c5f9b1a90b9712b5b9f5b4e15ae621cfe04b8a840446818c8b4d128",
+  "valid_unseen/look_at_obj_in_light-Pencil-None-DeskLamp-308/trial_T20190908_220545_153480": "0644ad1e108952eff033433d40997452bcbaf0cd19100d8fc144c3a7a3bf4b60",
+  "valid_unseen/look_at_obj_in_light-Pencil-None-DeskLamp-308/trial_T20190908_220604_010430": "d968d4bb47fae4dd947d89f1c8c6cf02ab14d6a5ead51226fc307c76efc40f92",
+  "valid_unseen/look_at_obj_in_light-Pencil-None-DeskLamp-308/trial_T20190908_220656_510400": "d968d4bb47fae4dd947d89f1c8c6cf02ab14d6a5ead51226fc307c76efc40f92",
+  "valid_unseen/pick_and_place_simple-Mug-None-Desk-308/trial_T20190908_125200_737896": "94203272b885b56a1c2de36ac0091ee3da1f339a1a45e2736f7798a4dbc11012",
+  "valid_unseen/pick_and_place_simple-Mug-None-Desk-308/trial_T20190909_203041_433487": "78e8f75e5a51383fc1a0dab2fc0b4db85f2feb4cc7466610522bfab90fcc635a",
+  "valid_unseen/pick_and_place_simple-Mug-None-Desk-308/trial_T20190909_210238_431966": "94203272b885b56a1c2de36ac0091ee3da1f339a1a45e2736f7798a4dbc11012",
+  "valid_unseen/pick_and_place_simple-Pencil-None-Shelf-308/trial_T20190908_121952_610012": "502afba65a703fa62f8c24494217a50046b4dc96640e3edce47e7121ed6a219e",
+  "valid_unseen/pick_and_place_simple-Pencil-None-Shelf-308/trial_T20190908_122024_052056": "502afba65a703fa62f8c24494217a50046b4dc96640e3edce47e7121ed6a219e",
+  "valid_unseen/pick_and_place_simple-Pencil-None-Shelf-308/trial_T20190908_122154_042763": "502afba65a703fa62f8c24494217a50046b4dc96640e3edce47e7121ed6a219e",
+  "valid_unseen/pick_and_place_simple-PepperShaker-None-Drawer-10/trial_T20190906_184021_215264": "302a22425211f4845ac0c53a7f15461a4546e12a12a159388b1bbbe368e475df",
+  "valid_unseen/pick_and_place_simple-PepperShaker-None-Drawer-10/trial_T20190918_154326_823501": "41e201b6373f33c097cade06708b0f6d2f7e626eae96e7dfe93c53c7e032143a",
+  "valid_unseen/pick_and_place_simple-PepperShaker-None-Drawer-10/trial_T20190918_154424_844749": "302a22425211f4845ac0c53a7f15461a4546e12a12a159388b1bbbe368e475df",
+  "valid_unseen/pick_and_place_simple-SaltShaker-None-Cabinet-10/trial_T20190906_191429_743650": "be2d580cb802996afc344bcc31f9bea71cdefb694ad490835c5e05c51e5ac156",
+  "valid_unseen/pick_and_place_simple-SaltShaker-None-Cabinet-10/trial_T20190906_191445_723170": "be2d580cb802996afc344bcc31f9bea71cdefb694ad490835c5e05c51e5ac156",
+  "valid_unseen/pick_and_place_simple-SaltShaker-None-Cabinet-10/trial_T20190906_191501_563086": "be2d580cb802996afc344bcc31f9bea71cdefb694ad490835c5e05c51e5ac156",
+  "valid_unseen/pick_and_place_simple-SaltShaker-None-Drawer-10/trial_T20190909_021613_077537": "4606d2c0e588c2717f28341c0fcb5f6f42e8ff2f8a760d4418524633e2ce0efc",
+  "valid_unseen/pick_and_place_simple-SaltShaker-None-Drawer-10/trial_T20190909_021650_880235": "4606d2c0e588c2717f28341c0fcb5f6f42e8ff2f8a760d4418524633e2ce0efc",
+  "valid_unseen/pick_and_place_simple-SaltShaker-None-Drawer-10/trial_T20190909_021728_339782": "2a72da7d9fa77960e46e98791881b05ad3f76699ae14301c32892bece2e2715b",
+  "valid_unseen/pick_and_place_simple-SoapBottle-None-Toilet-424/trial_T20190907_004321_405868": "87cd68a6097a4c6cedefdecba94851f91a19fc042f7c6e84c6c8011bc59717ec",
+  "valid_unseen/pick_and_place_simple-SoapBottle-None-Toilet-424/trial_T20190907_004351_281384": "763314cd2c3e16662b8071d41d4e4b50054f809003c3b0866d53ec1f882f5d52",
+  "valid_unseen/pick_and_place_simple-SoapBottle-None-Toilet-424/trial_T20190907_004404_604165": "763314cd2c3e16662b8071d41d4e4b50054f809003c3b0866d53ec1f882f5d52",
+  "valid_unseen/pick_and_place_simple-Vase-None-Safe-219/trial_T20190908_205204_244321": "c151b9928092c4e54b2a915b56ead4609226027280d7acc75fa995a9f1201fd5",
+  "valid_unseen/pick_and_place_simple-Vase-None-Safe-219/trial_T20190908_205221_748352": "1a979dcb6434cc95d7aa262ea8a60d57ddf772c3e94e6c8d66561707fde42f4a",
+  "valid_unseen/pick_and_place_simple-Vase-None-Safe-219/trial_T20190908_205246_776817": "c151b9928092c4e54b2a915b56ead4609226027280d7acc75fa995a9f1201fd5",
+  "valid_unseen/pick_and_place_simple-Watch-None-Safe-219/trial_T20190907_074524_006355": "602508a7559424074371d55614de8164622ed1ca14dc1dfae01e9941220f7fc8",
+  "valid_unseen/pick_and_place_simple-Watch-None-Safe-219/trial_T20190907_074556_124850": "602508a7559424074371d55614de8164622ed1ca14dc1dfae01e9941220f7fc8",
+  "valid_unseen/pick_and_place_simple-Watch-None-Safe-219/trial_T20190907_074643_810052": "602508a7559424074371d55614de8164622ed1ca14dc1dfae01e9941220f7fc8",
+  "valid_unseen/pick_clean_then_place_in_recep-Bowl-None-Cabinet-10/trial_T20190909_061130_844814": "7d62727516e7b313745fad0afb75178b85e035a5554a85160a98c597ad973b39",
+  "valid_unseen/pick_clean_then_place_in_recep-Bowl-None-Cabinet-10/trial_T20190909_061158_110530": "a6e4a304e195ccec2c134cb1643115e7f0e3e266586a6f43867317d286f5f1d5",
+  "valid_unseen/pick_clean_then_place_in_recep-Bowl-None-Cabinet-10/trial_T20190909_061232_368489": "7d62727516e7b313745fad0afb75178b85e035a5554a85160a98c597ad973b39",
+  "valid_unseen/pick_clean_then_place_in_recep-Cloth-None-Cabinet-424/trial_T20190908_022321_380927": "5de3495a3d6c9202e592e7f14500f0c020fb18d90c70cadef21ef3a9775d6d2f",
+  "valid_unseen/pick_clean_then_place_in_recep-Cloth-None-Cabinet-424/trial_T20190908_022436_073995": "5de3495a3d6c9202e592e7f14500f0c020fb18d90c70cadef21ef3a9775d6d2f",
+  "valid_unseen/pick_clean_then_place_in_recep-Cloth-None-CounterTop-424/trial_T20190908_100632_546757": "23f4e78c9d868e5d588bf3addfd73b90e80665581c14648c743d015121e85f55",
+  "valid_unseen/pick_clean_then_place_in_recep-Cloth-None-CounterTop-424/trial_T20190908_114340_674467": "748a164a80e5b2b2c20757635600b443a15d9b35fc3af2c809593ef59e04dfdc",
+  "valid_unseen/pick_clean_then_place_in_recep-Egg-None-Microwave-10/trial_T20190909_120554_888709": "4e62e38e2d625f43f187e5e8e8629e931ce4202fce1e7abc7024057ad93f9e57",
+  "valid_unseen/pick_clean_then_place_in_recep-Egg-None-Microwave-10/trial_T20190909_120632_691361": "686b28a6360a908abfce554c1e61acbf94c1f9dc9868310632f7d452fd654be3",
+  "valid_unseen/pick_clean_then_place_in_recep-Egg-None-Microwave-10/trial_T20190909_120712_273910": "686b28a6360a908abfce554c1e61acbf94c1f9dc9868310632f7d452fd654be3",
+  "valid_unseen/pick_clean_then_place_in_recep-Knife-None-CounterTop-10/trial_T20190909_110347_624008": "677e9532b70a57e687ac8d9d2908ee833f38c10e41259b0f90b045c538b10453",
+  "valid_unseen/pick_clean_then_place_in_recep-Knife-None-CounterTop-10/trial_T20190909_110445_675754": "644892e7c87caa05473c66badf2eac046d5353fe40b9b2743890828844fb6b8a",
+  "valid_unseen/pick_clean_then_place_in_recep-Knife-None-CounterTop-10/trial_T20190909_110531_148235": "644892e7c87caa05473c66badf2eac046d5353fe40b9b2743890828844fb6b8a",
+  "valid_unseen/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_221208_560499": "590c5c61b23e7f09b3525edadfdc292b0a6d8dbbbba7d8cec18593df350cf660",
+  "valid_unseen/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_221300_362511": "590c5c61b23e7f09b3525edadfdc292b0a6d8dbbbba7d8cec18593df350cf660",
+  "valid_unseen/pick_clean_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_221355_558505": "590c5c61b23e7f09b3525edadfdc292b0a6d8dbbbba7d8cec18593df350cf660",
+  "valid_unseen/pick_clean_then_place_in_recep-Pan-None-CounterTop-10/trial_T20190908_032434_013084": "6626deccd16aa6830990912cb872d82b63b044b749857cd6b1de436d1ee5187d",
+  "valid_unseen/pick_clean_then_place_in_recep-Pan-None-CounterTop-10/trial_T20190908_032518_891433": "6626deccd16aa6830990912cb872d82b63b044b749857cd6b1de436d1ee5187d",
+  "valid_unseen/pick_clean_then_place_in_recep-Pan-None-CounterTop-10/trial_T20190908_032543_712058": "eedd663b34293b296d41f360faf669ec026d91a2de6f4d91e2b717a5dad65d20",
+  "valid_unseen/pick_clean_then_place_in_recep-Plate-None-CounterTop-10/trial_T20190908_213356_017769": "f5be60e1e9debdcf1c9cbadd7c48f4b7cc19621d390972159b419d9023b22b73",
+  "valid_unseen/pick_clean_then_place_in_recep-Plate-None-CounterTop-10/trial_T20190908_213420_728917": "f5be60e1e9debdcf1c9cbadd7c48f4b7cc19621d390972159b419d9023b22b73",
+  "valid_unseen/pick_clean_then_place_in_recep-Plate-None-CounterTop-10/trial_T20190908_213533_897289": "d57d60b7ae42db89d301f243aea7f063e710b9b8c711a89a737b65bb770f5e7b",
+  "valid_unseen/pick_clean_then_place_in_recep-SoapBar-None-Cabinet-424/trial_T20190908_214926_337906": "2bd42e0c2a9a61c32cbe142f87dfa7d9c0adac4c90d31cfdafc20898f0bfad44",
+  "valid_unseen/pick_clean_then_place_in_recep-SoapBar-None-Cabinet-424/trial_T20190908_214946_567644": "2bd42e0c2a9a61c32cbe142f87dfa7d9c0adac4c90d31cfdafc20898f0bfad44",
+  "valid_unseen/pick_clean_then_place_in_recep-SoapBar-None-Cabinet-424/trial_T20190908_215019_162873": "2bd42e0c2a9a61c32cbe142f87dfa7d9c0adac4c90d31cfdafc20898f0bfad44",
+  "valid_unseen/pick_clean_then_place_in_recep-SoapBar-None-CounterTop-424/trial_T20190907_074045_109439": "9d9dd3445e258247cc0c60b446a2e8563dc4526d6a7855580835684c660c602f",
+  "valid_unseen/pick_clean_then_place_in_recep-SoapBar-None-CounterTop-424/trial_T20190907_074106_050405": "9d9dd3445e258247cc0c60b446a2e8563dc4526d6a7855580835684c660c602f",
+  "valid_unseen/pick_clean_then_place_in_recep-SoapBar-None-CounterTop-424/trial_T20190907_074124_966890": "8a9a5a62fc1e3cd193b29aab6de01f29e97f9e7f031500c5c05dcde89b56dcd0",
+  "valid_unseen/pick_clean_then_place_in_recep-Spatula-None-Drawer-10/trial_T20190907_080730_211959": "065b62a58db844f3c5dcd5bba51c2f4666cdf24a3b0bfaae4fb94b0b09454594",
+  "valid_unseen/pick_clean_then_place_in_recep-Spatula-None-Drawer-10/trial_T20190907_080800_275989": "ad7978021004697a95b08b9589b516d7bd64ef77127270045d1978232ee79126",
+  "valid_unseen/pick_clean_then_place_in_recep-Spatula-None-Drawer-10/trial_T20190907_080825_222432": "ad7978021004697a95b08b9589b516d7bd64ef77127270045d1978232ee79126",
+  "valid_unseen/pick_cool_then_place_in_recep-Bread-None-CounterTop-10/trial_T20190908_091747_866951": "a735570dc670dca4a1d35aafa97740e853f490491f5ffee4b66ed1ee4103d12f",
+  "valid_unseen/pick_cool_then_place_in_recep-Bread-None-CounterTop-10/trial_T20190908_091811_414150": "19398d2c7b3ad13fdcb7e546952474dd663d8e66339d673bf1a7342666658a06",
+  "valid_unseen/pick_cool_then_place_in_recep-Bread-None-CounterTop-10/trial_T20190908_091835_825830": "19398d2c7b3ad13fdcb7e546952474dd663d8e66339d673bf1a7342666658a06",
+  "valid_unseen/pick_cool_then_place_in_recep-Lettuce-None-CounterTop-10/trial_T20190909_123133_763972": "f02f909f590e4258785a7ac7d47ccb93780ee44c7692c48f39b629277330b34f",
+  "valid_unseen/pick_cool_then_place_in_recep-Lettuce-None-CounterTop-10/trial_T20190909_174807_646433": "831a936ff997afec05f4ef185761c395cc869a6fb3f20cc5e3666dbbac30ed1d",
+  "valid_unseen/pick_cool_then_place_in_recep-Lettuce-None-CounterTop-10/trial_T20190909_174840_771703": "f02f909f590e4258785a7ac7d47ccb93780ee44c7692c48f39b629277330b34f",
+  "valid_unseen/pick_cool_then_place_in_recep-Mug-None-Cabinet-10/trial_T20190909_121559_082363": "20b40e066e72d6e2010e66874e24c7cc21a8f8f7c7cc82542f69f11794cf83f7",
+  "valid_unseen/pick_cool_then_place_in_recep-Mug-None-Cabinet-10/trial_T20190909_121635_622676": "c9c2056b3f3b0415d1bda670ebe899a6e17e03537287dd5b42f9a7c5d7366917",
+  "valid_unseen/pick_cool_then_place_in_recep-Mug-None-Cabinet-10/trial_T20190909_121710_650938": "c9c2056b3f3b0415d1bda670ebe899a6e17e03537287dd5b42f9a7c5d7366917",
+  "valid_unseen/pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_183715_299073": "36150f79db2b8ce76a4d471b3d5645d9797c85a9851041e65255642f8702c0ba",
+  "valid_unseen/pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_183807_477267": "36150f79db2b8ce76a4d471b3d5645d9797c85a9851041e65255642f8702c0ba",
+  "valid_unseen/pick_cool_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_183853_958104": "a311d333ae8aacf43e5ce4798ee18572465d17086d2a77bd6335c76b11c3fff1",
+  "valid_unseen/pick_cool_then_place_in_recep-Pan-None-CounterTop-10/trial_T20190908_114545_244903": "d0dd6a519b5e373cac62d9212c0f81ee3386ffe4affba78a80d1b10ad258a77e",
+  "valid_unseen/pick_cool_then_place_in_recep-Pan-None-CounterTop-10/trial_T20190908_114622_738670": "3d5ae1f50cdb6b3a7bc42de9eb400b8d6cdefd9c1da611708d35f856d793d0e9",
+  "valid_unseen/pick_cool_then_place_in_recep-Pan-None-CounterTop-10/trial_T20190908_114656_768805": "d0dd6a519b5e373cac62d9212c0f81ee3386ffe4affba78a80d1b10ad258a77e",
+  "valid_unseen/pick_cool_then_place_in_recep-Potato-None-Microwave-10/trial_T20190907_033157_424297": "593ff4562637a129537ece10aec290a8e11501117001914c4d0c20ab3f7ad526",
+  "valid_unseen/pick_cool_then_place_in_recep-Potato-None-Microwave-10/trial_T20190907_033228_194678": "593ff4562637a129537ece10aec290a8e11501117001914c4d0c20ab3f7ad526",
+  "valid_unseen/pick_cool_then_place_in_recep-Potato-None-Microwave-10/trial_T20190907_033306_962974": "593ff4562637a129537ece10aec290a8e11501117001914c4d0c20ab3f7ad526",
+  "valid_unseen/pick_cool_then_place_in_recep-Tomato-None-Microwave-10/trial_T20190909_102608_318800": "98d620c591793fcc6fb536289e8759e9d46eb3fcc170c5e6e31b9c0aef6fac74",
+  "valid_unseen/pick_cool_then_place_in_recep-Tomato-None-Microwave-10/trial_T20190909_102644_926781": "98d620c591793fcc6fb536289e8759e9d46eb3fcc170c5e6e31b9c0aef6fac74",
+  "valid_unseen/pick_cool_then_place_in_recep-Tomato-None-Microwave-10/trial_T20190909_102710_795182": "98d620c591793fcc6fb536289e8759e9d46eb3fcc170c5e6e31b9c0aef6fac74",
+  "valid_unseen/pick_heat_then_place_in_recep-Apple-None-Fridge-10/trial_T20190906_182259_116320": "49ecc450c1704181964000801e25c2b65c04fbedb4f573236715d97e98c536c0",
+  "valid_unseen/pick_heat_then_place_in_recep-Apple-None-Fridge-10/trial_T20190906_182353_418140": "2370790907fb6d8884fa9200066e9dc1911e509dc07d5a5a639888370a8131fb",
+  "valid_unseen/pick_heat_then_place_in_recep-Apple-None-Fridge-10/trial_T20190906_182435_622538": "49ecc450c1704181964000801e25c2b65c04fbedb4f573236715d97e98c536c0",
+  "valid_unseen/pick_heat_then_place_in_recep-Apple-None-GarbageCan-10/trial_T20190908_145050_918567": "d0ab407602fd7ce1d4cf61d4cb52652ea1b0879261f1c2f79955a32ec06743b8",
+  "valid_unseen/pick_heat_then_place_in_recep-Apple-None-GarbageCan-10/trial_T20190908_145143_820541": "d0ab407602fd7ce1d4cf61d4cb52652ea1b0879261f1c2f79955a32ec06743b8",
+  "valid_unseen/pick_heat_then_place_in_recep-Apple-None-GarbageCan-10/trial_T20190908_145356_918528": "d0ab407602fd7ce1d4cf61d4cb52652ea1b0879261f1c2f79955a32ec06743b8",
+  "valid_unseen/pick_heat_then_place_in_recep-Cup-None-Cabinet-10/trial_T20190907_083346_800823": "55fafa13a79276705cc6cf18ab166c2d4ea9b659110beaaa7eff0472ebc4b981",
+  "valid_unseen/pick_heat_then_place_in_recep-Cup-None-Cabinet-10/trial_T20190907_083429_887065": "55fafa13a79276705cc6cf18ab166c2d4ea9b659110beaaa7eff0472ebc4b981",
+  "valid_unseen/pick_heat_then_place_in_recep-Cup-None-Cabinet-10/trial_T20190907_083507_594820": "55fafa13a79276705cc6cf18ab166c2d4ea9b659110beaaa7eff0472ebc4b981",
+  "valid_unseen/pick_heat_then_place_in_recep-Egg-None-GarbageCan-10/trial_T20190908_113432_673307": "45da1dcd9d3344ea239e6e89446e81b4bc9aada1011471ac00f8c6bd45b4c801",
+  "valid_unseen/pick_heat_then_place_in_recep-Egg-None-GarbageCan-10/trial_T20190908_113523_123938": "45da1dcd9d3344ea239e6e89446e81b4bc9aada1011471ac00f8c6bd45b4c801",
+  "valid_unseen/pick_heat_then_place_in_recep-Egg-None-GarbageCan-10/trial_T20190908_113610_425142": "45da1dcd9d3344ea239e6e89446e81b4bc9aada1011471ac00f8c6bd45b4c801",
+  "valid_unseen/pick_heat_then_place_in_recep-Mug-None-Cabinet-10/trial_T20190909_021100_341887": "b0866ae303674fa106914027516689f4ee013c8172b9c44d77647a3a3a5f1b2d",
+  "valid_unseen/pick_heat_then_place_in_recep-Mug-None-Cabinet-10/trial_T20190909_021200_669381": "c9a6ac5ab0f02000a42ef547dcdca75918e039252cfb56484c8d975d966fc99b",
+  "valid_unseen/pick_heat_then_place_in_recep-Mug-None-Cabinet-10/trial_T20190909_021247_306737": "b0866ae303674fa106914027516689f4ee013c8172b9c44d77647a3a3a5f1b2d",
+  "valid_unseen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_171806_406231": "f9b6fbda6cc44aa9897a99fbeba077ca199755a6e543e96c491a0d938afdf2fe",
+  "valid_unseen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_171850_960211": "f9b6fbda6cc44aa9897a99fbeba077ca199755a6e543e96c491a0d938afdf2fe",
+  "valid_unseen/pick_heat_then_place_in_recep-Mug-None-CoffeeMachine-10/trial_T20190907_171933_349922": "c354ce16b764c5f1ae7e043d574b6b8c9b928ecd4ba7445ea40809d53d02385d",
+  "valid_unseen/pick_heat_then_place_in_recep-Potato-None-GarbageCan-10/trial_T20190907_161745_664033": "3c87d1799059360e16ad861146f835e38225385729090f7987fa1936c4d5d159",
+  "valid_unseen/pick_heat_then_place_in_recep-Potato-None-GarbageCan-10/trial_T20190907_161853_945788": "114236e4da14b657ac9428c3f48214a44e1fdfdfef1f155f736b1c64c9c51ffe",
+  "valid_unseen/pick_heat_then_place_in_recep-Tomato-None-GarbageCan-10/trial_T20190908_225046_020282": "ff2e105d01b9047540cdb442033cde4740354456bb810359910d5bbabb52af38",
+  "valid_unseen/pick_heat_then_place_in_recep-Tomato-None-GarbageCan-10/trial_T20190908_225359_617900": "9387ea828561340830cb9641c32acd2af5de386a36c85b35668712883970cea9",
+  "valid_unseen/pick_heat_then_place_in_recep-Tomato-None-GarbageCan-10/trial_T20190908_225453_272533": "ff2e105d01b9047540cdb442033cde4740354456bb810359910d5bbabb52af38",
+  "valid_unseen/pick_two_obj_and_place-CD-None-Safe-308/trial_T20190907_050942_897916": "eaaa4b8b1e9b8549927bcec09012714cb087bbed7d63a8f315df7d77a94311f2",
+  "valid_unseen/pick_two_obj_and_place-CD-None-Safe-308/trial_T20190907_051013_060265": "abf0cee85a647a291e9b261c7a7aba67f31c70f125434fa42dc1fd9e700920cc",
+  "valid_unseen/pick_two_obj_and_place-CD-None-Safe-308/trial_T20190907_051056_585414": "eaaa4b8b1e9b8549927bcec09012714cb087bbed7d63a8f315df7d77a94311f2",
+  "valid_unseen/pick_two_obj_and_place-KeyChain-None-Safe-219/trial_T20190909_011803_423115": "4de0f14db9511d8f98458508d9a33920c03472206949d0d65853074571750ae4",
+  "valid_unseen/pick_two_obj_and_place-KeyChain-None-Safe-219/trial_T20190909_012027_782483": "4de0f14db9511d8f98458508d9a33920c03472206949d0d65853074571750ae4",
+  "valid_unseen/pick_two_obj_and_place-PepperShaker-None-Drawer-10/trial_T20190908_010306_215435": "b99c7ce50cbe988b7da206df8c4295c9f929d495c3d50f10d5215ce2761a634a",
+  "valid_unseen/pick_two_obj_and_place-PepperShaker-None-Drawer-10/trial_T20190912_221016_460197": "b99c7ce50cbe988b7da206df8c4295c9f929d495c3d50f10d5215ce2761a634a",
+  "valid_unseen/pick_two_obj_and_place-PepperShaker-None-Drawer-10/trial_T20190912_221141_608117": "77aa62cb9b325e9ebce7c16a5a7282ffe2287ef8b18c1d1810adb91fb3ed59f3",
+  "valid_unseen/pick_two_obj_and_place-Pillow-None-Sofa-219/trial_T20190907_163240_345855": "605b794deddbada8a15f897e250eb894c7032ea69e6824b461dd1edf4758be47",
+  "valid_unseen/pick_two_obj_and_place-Pillow-None-Sofa-219/trial_T20190907_163327_486300": "a53d4fcc66c8a3f4ed56947b67df25f6278786b861c397c0c8f6c77e602452ad",
+  "valid_unseen/pick_two_obj_and_place-Pillow-None-Sofa-219/trial_T20190907_163408_914117": "a53d4fcc66c8a3f4ed56947b67df25f6278786b861c397c0c8f6c77e602452ad",
+  "valid_unseen/pick_two_obj_and_place-SoapBar-None-Cabinet-424/trial_T20190909_081720_491733": "50f6a2d739e94fce04a59fbe37d173e36cb67497d72b592c5fb3db4d0601d1f3",
+  "valid_unseen/pick_two_obj_and_place-SoapBar-None-Cabinet-424/trial_T20190909_081746_857594": "50f6a2d739e94fce04a59fbe37d173e36cb67497d72b592c5fb3db4d0601d1f3",
+  "valid_unseen/pick_two_obj_and_place-SoapBar-None-GarbageCan-424/trial_T20190909_064053_839817": "3bc45be85e4598ac963dc981ce5eaf4ff935bc65e4518e9d2b341d66ba8b7aaf",
+  "valid_unseen/pick_two_obj_and_place-SoapBar-None-GarbageCan-424/trial_T20190909_064221_368939": "3bc45be85e4598ac963dc981ce5eaf4ff935bc65e4518e9d2b341d66ba8b7aaf",
+  "valid_unseen/pick_two_obj_and_place-SoapBar-None-GarbageCan-424/trial_T20190909_064309_357168": "3bc45be85e4598ac963dc981ce5eaf4ff935bc65e4518e9d2b341d66ba8b7aaf",
+  "valid_unseen/pick_two_obj_and_place-ToiletPaper-None-Cabinet-424/trial_T20190906_202926_527010": "aabe66d7011e96f51e57f470d1f05d061bd0d89db4245e0c4097902fae108a67"
+ }
+}
