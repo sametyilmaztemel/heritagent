@@ -304,9 +304,10 @@ def test_a_candidate_failing_another_stage_does_not_make_a_cell_unidentifiable(t
     make_a_fail(orch, runner, inputs)
     assert orch.run(inputs).verdicts == {"a": "reject", "b": "promote"}
     grid = orch.sensitivity_recomputation("b")
-    for tau_r in (0.02, 0.03, 0.05):
-        cell = grid["cells"][f"tau_c=0.08|tau_r={tau_r}"]
-        assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]
+    for tau_c in (0.03, 0.05, 0.08):  # a is neither unidentified nor hypothetically eligible
+        for tau_r in (0.02, 0.03, 0.05):
+            cell = grid["cells"][f"tau_c={tau_c}|tau_r={tau_r}"]
+            assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]
 
 
 def test_the_cell_tau_r_decides_whether_a_4a_failure_makes_a_cell_unidentifiable(tmp_path):

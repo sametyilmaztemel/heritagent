@@ -469,7 +469,14 @@ def test_a_not_run_all_family_candidate_counts_as_naming_every_family(clean):
 def test_the_v2_disclosure_follows_the_threshold_version(clean, tmp_path):
     """ADR-0012 D11: the disclosure is the v2 gate's; a record of another
     version gets none."""
-    assert "in ADR-0012's model (M), rarely binds" in figures.V2_DISCLOSURE
+    # ADR-0012 D11's disclosures, each named
+    for clause in ("stage 1 checks only that a successful replay of the source task expresses "
+                   "the gene", "the in-scope record is stage 2's games by reference",
+                   "in ADR-0012's model (M), rarely binds",
+                   "true effects below 0.05 can be promoted",
+                   "the seeds' gates read the same benefit-bank games",
+                   "H2 can hold only if arm B carries candidates that harm"):
+        assert clause in figures.V2_DISCLOSURE, clause
     run_dir = copy_run(clean, tmp_path)
 
     def to_v1(gate):

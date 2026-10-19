@@ -485,6 +485,11 @@ def stage2_evidence_issues(measurements: Mapping, *, mining_seed: int | None = N
     if not isinstance(slots, list) or not slots or not all(isinstance(f, str) for f in slots) \
             or slots != sorted(set(slots)):
         return ["stage 2: the allocation's families are not distinct names in name order"]
+    if allocation.get("rule") != ALLOCATION_RULE or allocation.get("bank") != BENEFIT_BANK \
+            or not _is_int(allocation.get("task_count"), ALLOCATION_SIZE) \
+            or allocation.get("looks") != list(LOOKS):
+        issues.append("stage 2: the allocation's rule, bank, game count or looks are not "
+                      "ADR-0012 D4's")
     if families is not None and slots != sorted(families):
         issues.append(f"stage 2: the allocation is over {slots}, the candidate's frozen "
                       f"applicability is {sorted(families)} (ADR-0012 D4)")

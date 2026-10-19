@@ -381,6 +381,11 @@ def test_the_child_record_carries_the_path_and_recomputes(passed_record):
     (lambda m: m["paired_outcomes"][2]["with_trait"].__setitem__("success", 1),
      "lacks boolean"),
     (lambda m: m["paired_outcomes"][2]["cell"].__setitem__("success", 0), "lacks boolean"),
+    (lambda m: m["allocation"].__setitem__("rule", "any 192 games"), "rule, bank, game count"),
+    (lambda m: m["allocation"].__setitem__("task_count", 96), "rule, bank, game count"),
+    (lambda m: m["allocation"].__setitem__("bank", "generalization_bank"),
+     "rule, bank, game count"),
+    (lambda m: m["allocation"].__setitem__("looks", [48, 96]), "rule, bank, game count"),
 ])
 def test_a_tampered_record_does_not_recompute(passed_record, tamper, message):
     m = copy.deepcopy(passed_record.child_record["measurements"])

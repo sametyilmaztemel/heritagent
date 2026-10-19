@@ -1457,6 +1457,16 @@ def _over_another_family(gate, run_dir):
         "paired_outcomes_sha256"] = paired_outcomes_sha256(stage2["paired_outcomes"])
 
 
+def _cell_of_another_seed(gate, run_dir):
+    """A stage-2 cell relabelled to another seed, its in-scope reference
+    re-derived: only the seed binding of the recompute objects."""
+    from inheritance.generalization import paired_outcomes_sha256
+    stage2 = _child_of(gate, run_dir, MARK2, "ablation")
+    stage2["paired_outcomes"][0]["cell"]["seed"] = 99
+    _child_of(gate, run_dir, MARK2, "generalization_in_scope")["by_reference"][
+        "paired_outcomes_sha256"] = paired_outcomes_sha256(stage2["paired_outcomes"])
+
+
 def _child_of(gate, run_dir, mark, stage):
     marker = by_marker(gate, run_dir)
     gene = next(g for g, m in marker.items() if m == mark)
@@ -1476,6 +1486,7 @@ def _child_of(gate, run_dir, mark, stage):
     (lambda g, d: _child_of(g, d, MARK2, "ablation")["allocation"].update(
         bank_sha256="0" * 64), "benefit bank"),
     (lambda g, d: _over_another_family(g, d), "frozen applicability"),
+    (lambda g, d: _cell_of_another_seed(g, d), "a cell of seed 99"),
     (lambda g, d: _child_of(g, d, MARK4, "generalization_out_of_scope")["allocation"].update(
         bank_sha256="0" * 64), "benefit bank"),
 ])
