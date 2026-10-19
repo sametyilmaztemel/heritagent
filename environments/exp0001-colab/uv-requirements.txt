@@ -1,0 +1,6 @@
+# uv itself (owner decision 2026-10-19). The notebooks install it into
+# Colab's Python with pip --require-hashes --only-binary :all:, then let it
+# install everything else from requirements.lock. The hash is PyPI's for the
+# Linux x86_64 wheel (uploaded 2026-09-28; checked against a download).
+uv==0.12.20 \
+    --hash=sha256:d0837cb0ec80f830198e4a0fe86385e2a8ba8846f066acd243a1c15f4d52ca74

@@ -12,7 +12,9 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,7 +63,7 @@ def test_every_command_of_the_notebook_parses(name):
             for branch in BRANCHES:
                 args = cli.parser().parse_args(argv(call, branch))  # an unknown flag exits
                 commands.add(args.command)
-    data = {"mirror-check", "fetch-data", "verify-data"}
+    data = {"env-check", "mirror-check", "fetch-data", "verify-data"}
     expected = {
         REHEARSAL: data | {"rehearse"}, RUN_REHEARSAL: data | {"rehearse-run"},
         # the pilot rehearses again where a passed rehearsal does not cover the machine
@@ -103,7 +105,7 @@ def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
     required = first(cells, "if not os.path.exists(PASSED):")
     covers = first(cells, '"rehearsal-check"')
     model = first(cells, '"prepare-model"')
-    assert first(cells, "def install():") > required < covers < model < first(cells, '"serve"')
+    assert first(cells, "def install():") > required < covers < model < first(cells, 'cli("serve"')
     # before the guard, at most the repository itself is installed (seconds), so
     # the run notebook can read a resumed run's commit
     for source in cells[:required]:
@@ -127,7 +129,7 @@ def test_the_a100_notebooks_need_a_passed_rehearsal_before_the_model(name):
             "rehearsal-check", "--kind", "run", "--passed", "1", "--repo", "1", "--model", "1",
             "--revision", "1", "--workers", "1"]]
         assert cells[covers].rstrip().endswith("raise")
-        assert '"rehearse' not in "".join(cells)
+        assert 'cli("rehearse' not in "".join(cells)  # the run notebook never rehearses
         # the run itself checks the same record, and the preflight sends a gate's request
         run = argv(cli_calls(cells[first(cells, 'cli("run"')])[0], {})
         assert run[run.index("--rehearsal-passed") + 1] == "1"  # PASSED
@@ -153,6 +155,8 @@ def test_the_rehearsal_writes_the_records_the_a100_notebooks_read():
     assert 'shutil.copy(f"{OUT}/run-rehearsal-passed.json", target)' in run_rehearsal
     # its release waits for a rehearsal that still stops, too
     assert 'b"rehearse-run"' in code_cells(RUN_REHEARSAL)[1]
+    for name in NAMES + [REHEARSAL]:  # a rehearsal that still stops is waited for too
+        assert 'b"snapshot", b"rehearse")' in code_cells(name)[1], name
     rehearsal = "".join(code_cells(REHEARSAL))
     assert "rehearsal-passed.json" in rehearsal and "shutil.copy(" in rehearsal
     pilot = "".join(code_cells(NAMES[0]))
@@ -175,7 +179,9 @@ def notebook_cli_helper():
     source = next(s for s in code_cells(NAMES[0]) if "def cli(" in s)
     node = next(n for n in ast.parse(source).body
                 if isinstance(n, ast.FunctionDef) and n.name == "cli")
-    namespace = {"os": os, "signal": signal, "sys": sys, "subprocess": subprocess}
+    namespace = {"os": os, "signal": signal, "sys": sys, "subprocess": subprocess,
+                 "PY": sys.executable,  # the install cell's own names
+                 "command_environment": lambda: dict(os.environ)}
     exec(compile(ast.Module([node], []), "<install cell>", "exec"), namespace)
     return namespace["cli"]
 
@@ -183,7 +189,7 @@ def notebook_cli_helper():
 def test_the_helper_raises_on_a_failing_command_and_passes_a_succeeding_one(capsys):
     helper = notebook_cli_helper()
     installs = [next(s for s in code_cells(name) if "def cli(" in s) for name in ALL]
-    assert installs[0] == installs[1] == installs[2]  # one install cell in every notebook
+    assert len(set(installs)) == 1  # one install cell in every notebook
     helper("--help")  # exit 0
     assert "usage" in capsys.readouterr().out  # the command's output reaches the cell
     with pytest.raises(RuntimeError, match="no-such-command"):
@@ -343,14 +349,278 @@ def test_the_last_cell_releases_through_release(name):
 
 
 def test_the_notebooks_install_one_serving_build_and_never_alfworld_download():
-    from evaluation.exp0001.serving import SOFTWARE_PACKAGES
-    pyproject = (NOTEBOOKS.parent / "pyproject.toml").read_text(encoding="utf-8")
     for name in ALL:
         text = (NOTEBOOKS / name).read_text(encoding="utf-8")
-        assert "vllm==0.29.0+cu129" in text and "alfworld-download\"]" not in text
+        assert "alfworld-download\"]" not in text
         assert "fetch-data" in text and "verify-data" in text
-        for package in SOFTWARE_PACKAGES:  # every recorded package has one version
-            assert f'{package}==' in text or f'"{package}==' in pyproject, package
+
+
+def install_cell(name, venv, *, running=(), servers=(), repo=NOTEBOOKS.parent, fail=None):
+    """The install cell's own functions against a temporary VENV, its subprocess calls
+    recorded (the step named ``fail`` fails as a check=True call does)."""
+    source = next(s for s in code_cells(name) if "def install():" in s)
+    body = [node for node in ast.parse(source).body
+            if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                    and getattr(node.value.func, "id", None) == "install")
+            and not (isinstance(node, ast.FunctionDef) and node.name == "cli")]
+    namespace = {"REPO": str(repo), "running_commands": lambda: list(running)}
+    exec(compile(ast.Module(body, []), "<install cell>", "exec"), namespace)
+    calls = []
+
+    def run(argv, **kwargs):
+        argv = [str(arg) for arg in argv]
+        calls.append((argv, kwargs.get("env")))
+        if fail is not None and steps([(argv, None)]) == [fail]:
+            raise subprocess.CalledProcessError(1, argv)
+        if "venv" in argv:  # what uv makes
+            (venv / "bin").mkdir(parents=True, exist_ok=True)
+            (venv / "bin" / "python").write_text("")
+            (venv / "pyvenv.cfg").write_text(f"home = /x\nversion_info = {argv[argv.index('--python') + 1]}\n")
+        return SimpleNamespace(returncode=0)
+
+    stopped = []
+
+    def stop(pids):
+        stopped.extend(pids)
+        calls.append((["stop", *map(str, pids)], None))
+
+    namespace.update(subprocess=SimpleNamespace(run=run), VENV=str(venv), PY=f"{venv}/bin/python",
+                     vllm_servers=lambda: list(servers), stop_servers=stop)
+    namespace["stopped"] = stopped
+    return namespace, calls
+
+
+def steps(calls):
+    def kind(argv):
+        if argv[0] == "stop":
+            return "stop"
+        if any(arg.endswith("/uv-requirements.txt") for arg in argv):
+            return "uv"
+        for word, step in (("venv", "venv"), ("sync", "sync"), ("-e", "editable"),
+                           ("check", "check")):
+            if word in argv:
+                return step
+        return " ".join(argv)
+    return [kind(argv) for argv, _ in calls]
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_install_cell_makes_the_environment_once_and_never_under_a_running_command(
+        name, tmp_path):
+    venv = tmp_path / "venv"
+    cell, calls = install_cell(name, venv)
+    cell["install"]()  # a fresh runtime
+    assert steps(calls) == ["uv", "venv", "sync", "editable", "check"]
+    assert all(env["MPLBACKEND"] == "Agg" and "PYTHONPATH" not in env
+               for argv, env in calls[1:])  # the builds see none of the kernel's settings
+    stamp = (venv / "heritagent-environment.sha256").read_text()
+    calls.clear()
+    cell["install"]()  # a kernel restart: the environment stays
+    assert steps(calls) == ["uv", "sync", "editable", "check"]
+    (venv / "pyvenv.cfg").write_text("version_info = 3.12.0\n")
+    calls.clear()
+    cell["install"]()  # another Python: made again
+    assert steps(calls) == ["uv", "venv", "sync", "editable", "check"]
+    assert (venv / "heritagent-environment.sha256").read_text() == stamp
+    # a command still running: nothing is touched
+    cell, calls = install_cell(name, venv, running=[123])
+    with pytest.raises(RuntimeError, match="123"):
+        cell["install"]()
+    assert calls == []
+    # a server from the same environment is reused (a kernel restart in a run)
+    cell, calls = install_cell(name, venv, servers=[456])
+    cell["install"]()
+    assert steps(calls) == ["uv", "sync", "editable", "check"] and cell["stopped"] == []
+    # one from an older environment, or from one whose install never finished, is stopped first
+    for stamp_text in ("an older environment\n", None):
+        stamp_file = venv / "heritagent-environment.sha256"
+        if stamp_text is None:
+            stamp_file.unlink()
+        else:
+            stamp_file.write_text(stamp_text)
+        cell, calls = install_cell(name, venv, servers=[456])
+        cell["install"]()
+        assert cell["stopped"] == [456]  # before the environment changes
+        assert steps(calls) == ["stop", "uv", "sync", "editable", "check"]
+        assert stamp_file.read_text() == stamp
+
+
+@pytest.mark.parametrize("name", [NAMES[1], RUN_REHEARSAL])
+def test_the_install_stamp_covers_every_environment_file_and_follows_a_whole_install(
+        name, tmp_path):
+    from evaluation.exp0001 import environment
+    repo = tmp_path / "repo"
+    env = repo / environment.ENVIRONMENT_DIR
+    env.mkdir(parents=True)
+    files = (environment.PYTHON_VERSION_FILE, environment.UV_REQUIREMENTS_FILE,
+             environment.LOCK_FILE, environment.BUILD_CONSTRAINTS_FILE)
+    for file in files:
+        (env / file).write_text((NOTEBOOKS.parent / environment.ENVIRONMENT_DIR / file)
+                                .read_text(encoding="utf-8"), encoding="utf-8")
+    stamps = set()
+    for changed in (None, *files):
+        if changed is not None:
+            (env / changed).write_text((env / changed).read_text() + "\n", encoding="utf-8")
+        venv = tmp_path / f"venv-{changed}"
+        cell, _ = install_cell(name, venv, repo=repo)
+        cell["install"]()
+        stamps.add((venv / "heritagent-environment.sha256").read_text())
+    assert len(stamps) == 1 + len(files)  # each file changes the stamp
+    for fail in ("venv", "sync", "editable", "check"):  # a failed step leaves no stamp
+        venv = tmp_path / f"failed-{fail}"
+        cell, _ = install_cell(name, venv, repo=repo, fail=fail)
+        with pytest.raises(subprocess.CalledProcessError):
+            cell["install"]()
+        assert not (venv / "heritagent-environment.sha256").exists()
+
+
+def server_functions(tmp_path):
+    """The install cell's own server scan and stop, with short waits and a temporary record."""
+    source = next(s for s in code_cells(NAMES[1]) if "def install():" in s)
+    names = ("vllm_servers", "stop_servers", "SERVER_STOP_SECONDS", "SERVER_INFO")
+    body = [node for node in ast.parse(source).body
+            if (isinstance(node, ast.FunctionDef) and node.name in names)
+            or (isinstance(node, ast.Assign) and node.targets[0].id in names)]
+    namespace = {"os": os, "signal": signal, "time": time}
+    exec(compile(ast.Module(body, []), "<install cell>", "exec"), namespace)
+    namespace.update(SERVER_STOP_SECONDS=(2, 5), SERVER_INFO=str(tmp_path / "vllm-server.json"))
+    return namespace
+
+
+def fake_server(tmp_path, *, ignore_term):
+    """A `vllm serve` as the environment's console script runs it, in its own session."""
+    script = tmp_path / "bin" / "vllm"
+    script.parent.mkdir(exist_ok=True)
+    ready = tmp_path / "ready"
+    script.write_text(f"#!{sys.executable}\nimport pathlib, signal, time\n"
+                      + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+                      + f"pathlib.Path({str(ready)!r}).write_text('')\ntime.sleep(60)\n")
+    script.chmod(0o755)
+    server = subprocess.Popen([str(script), "serve", "/content/model"], start_new_session=True)
+    return server
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="the scan reads /proc")
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_the_install_cell_stops_an_older_environments_server(tmp_path, ignore_term):
+    cell = server_functions(tmp_path)
+    (tmp_path / "vllm-server.json").write_text("{}")
+    server = fake_server(tmp_path, ignore_term=ignore_term)
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
+            time.sleep(0.05)  # its signal handling is in place
+        assert server.pid in cell["vllm_servers"]()
+        cell["stop_servers"]([server.pid])  # SIGTERM, then SIGKILL to its group
+        assert server.pid not in cell["vllm_servers"]()
+        # the signal that ended it: SIGTERM, or SIGKILL for one that ignores SIGTERM
+        assert server.wait(timeout=5) == -(signal.SIGKILL if ignore_term else signal.SIGTERM)
+        assert not (tmp_path / "vllm-server.json").exists()  # `serve` will not wait on it
+    finally:
+        server.kill()
+        server.wait()
+    # one that never leaves the scan ends the cell (a pid no process can have)
+    with open("/proc/sys/kernel/pid_max", encoding="utf-8") as handle:
+        free = int(handle.read()) + 1
+    cell = server_functions(tmp_path)
+    cell.update(vllm_servers=lambda: [free], SERVER_STOP_SECONDS=(0.1, 0.1))
+    with pytest.raises(RuntimeError, match="bırakılacak"):
+        cell["stop_servers"]([free])
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="the scan reads /proc")
+def test_the_install_cell_finds_a_running_vllm_server(tmp_path):
+    source = next(s for s in code_cells(NAMES[1]) if "def install():" in s)
+    scan = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == "vllm_servers")
+    namespace = {"os": os}
+    exec(compile(ast.Module([scan], []), "<install cell>", "exec"), namespace)
+    script = tmp_path / "bin" / "vllm"  # the environment's console script, as `vllm serve` runs it
+    script.parent.mkdir()
+    script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+    script.chmod(0o755)
+    server = subprocess.Popen([str(script), "serve", "/content/model"])
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "vllm", "serve"])
+    try:
+        deadline = time.monotonic() + 10
+        while server.pid not in namespace["vllm_servers"]() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        found = namespace["vllm_servers"]()
+        assert server.pid in found and other.pid not in found
+    finally:
+        server.kill()
+        other.kill()
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_notebooks_install_the_locked_environment_and_check_it_first(name):
+    """Owner decision 2026-10-19: Colab's own Python and packages play no
+    part. The install cell sets up environments/exp0001-colab/ (the pinned
+    uv and Python, the hash-locked packages) in a virtual environment, every
+    command runs from it, and the next cell holds it to the lock before the
+    data, the model or any command that records."""
+    from evaluation.exp0001 import environment
+    from evaluation.exp0001.serving import SOFTWARE_PACKAGES
+    cells = code_cells(name)
+    install = first(cells, "def install():")
+    source = cells[install]
+    tree = ast.parse(source)
+    # the server record the install removes is the one `serve` writes and the run reads
+    if name in NAMES:
+        info = next(node.value.value for node in tree.body if isinstance(node, ast.Assign)
+                    and node.targets[0].id == "SERVER_INFO")
+        serve = argv(cli_calls(cells[first(cells, 'cli("serve"')])[0], {})
+        runs = argv(cli_calls(cells[first(cells, 'cli("run"' if "run" in name else
+                                          'cli("pilot"')])[0], {})
+        assert serve[serve.index("--info") + 1] == runs[runs.index("--server-info") + 1] == info
+    # the install is the cell's last statement, after the helper: `cli` exists when it stops
+    last = tree.body[-1]
+    assert isinstance(last, ast.Expr) and getattr(last.value.func, "id", None) == "install"
+    assert any(isinstance(node, ast.FunctionDef) and node.name == "cli" for node in tree.body)
+    for needed in (f'ENV = f"{{REPO}}/{environment.ENVIRONMENT_DIR.as_posix()}"',
+                   f'"--require-hashes",\n                    "--only-binary", ":all:", "-r", '
+                   f'f"{{ENV}}/{environment.UV_REQUIREMENTS_FILE}"',
+                   'f"{ENV}/python-version"', 'f"{VENV}/pyvenv.cfg"',
+                   'made.get("version_info") != python or not os.path.exists(PY)',
+                   "busy = running_commands()",
+                   '["venv", "--clear", "--managed-python", "--python", python, VENV]',
+                   '["pip", "sync", "--python", PY, "--require-hashes", "--index-strategy",\n'
+                   '                         "unsafe-best-match", *build, '
+                   f'f"{{ENV}}/{environment.LOCK_FILE}"]',
+                   f'build = ["--build-constraints", f"{{ENV}}/{environment.BUILD_CONSTRAINTS_FILE}"]',
+                   '["pip", "install", "--python", PY, "--no-deps", *build, "-e", REPO]',
+                   '["pip", "check", "--python", PY]',
+                   'command = [PY, "-u", "-m", "evaluation.exp0001.cli", *map(str, args)]',
+                   "env={**command_environment(),"):
+        assert needed in source, needed
+    assert source.index('"--clear"') > source.index("busy = running_commands()")
+    assert "--seed" not in source and "--system-site-packages" not in source
+    for package in SOFTWARE_PACKAGES:  # no version outside the environment files
+        assert f'"{package}==' not in source and f"{package}[" not in source, package
+    # the commands' environment: the venv first on the PATH (vllm serve), none of the
+    # kernel's Python or matplotlib settings (MPLBACKEND names a backend the venv lacks)
+    namespace = {"os": os, "VENV": "/content/heritagent-venv"}
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "command_environment")
+    exec(compile(ast.Module([function], []), "<install cell>", "exec"), namespace)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("PYTHONPATH", "/env/python")
+        mp.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
+        mp.setenv("PATH", "/usr/bin")
+        env = namespace["command_environment"]()
+    assert env["PATH"] == "/content/heritagent-venv/bin:/usr/bin"
+    assert env["VIRTUAL_ENV"] == "/content/heritagent-venv" and env["MPLBACKEND"] == "Agg"
+    assert "PYTHONPATH" not in env and env["PYTHONNOUSERSITE"] == "1"
+    check = cells[install + 1]
+    assert [argv(call, {}) for call in cli_calls(check)] == [["env-check", "--repo", "1"]]
+    assert check.index('cli("env-check"') < check.index("subprocess.run([PY,")
+    assert "sys.executable" not in check and "try:" not in check and "except" not in check
+    probes = check.count("subprocess.run([PY,")
+    assert probes and check.count("env=command_environment())") == probes
+    assert check.count("matplotlib") >= 2  # what the figures load, under the same environment
+    for later in ('"verify-data"', '"prepare-model"', 'cli("rehearse', 'cli("run"', 'cli("pilot"'):
+        if later in "".join(cells):
+            assert first(cells, later) > install + 1, later
 
 
 FIGURES = "EXP-0001-figures.ipynb"  # the CPU notebook that redraws a run's figures
@@ -390,9 +660,21 @@ def test_the_figures_notebook_reads_the_mirror_on_a_cpu_runtime():
     assert handler < first(cells, "# 2) Google Drive") < first(cells, 'cli("figures"')
     assert cells[first(cells, "def checkout(ref):")] == \
         next(s for s in rehearsal if "def checkout(ref):" in s)
-    helper = next(s for s in rehearsal if "def cli(" in s)
+    def helper_source(source):
+        node = next(n for n in ast.parse(source).body
+                    if isinstance(n, ast.FunctionDef) and n.name == "cli")
+        return ast.get_source_segment(source, node)
+
     mine = cells[first(cells, "def cli(")]
-    assert mine[mine.index("def cli("):] == helper[helper.index("def cli("):]
+    assert helper_source(mine) == helper_source(next(s for s in rehearsal if "def cli(" in s))
+    # the helper's names, defined for Colab's own Python: the kernel's environment as it is
+    namespace = {"os": os, "sys": sys}
+    tree = ast.parse(mine)
+    exec(compile(ast.Module([node for node in tree.body if isinstance(node, ast.Assign) or (
+        isinstance(node, ast.FunctionDef) and node.name == "command_environment")], []),
+        "<install cell>", "exec"), namespace)
+    assert namespace["PY"] == sys.executable
+    assert namespace["command_environment"]() == dict(os.environ)
     assert [line.strip() for line in cells[-1].splitlines() if not line.startswith("#")] == \
         ["if AUTO_RELEASE:", "release()"]
     notebook = json.loads((NOTEBOOKS / FIGURES).read_text(encoding="utf-8"))

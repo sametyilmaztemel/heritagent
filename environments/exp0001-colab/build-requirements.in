@@ -1,0 +1,11 @@
+# What the two locked source packages build with (jericho: setup.py alone,
+# so setuptools and wheel; fast-downward-textworld: setuptools >= 61 and
+# cmake) and the package itself (setuptools >= 68), resolved by
+# scripts/exp0001/lock_colab_environment.sh into build-constraints.txt, which
+# the install passes to uv as build constraints. setuptools is the lock's own
+# version. uv checks the hash of every tool named here; a build tool not
+# named here would install unpinned, so a lock that gains a source package or
+# a build requirement changes this file too.
+setuptools==80.10.2
+wheel
+cmake

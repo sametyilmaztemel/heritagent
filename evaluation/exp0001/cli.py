@@ -6,6 +6,10 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   data the frozen manifests were built from
   verify-data     hash every game of the split, pilot and benefit-bank
                   manifests
+  env-check       whether this environment is the locked one the notebooks
+                  install (environments/exp0001-colab/: the Python version,
+                  every locked package found once, nothing outside the lock
+                  but this project, vllm on the PATH from it)
   mirror-check    write, replace, read and time small files in the mirror
                   directory (on Colab, Google Drive)
   run-commit      the code commit a run started at, from its mirror (empty for
@@ -249,6 +253,29 @@ def cmd_fetch_data(args) -> int:
 def cmd_verify_data(args) -> int:
     splits, pilot, bank = _manifests(Path(args.repo))
     print(json.dumps(verify_data(args.data_root, splits, pilot, bank)))
+    return 0
+
+
+def cmd_env_check(args) -> int:
+    """The installed environment against ``environments/exp0001-colab/``
+    (``evaluation.exp0001.environment``): the notebooks run it right after
+    the install, before the data, the model or any command that records."""
+    from evaluation.exp0001 import environment
+    env_dir = Path(args.repo) / environment.ENVIRONMENT_DIR
+    python = sys.version.split()[0]
+    try:
+        differ = environment.environment_differences(
+            env_dir, python=python, installed=environment.installed_versions(),
+            executable=sys.executable)
+        locked = len(environment.pinned_versions(
+            (env_dir / environment.LOCK_FILE).read_text(encoding="utf-8")))
+    except OSError as exc:
+        raise CliError(f"the locked environment's files cannot be read: {exc}") from None
+    if differ:
+        raise CliError(f"this is not the locked environment of {env_dir}: "
+                       f"{json.dumps(differ, indent=1, sort_keys=True)}")
+    _out(f"the locked environment: Python {python}, {locked} packages at their locked versions "
+         f"({env_dir / environment.LOCK_FILE})")
     return 0
 
 
@@ -898,9 +925,10 @@ def cmd_rehearse_run(args) -> int:
     _empty_dir(args.mirror_dir, "mirror directory")
     _require_recycled_workers(args.workers)  # as `run` needs, before hours of CPU
     _require_rehearsal_disk(args.workers, out_dir=out)
-    try:  # the figures come last: a missing matplotlib fails now, not hours later
-        import matplotlib  # noqa: F401
-    except ImportError:
+    from evaluation.exp0001.figures import FiguresError, _matplotlib
+    try:  # the figures come last: a matplotlib that does not load fails now, not hours later
+        _matplotlib()
+    except FiguresError:
         raise CliError("the run rehearsal draws the run's figures: pip install -e .[figures]") \
             from None
     repo = Path(args.repo)
@@ -1419,6 +1447,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--data-root", type=Path, required=True)
     p.add_argument("--repo", type=Path, default=Path("."))
     p.set_defaults(func=cmd_verify_data)
+
+    p = sub.add_parser("env-check")
+    p.add_argument("--repo", type=Path, default=Path("."))
+    p.set_defaults(func=cmd_env_check)
 
     p = sub.add_parser("mirror-check")
     p.add_argument("--mirror-dir", type=Path, required=True)

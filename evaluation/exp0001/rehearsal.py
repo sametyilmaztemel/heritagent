@@ -2,8 +2,8 @@
 Phase B; ADR-0008): ``cli rehearse``.
 
 Every minute of the A100 runtime costs compute units, so the pilot's path
-runs first where it costs almost nothing, on a CPU runtime: the pinned
-software on Colab's own Python, the ALFWorld data and games, the worker
+runs first where it costs almost nothing, on a CPU runtime: the locked
+environment (``evaluation.exp0001.environment``), the ALFWorld data and games, the worker
 processes, the ledger and trajectories, the model's own tokenizer (fetched
 without the weights), the Drive mirror and a restore from it, and the
 report. Only the model server is a stand-in (``StandInServer``): an HTTP
