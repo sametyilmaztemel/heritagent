@@ -372,6 +372,10 @@ def accounting_rows(data: Mapping) -> list[dict]:
 # -- drawing --------------------------------------------------------------------
 
 def _matplotlib():
+    import os
+    import sys
+    if "matplotlib" not in sys.modules:  # a notebook kernel's inline backend is not this one's
+        os.environ["MPLBACKEND"] = "Agg"
     try:
         import matplotlib
     except ImportError:

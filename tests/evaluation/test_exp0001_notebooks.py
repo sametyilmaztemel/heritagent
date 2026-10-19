@@ -176,7 +176,8 @@ def notebook_cli_helper():
     node = next(n for n in ast.parse(source).body
                 if isinstance(n, ast.FunctionDef) and n.name == "cli")
     namespace = {"os": os, "signal": signal, "sys": sys, "subprocess": subprocess,
-                 "PY": sys.executable, "ENVIRONMENT": {}}  # the install cell's own names
+                 "PY": sys.executable,  # the install cell's own names
+                 "command_environment": lambda: dict(os.environ)}
     exec(compile(ast.Module([node], []), "<install cell>", "exec"), namespace)
     return namespace["cli"]
 
@@ -357,27 +358,55 @@ def test_the_notebooks_install_the_locked_environment_and_check_it_first(name):
     uv and Python, the hash-locked packages) in a virtual environment, every
     command runs from it, and the next cell holds it to the lock before the
     data, the model or any command that records."""
-    from evaluation.exp0001.environment import ENVIRONMENT_DIR, LOCK_FILE
+    from evaluation.exp0001 import environment
+    from evaluation.exp0001.serving import SOFTWARE_PACKAGES
     cells = code_cells(name)
     install = first(cells, "def install():")
     source = cells[install]
-    for needed in (f'ENV = f"{{REPO}}/{ENVIRONMENT_DIR.as_posix()}"', '"uv==" + pinned("uv-version")',
-                   '"--managed-python", "--python", pinned("python-version")',
-                   '"--require-hashes"', f'f"{{ENV}}/{LOCK_FILE}"',
-                   '"--no-deps", "-e", REPO]',
+    tree = ast.parse(source)
+    assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+               and getattr(node.value.func, "id", None) == "install" for node in tree.body)
+    for needed in (f'ENV = f"{{REPO}}/{environment.ENVIRONMENT_DIR.as_posix()}"',
+                   f'"--require-hashes",\n                    "--only-binary", ":all:", "-r", '
+                   f'f"{{ENV}}/{environment.UV_REQUIREMENTS_FILE}"',
+                   'f"{ENV}/python-version"', 'f"{VENV}/pyvenv.cfg"',
+                   'made.get("version_info") != python or not os.path.exists(PY)',
+                   "busy = running_commands()",
+                   '["venv", "--clear", "--managed-python", "--python", python, VENV]',
+                   '["pip", "sync", "--python", PY, "--require-hashes", "--index-strategy",\n'
+                   '                         "unsafe-best-match", *build, '
+                   f'f"{{ENV}}/{environment.LOCK_FILE}"]',
+                   f'build = ["--build-constraints", f"{{ENV}}/{environment.BUILD_CONSTRAINTS_FILE}"]',
+                   '["pip", "install", "--python", PY, "--no-deps", *build, "-e", REPO]',
+                   '["pip", "check", "--python", PY]',
                    'command = [PY, "-u", "-m", "evaluation.exp0001.cli", *map(str, args)]',
-                   "**os.environ, **ENVIRONMENT,"):
+                   "env={**command_environment(),"):
         assert needed in source, needed
-    from evaluation.exp0001.serving import SOFTWARE_PACKAGES
+    assert source.index('"--clear"') > source.index("busy = running_commands()")
+    assert "--seed" not in source and "--system-site-packages" not in source
     for package in SOFTWARE_PACKAGES:  # no version outside the environment files
         assert f'"{package}==' not in source and f"{package}[" not in source, package
-    # the venv's own `vllm` comes first on the commands' PATH
-    assert 'ENVIRONMENT = {"VIRTUAL_ENV": VENV, "PATH": f"{VENV}/bin:{os.environ[\'PATH\']}"}' \
-        in source
+    # the commands' environment: the venv first on the PATH (vllm serve), none of the
+    # kernel's Python or matplotlib settings (MPLBACKEND names a backend the venv lacks)
+    namespace = {"os": os, "VENV": "/content/heritagent-venv"}
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "command_environment")
+    exec(compile(ast.Module([function], []), "<install cell>", "exec"), namespace)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("PYTHONPATH", "/env/python")
+        mp.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
+        mp.setenv("PATH", "/usr/bin")
+        env = namespace["command_environment"]()
+    assert env["PATH"] == "/content/heritagent-venv/bin:/usr/bin"
+    assert env["VIRTUAL_ENV"] == "/content/heritagent-venv" and env["MPLBACKEND"] == "Agg"
+    assert "PYTHONPATH" not in env and env["PYTHONNOUSERSITE"] == "1"
     check = cells[install + 1]
     assert [argv(call, {}) for call in cli_calls(check)] == [["env-check", "--repo", "1"]]
     assert check.index('cli("env-check"') < check.index("subprocess.run([PY,")
-    assert "sys.executable" not in check
+    assert "sys.executable" not in check and "try:" not in check and "except" not in check
+    probes = check.count("subprocess.run([PY,")
+    assert probes and check.count("env=command_environment())") == probes
+    assert check.count("matplotlib") >= 2  # what the figures load, under the same environment
     for later in ('"verify-data"', '"prepare-model"', 'cli("rehearse', 'cli("run"', 'cli("pilot"'):
         if later in "".join(cells):
             assert first(cells, later) > install + 1, later

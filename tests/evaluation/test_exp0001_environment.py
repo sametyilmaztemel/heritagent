@@ -47,27 +47,75 @@ def test_the_lock_resolves_its_input_and_the_packages_own_requirements():
     assert environment.PROJECT not in LOCKED  # installed on top, from the checkout
 
 
+BLOCK = re.compile(r"(?P<pin>[a-z0-9][a-z0-9._-]*==\S+) \\\n"
+                   r"(?P<hashes>(?:    --hash=sha256:[0-9a-f]{64} \\\n)*"
+                   r"    --hash=sha256:[0-9a-f]{64}\n)"
+                   r"(?P<via>(?:    # .*\n)*)")
+
+
+def blocks(text):
+    """A uv-compiled file's package blocks, after its header comments and
+    index options; fails on any later line that is not part of one."""
+    lines = text.splitlines(keepends=True)
+    body = "".join(lines[next(i for i, line in enumerate(lines) if re.match(r"[a-z0-9]", line)):])
+    found, at = [], 0
+    while at < len(body):
+        match = BLOCK.match(body, at)
+        assert match, body[at:at + 200]
+        found.append(match)
+        at = match.end()
+    return found
+
+
 def test_every_locked_package_is_held_by_its_hashes_on_the_serving_builds_indexes():
-    blocks = re.split(r"\n(?=[A-Za-z0-9])", LOCK.split("\n\n", 1)[1])
-    pinned = [block for block in blocks if environment.pinned_versions(block)]
-    assert len(pinned) == len(LOCKED) > 100
-    assert all("--hash=sha256:" in block for block in pinned)
+    found = blocks(LOCK)
+    assert len(found) == len(LOCKED) > 100
+    # closed: every package a block names as needing it (`# via`) has a block of its own
+    for match in found:
+        names = re.findall(r"^    #(?: via |   )([A-Za-z0-9][A-Za-z0-9._-]*)$", match["via"],
+                           re.MULTILINE)
+        assert names or "-r requirements.in" in match["via"], match["pin"]
+        for name in names:
+            assert environment.canonical(name) in LOCKED, (match["pin"], name)
     indexes = [line for line in LOCK.splitlines() if line.startswith("--")]
     assert indexes == ["--index-url https://pypi.org/simple",
                        "--extra-index-url https://wheels.vllm.ai/0.29.0/cu129",
                        "--extra-index-url https://download.pytorch.org/whl/cu129"]
 
 
-def test_the_lock_was_resolved_by_the_committed_script_for_the_pinned_python():
-    header = LOCK.splitlines()[1].split()
-    script = (ROOT / "scripts" / "exp0001" / "lock_colab_environment.sh").read_text(
-        encoding="utf-8")
-    command = " ".join(script.split("uv pip compile", 1)[1].replace("\\\n", " ").split())
-    command = command.replace('"$(cat python-version)"', PYTHON)
-    assert header[header.index("compile") + 1:] == command.split()
-    for name in (environment.UV_VERSION_FILE, environment.PYTHON_VERSION_FILE):
-        assert re.fullmatch(r"\d+\.\d+\.\d+", environment.read_pin(ENV, name)), name
-    assert f"--python-version {PYTHON} " in LOCK.splitlines()[1]
+SCRIPT = (ROOT / "scripts" / "exp0001" / "lock_colab_environment.sh").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("output", [environment.LOCK_FILE, environment.BUILD_CONSTRAINTS_FILE])
+def test_each_output_was_resolved_by_the_committed_script_for_the_pinned_python(output):
+    text = (ENV / output).read_text(encoding="utf-8")
+    header = text.splitlines()[1].split()
+    commands = [" ".join(part.split("\nuv ", 1)[0].replace("\\\n", " ").split())
+                for part in SCRIPT.split("uv pip compile")[1:]]
+    command = next(c for c in commands if c.endswith(f"-o {output}"))
+    assert header[header.index("compile") + 1:] == \
+        command.replace('"$(cat python-version)"', PYTHON).split()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", PYTHON)
+
+
+def test_uv_is_held_by_its_hash_and_the_script_needs_that_uv():
+    text = (ENV / environment.UV_REQUIREMENTS_FILE).read_text(encoding="utf-8")
+    (match,) = blocks("\n".join(line for line in text.splitlines()
+                                if not line.startswith("#")) + "\n")
+    version = environment.pinned_versions(text)["uv"]
+    assert match["pin"] == f"uv=={version}" and re.fullmatch(r"\d+\.\d+\.\d+", version)
+    assert "uv-requirements.txt" in SCRIPT and '[ "$have" = "$want" ] ||' in SCRIPT
+
+
+def test_the_source_packages_build_with_hash_locked_tools():
+    """jericho and fast-downward-textworld come as source: their build tools
+    are pinned by hash too, setuptools at the lock's own version."""
+    text = (ENV / environment.BUILD_CONSTRAINTS_FILE).read_text(encoding="utf-8")
+    tools = environment.pinned_versions(text)
+    assert len(blocks(text)) == len(tools)
+    assert {"setuptools", "wheel", "cmake"} <= set(tools)
+    assert tools["setuptools"] == LOCKED["setuptools"]
+    assert {"jericho", "fast-downward-textworld"} <= set(LOCKED)
 
 
 def fake_environment(tmp_path, *, python="3.13.15", lock="a==1.0 \\\n    --hash=sha256:00\n"):
@@ -91,6 +139,11 @@ def test_the_check_names_each_difference(tmp_path):
     env = fake_environment(tmp_path, lock=lock)
     own = tmp_path / "venv" / "bin"
     server = server_on(own)
+    # as uv makes it: the venv's python is a link to the interpreter uv installed elsewhere
+    interpreter = tmp_path / "uv-python" / "bin" / "python3.13"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("")
+    (own / "python").symlink_to(interpreter)
     ok = {"vllm": "0.29.0", "numpy": "2.0", environment.PROJECT: "0.1.0"}
 
     def differ(**kwargs):
@@ -105,6 +158,11 @@ def test_the_check_names_each_difference(tmp_path):
     assert differ(installed={"vllm": "0.29.0"}) == {
         "packages": {"numpy": {"locked": "2.0", "here": None}}}
     assert differ(installed={**ok, "pip": "26.0"}) == {"not in the lock": {"pip": "26.0"}}
+    # a second copy earlier on sys.path is what an import and the record would take
+    assert differ(installed={**ok, "numpy": ["1.0", "2.0"]}) == {
+        "installed twice": {"numpy": ["1.0", "2.0"]},
+        "packages": {"numpy": {"locked": "2.0", "here": "1.0"}}}
+    assert differ(installed={**ok, environment.PROJECT: ["0.1.0", "0.1.0"]}) == {}
     # `vllm serve` must start this environment's server
     assert list(differ(which=lambda name: None)) == ["vllm on the PATH"]
     other = server_on(tmp_path / "usr" / "bin")
@@ -117,7 +175,7 @@ def test_env_check_passes_only_in_the_locked_environment(tmp_path, monkeypatch, 
     monkeypatch.setattr(sys, "executable", str(own / "python"))
     monkeypatch.setenv("PATH", f"{own}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setattr(sys, "version", f"{PYTHON} (main) [GCC]")
-    locked = {**LOCKED, environment.PROJECT: "0.1.0"}
+    locked = {**LOCKED, environment.PROJECT: ["0.1.0", "0.1.0"]}  # checkout and editable
     monkeypatch.setattr(environment, "installed_versions", lambda: dict(locked))
     assert cli.main(["env-check", "--repo", str(ROOT)]) == 0
     assert f"Python {PYTHON}, {len(LOCKED)} packages" in capsys.readouterr().out
@@ -133,6 +191,8 @@ def test_env_check_passes_only_in_the_locked_environment(tmp_path, monkeypatch, 
     ("vllm==0.29.0+cu129 \\", ("vllm", "0.29.0+cu129")),
     ("Jinja2==3.1.6", ("jinja2", "3.1.6")),
     ("huggingface_hub==2.2.0 ; python_version >= '3.10'", ("huggingface-hub", "2.2.0")),
+    ("zope.interface==7.0", ("zope-interface", "7.0")),
+    ("Typing_Extensions==4.16.0", ("typing-extensions", "4.16.0")),
     ("    --hash=sha256:00", None), ("# via vllm", None), ("matplotlib>=3.8", None),
     ("--extra-index-url https://download.pytorch.org/whl/cu129", None)])
 def test_a_pin_is_a_name_and_a_version(line, pin):

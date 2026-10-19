@@ -6,6 +6,7 @@ figures only (ADR-0006 D5)."""
 import csv
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -513,3 +514,19 @@ def test_a_rehearsals_stamp_covers_no_label_or_legend():
         assert not box.overlaps(other)
     # the layout leaves the raised legend its room
     assert not fig.legends[0].get_window_extent(renderer).overlaps(ax.get_tightbbox(renderer))
+
+
+def test_matplotlib_loads_whatever_backend_a_notebook_kernel_names():
+    """A notebook kernel names its inline backend in MPLBACKEND, which a
+    command inherits; in the locked environment that backend does not exist
+    and `import matplotlib` would refuse it. The figures load Agg instead."""
+    code = ("from evaluation.exp0001.figures import _matplotlib; "
+            "matplotlib, _ = _matplotlib(); print(matplotlib.get_backend())")
+    env = {**os.environ, "MPLBACKEND": "no-such-backend"}
+    plain = subprocess.run([sys.executable, "-c", "import matplotlib"], env=env,
+                           capture_output=True, text=True, cwd=REPO)
+    assert plain.returncode != 0 and "not a valid value for backend" in plain.stderr
+    loaded = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                            text=True, cwd=REPO)
+    assert loaded.returncode == 0, loaded.stderr
+    assert loaded.stdout.strip().lower() == "agg"

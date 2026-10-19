@@ -8,7 +8,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   manifests
   env-check       whether this environment is the locked one the notebooks
                   install (environments/exp0001-colab/: the Python version,
-                  every locked package, vllm on the PATH from it)
+                  every locked package found once, nothing outside the lock
+                  but this project, vllm on the PATH from it)
   mirror-check    write, replace, read and time small files in the mirror
                   directory (on Colab, Google Drive)
   run-commit      the code commit a run started at, from its mirror (empty for
@@ -924,9 +925,10 @@ def cmd_rehearse_run(args) -> int:
     _empty_dir(args.mirror_dir, "mirror directory")
     _require_recycled_workers(args.workers)  # as `run` needs, before hours of CPU
     _require_rehearsal_disk(args.workers, out_dir=out)
-    try:  # the figures come last: a missing matplotlib fails now, not hours later
-        import matplotlib  # noqa: F401
-    except ImportError:
+    from evaluation.exp0001.figures import FiguresError, _matplotlib
+    try:  # the figures come last: a matplotlib that does not load fails now, not hours later
+        _matplotlib()
+    except FiguresError:
         raise CliError("the run rehearsal draws the run's figures: pip install -e .[figures]") \
             from None
     repo = Path(args.repo)
