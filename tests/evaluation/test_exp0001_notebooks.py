@@ -511,19 +511,21 @@ def test_the_install_cell_stops_an_older_environments_server(tmp_path, ignore_te
         while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
             time.sleep(0.05)  # its signal handling is in place
         assert server.pid in cell["vllm_servers"]()
-        started = time.monotonic()
         cell["stop_servers"]([server.pid])  # SIGTERM, then SIGKILL to its group
         assert server.pid not in cell["vllm_servers"]()
-        assert (time.monotonic() - started < 2) != ignore_term
+        # the signal that ended it: SIGTERM, or SIGKILL for one that ignores SIGTERM
+        assert server.wait(timeout=5) == -(signal.SIGKILL if ignore_term else signal.SIGTERM)
         assert not (tmp_path / "vllm-server.json").exists()  # `serve` will not wait on it
     finally:
         server.kill()
         server.wait()
-    # one that never leaves the scan ends the cell
+    # one that never leaves the scan ends the cell (a pid no process can have)
+    with open("/proc/sys/kernel/pid_max", encoding="utf-8") as handle:
+        free = int(handle.read()) + 1
     cell = server_functions(tmp_path)
-    cell.update(vllm_servers=lambda: [os.getpid() + 10 ** 6], SERVER_STOP_SECONDS=(0.1, 0.1))
+    cell.update(vllm_servers=lambda: [free], SERVER_STOP_SECONDS=(0.1, 0.1))
     with pytest.raises(RuntimeError, match="bırakılacak"):
-        cell["stop_servers"]([os.getpid() + 10 ** 6])
+        cell["stop_servers"]([free])
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="the scan reads /proc")
@@ -563,6 +565,14 @@ def test_the_notebooks_install_the_locked_environment_and_check_it_first(name):
     install = first(cells, "def install():")
     source = cells[install]
     tree = ast.parse(source)
+    # the server record the install removes is the one `serve` writes and the run reads
+    if name in NAMES:
+        info = next(node.value.value for node in tree.body if isinstance(node, ast.Assign)
+                    and node.targets[0].id == "SERVER_INFO")
+        serve = argv(cli_calls(cells[first(cells, 'cli("serve"')])[0], {})
+        runs = argv(cli_calls(cells[first(cells, 'cli("run"' if "run" in name else
+                                          'cli("pilot"')])[0], {})
+        assert serve[serve.index("--info") + 1] == runs[runs.index("--server-info") + 1] == info
     # the install is the cell's last statement, after the helper: `cli` exists when it stops
     last = tree.body[-1]
     assert isinstance(last, ast.Expr) and getattr(last.value.func, "id", None) == "install"
