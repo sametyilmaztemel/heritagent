@@ -200,9 +200,9 @@ budget:
   episodes_est: 6000                   # the locked gate's estimate (design section 7), kept as a record
   episodes_expected_recalibrated: "6181 / 6879 / 7373 mean (p99 6834 / 7834 / 8598; largest seen 9632) at delta 0 / 0.05 / 0.18, planning mixture"   # ADR-0012 D11, status M; not a decision rule
   episodes_planning_bound: 16724       # ADR-0012 D9, V arithmetic: every candidate runs every look and stage, every pair runs 4C; the cap is set from simulated tails, not this bound
-  breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"
-  banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"
-  note: "~180-200k local-7B calls; single GPU node, few days"
+  breakdown: "mining 180 + CIG 3900 (10 candidates x ~130 x 3 seeds) + final eval ~1750 + interaction worst case ~900"   # the locked gate's estimate, kept as a record (ADR-0012 D11)
+  banks_note: "bank construction (~84 instances) adds no LLM calls; per-trait evaluation counts unchanged by family-indexed layout"   # the locked gate's, kept as a record (ADR-0012 D11): stage 2 now plays up to 192 games per candidate from the 1,152-game benefit bank
+  note: "~180-200k local-7B calls; single GPU node, few days"   # the locked gate's estimate, kept as a record (ADR-0012 D11); see compute_cap for the recalibrated figures
 
 record:
   required_at_run_time: [model-weights-hash, code-commit, split-hashes, benefit-bank-hash, miner-prompt-hash, frozen-candidate-set-artifact, gate-thresholds, run-log]   # ADR-0012 D1, D10: the bank's bank_sha256; gate thresholds EXP-0001-CIG-M0-v2
