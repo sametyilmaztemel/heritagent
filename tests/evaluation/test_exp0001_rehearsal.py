@@ -6,6 +6,7 @@ then fails when the report does not say what the stand-in did. Scripted
 games; no ALFWorld, no tokenizer download."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -225,14 +226,23 @@ def test_the_rehearsal_runs_the_pilot_through_an_outage_and_a_restore(tmp_path, 
 def test_a_rehearsal_without_xgrammar_fails_its_compile_check_and_writes_no_record(
         tmp_path, stubbed, monkeypatch, capsys):
     """xgrammar that does not import compiles no teacher schema: the
-    rehearsal fails after its preflight, before the passes, and says where
-    it must run."""
+    rehearsal fails as soon as the tokenizer loads, before its games open,
+    and says where it must run."""
     monkeypatch.setattr(rehearsal, "xgrammar_check", lambda tokenizer: None)
     assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 2
-    err = capsys.readouterr().err
+    out, err = capsys.readouterr()
     assert cli.XGRAMMAR_CHECK in err and "the locked environment" in err
+    assert "tokenizer loaded" in out and "pilot games opened" not in out
     assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
     assert not (tmp_path / "out" / "ledger.jsonl").exists()
+
+
+def test_a_preflight_that_compiled_no_teacher_schema_fails_the_rehearsal():
+    checks = {}
+    with pytest.raises(cli.CliError, match="the preflight sent no teacher schema to compile"):
+        cli._require_schema_compiled(SimpleNamespace(schemas_compiled=0), json.dumps, checks,
+                                     "the rehearsal failed")
+    assert checks == {cli.XGRAMMAR_CHECK: False}
 
 
 def test_a_first_pass_whose_last_snapshot_failed_fails_the_rehearsal(tmp_path, stubbed,
@@ -260,6 +270,7 @@ def test_a_first_pass_whose_last_snapshot_failed_fails_the_rehearsal(tmp_path, s
     assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 2
     err = capsys.readouterr().err
     assert "the mirror's last snapshot holds the first pass's ledger" in err
+    assert "before the second pass" in err and len(calls) == 1  # no second pass ran
     assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
 
 
@@ -395,6 +406,33 @@ def test_the_stand_in_keeps_from_xgrammar_what_vllm_does():
                           ({"anyOf": [{"type": "object", "propertyNames": {}}]}, "propertyNames")]:
         result = rehearsal.xgrammar_unsupported(schema)
         assert result is None if found is None else found in result, (schema, result)
+
+
+def test_the_teacher_schema_compiles_with_xgrammar_where_it_imports():
+    """The rehearsals' compile check with the real xgrammar: the schema the
+    miner sends compiles, and a schema xgrammar cannot compile raises. It
+    runs only where xgrammar imports (the notebooks' locked environment); a
+    byte-level tokenizer built here stands in for the model's, so nothing
+    is downloaded."""
+    try:
+        import xgrammar  # noqa: F401
+        from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+        from transformers import PreTrainedTokenizerFast
+    except ImportError as exc:  # CI and a development checkout: the notebooks install it
+        pytest.skip(f"xgrammar does not import here ({exc})")
+    from runtime.model_adapters.openai_server import server_constraint
+    from traits.miner.miner import output_schema
+    alphabet = sorted(pre_tokenizers.ByteLevel.alphabet())
+    tokenizer = Tokenizer(models.BPE(vocab={"<unk>": 0, **{c: i + 1 for i, c in enumerate(
+        alphabet)}}, merges=[], unk_token="<unk>"))
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.decoder = decoders.ByteLevel()
+    check = rehearsal.xgrammar_check(PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer, unk_token="<unk>", eos_token="<unk>"))
+    assert check is not None
+    check(server_constraint(output_schema()))
+    with pytest.raises(RuntimeError):  # a $ref to nowhere
+        check({"type": "object", "properties": {"a": {"$ref": "#/nowhere"}}})
 
 
 def test_a_rehearsals_lock_installs_no_sigterm_marker(tmp_path):

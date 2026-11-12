@@ -758,6 +758,8 @@ def test_the_run_notebook_says_where_the_model_revision_comes_from():
     revision = cells[first(cells, "revision_file = ")]
     assert "Önce pilot notebook'unu çalıştırın" not in revision
     assert "pilot ya da prova" in revision
+    prepare = cells[first(cells, 'cli("prepare-model"')]
+    assert "pilotun sabitlediği" not in prepare and "pilot ya da prova" in prepare
 
 
 @pytest.mark.parametrize("name", CPU)
@@ -783,3 +785,54 @@ def test_the_gpu_cell_asks_for_an_a100_on_a_runtime_without_nvidia_smi(name, tmp
     cells = code_cells(name)
     with pytest.raises(AssertionError, match="A100 GPU seçin"):
         exec(compile(cells[first(cells, "nvidia-smi")], "<gpu cell>", "exec"), {})
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_drive_check_asks_for_the_space_the_notebook_writes(name):
+    """The run's mirror needs the default bound; the pilot and the CPU
+    rehearsals write far less and ask for 1 GB. The cell says that the free
+    space is reported and comes from the mount."""
+    cells = code_cells(name)
+    cell = cells[first(cells, 'cli("mirror-check"')]
+    (call,) = cli_calls(cell)
+    need = cli.parser().parse_args(argv(call, {})).need_gb
+    assert need == (cli.RUN_DRIVE_GB if name == NAMES[1] else 1.0)
+    assert "boş alan" in cell and "drive.google.com/settings/storage" in cell
+
+
+def test_the_run_notebook_stops_on_code_older_than_the_mirror_identity(tmp_path):
+    """Code without the mirror identity reads a mirror of the compressed
+    layout as empty: its run-commit prints an empty line and its run starts
+    a new run there. The run notebook stops on such a CODE_REF before
+    run-commit runs."""
+    cells = code_cells(NAMES[1])
+    cell = cells[first(cells, '"run-commit"')]
+    mirror = tmp_path / "evaluation" / "exp0001" / "mirror.py"
+    mirror.parent.mkdir(parents=True)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="\n", stderr="")
+
+    def namespace():
+        return {"REPO": str(tmp_path), "RUN_DRIVE": str(tmp_path / "drive"), "COMMIT": "c" * 40,
+                "subprocess": SimpleNamespace(run=run), "checkout": lambda ref: ref}
+
+    mirror.write_text('MIRROR_SCHEMA = "heritagent/exp0001-mirror/0.1"\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="CODE_REF'e daha yeni bir commit"):
+        exec(compile(cell, "<run-commit cell>", "exec"), namespace())
+    assert calls == []  # neither the install nor run-commit ran
+    mirror.write_text((NOTEBOOKS.parent / "evaluation" / "exp0001" / "mirror.py").read_text(
+        encoding="utf-8"), encoding="utf-8")
+    exec(compile(cell, "<run-commit cell>", "exec"), namespace())
+    assert any("run-commit" in argv for argv in calls)
+
+
+def test_the_run_rehearsal_notebook_says_which_gate_failures_decide_nothing_there():
+    """The scripted world reaches the out-of-scope, 4A and 4B failures only on
+    candidates that also fail stage 2 (run_rehearsal's docstring)."""
+    intro = "".join(markdown_cells(RUN_REHEARSAL))
+    assert "kapsam dışı ve 4A'da kalan, 4B'de kalan aday" in intro
+    assert "Kapsam dışı, 4A ve 4B kalışları yalnızca 2. aşamada da kalan adaylarda görülür" \
+        in intro and "birim testlerinde" in intro

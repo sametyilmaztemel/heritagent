@@ -774,7 +774,19 @@ REHEARSAL_UNMIRRORED = ("the rehearsal's last snapshot to the mirror failed (the
                         "rehearsal again with a new directory and a new mirror directory")
 
 
-def _require_schema_compiled(server, check_schema, checks: dict) -> None:
+XGRAMMAR_MISSING = ("xgrammar does not import here: run the rehearsal in the locked environment "
+                    "(the notebook's install cell, then `env-check`)")
+
+
+def _require_xgrammar(check_schema, failed: str) -> None:
+    """Right after the tokenizer loads: without xgrammar the compile check
+    after the preflight cannot pass, so a rehearsal fails before the
+    minutes of CPU its games take, not after them."""
+    if check_schema is None:
+        raise CliError(f"{failed}: {[XGRAMMAR_CHECK]}; {XGRAMMAR_MISSING}")
+
+
+def _require_schema_compiled(server, check_schema, checks: dict, failed: str) -> None:
     """After the preflight's teacher request: the stand-in compiled its
     schema with xgrammar and the model's tokenizer, as the server's grammar
     backend does (ADR-0008). Without that compile a rehearsal proves
@@ -782,9 +794,8 @@ def _require_schema_compiled(server, check_schema, checks: dict) -> None:
     checks[XGRAMMAR_CHECK] = server.schemas_compiled > 0
     if not checks[XGRAMMAR_CHECK]:
         raise CliError(
-            f"the rehearsal failed: {[XGRAMMAR_CHECK]}; "
-            + ("xgrammar does not import here: run the rehearsal in the locked environment "
-               "(the notebook's install cell, then `env-check`)" if check_schema is None
+            f"{failed}: {[XGRAMMAR_CHECK]}; "
+            + (XGRAMMAR_MISSING if check_schema is None
                else "the preflight sent no teacher schema to compile"))
 
 
@@ -818,6 +829,8 @@ def cmd_rehearse(args) -> int:
     revision = resolve_revision(args.model, args.revision)
     counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
     _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python {sys.version.split()[0]}")
+    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
+    _require_xgrammar(check_schema, "the rehearsal failed")
 
     games = sorted(g["game_id"] for g in pilot["games"])
     factory = AlfworldEnvFactory(args.data_root, splits, extra_games={
@@ -852,7 +865,6 @@ def cmd_rehearse(args) -> int:
                 "weights": {"sha256": None, "note": "a rehearsal loads no weights"}}
     checks: dict[str, bool] = {}
     from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
-    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
                                  template_kwargs=CHAT_TEMPLATE_KWARGS,
                                  check_schema=check_schema) as server:
@@ -875,7 +887,7 @@ def cmd_rehearse(args) -> int:
 
         preflight = _preflight(adapter())
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []}
-        _require_schema_compiled(server, check_schema, checks)
+        _require_schema_compiled(server, check_schema, checks, "the rehearsal failed")
         server.outage_seed = attempt_sampling_seed(PILOT_ATTEMPT_SEED, games[len(games) // 2], 1)
         if mirror_dir is not None:  # a mirror is made without parents: its own new directory
             Path(mirror_dir).mkdir(parents=True, exist_ok=True)
@@ -894,6 +906,10 @@ def cmd_rehearse(args) -> int:
             # pass's ledger, byte for byte (a rehearsal leaves no UNMIRRORED marker)
             checks["the mirror's last snapshot holds the first pass's ledger"] = \
                 snapshot_file(mirror_dir, "ledger.jsonl") == (out / "ledger.jsonl").read_bytes()
+            if not checks["the mirror's last snapshot holds the first pass's ledger"]:
+                # the second pass would restore an older ledger: its checks would mean nothing
+                raise CliError(f"the rehearsal failed before the second pass: "
+                               f"{[name for name, ok in checks.items() if not ok]}")
             latest = latest_snapshot(mirror_dir)
             # one snapshot at the first record and one at the end (the 60-second cadence
             # between them needs a longer pass than a fast machine plays)
@@ -1087,6 +1103,8 @@ def cmd_rehearse_run(args) -> int:
     counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
     _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python "
          f"{sys.version.split()[0]}; the run will play {expected['episodes']['total']} episodes")
+    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
+    _require_xgrammar(check_schema, "the run rehearsal failed")  # before the census's minutes
     deadline = time.monotonic() + args.max_hours * 3600
 
     def overdue() -> bool:
@@ -1114,7 +1132,6 @@ def cmd_rehearse_run(args) -> int:
     _out(f"[rehearsal] census: {len(census)} games opened, {len(failures)} failed"
          + (f" (first {failures[0]})" if failures else ""))
     so_far("the census")
-    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
                                  template_kwargs=CHAT_TEMPLATE_KWARGS,
                                  check_schema=check_schema,
@@ -1142,7 +1159,7 @@ def cmd_rehearse_run(args) -> int:
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []} and \
             policy.kinds["preflight"] == 3
         so_far("the preflight")
-        _require_schema_compiled(server, check_schema, checks)
+        _require_schema_compiled(server, check_schema, checks, "the run rehearsal failed")
 
         def restore_next() -> None:
             """The next pass restores the run from the mirror: its last snapshot

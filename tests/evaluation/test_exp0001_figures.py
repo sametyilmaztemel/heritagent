@@ -182,9 +182,18 @@ def test_the_serving_sentence_of_a_served_run_is_whole(clean, noise):
                                  + figures._disagreement(pairs) + ".")
     else:
         assert sentence == measure + " is the only evidence of its size."
-    # a rehearsal's stand-in is no vLLM serving: no sentence about it
+    # a rehearsal's stand-in is no vLLM serving: no sentence about it, but its D8 clause
     data["rehearsal"] = True
-    assert "ADR-0011 D2" not in figures.captions(data, {})
+    text = figures.captions(data, {})
+    assert "ADR-0011 D2" not in text and "calibration pilot" not in text
+    rehearsal = [line for line in text.splitlines()
+                 if line.startswith("A rehearsal has no serving to describe")]
+    if noise:
+        assert rehearsal == [sentence.replace(
+            measure + " is one reference for its size; and, ",
+            "A rehearsal has no serving to describe; its stand-in's cells, ")]
+    else:
+        assert rehearsal == []
 
 
 def test_a_run_stopped_in_the_final_evaluation_gets_descriptive_figures_only(splits, tmp_path,

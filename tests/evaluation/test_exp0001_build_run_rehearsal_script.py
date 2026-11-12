@@ -1,7 +1,7 @@
 """The builder of the run rehearsal's committed script
 (``scripts/exp0001/build_run_rehearsal_script.py``; issue #13 Phase B): it
 imports and parses its arguments, and its cache gives back only rows made
-with the same ALFWorld and TextWorld versions, data release and manifests.
+with the same ALFWorld and TextWorld versions and manifests.
 The synthetic manifests and scripted games; no ALFWorld, no planner."""
 
 import importlib.metadata
@@ -76,13 +76,13 @@ def rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_the_cache_reuses_only_rows_of_the_same_versions_data_and_manifests(
+def test_the_cache_reuses_only_rows_of_the_same_versions_and_manifests(
         builder, monkeypatch, tmp_path, splits):  # noqa: F811
     code, made = build(builder, monkeypatch, tmp_path, splits)
     games = rr.played_games(splits, bank_of(splits))
     assert code == 0 and sorted(set(made)) == sorted(games)
     written = (tmp_path / "script.json").read_bytes()
-    # the same versions, data and manifests: nothing is made again, the same bytes
+    # the same versions and manifests: nothing is made again, the same bytes
     code, made = build(builder, monkeypatch, tmp_path, splits)
     assert code == 0 and made == []
     assert (tmp_path / "script.json").read_bytes() == written
@@ -93,15 +93,14 @@ def test_the_cache_reuses_only_rows_of_the_same_versions_data_and_manifests(
     assert basis == {"0.4.2", "9.9.9"}
 
 
-@pytest.mark.parametrize("change", ["data_release", "manifests"])
-def test_a_cached_row_of_other_data_or_manifests_is_made_again(builder, monkeypatch, tmp_path,
-                                                               splits, change):  # noqa: F811
+def test_a_cached_row_of_other_manifests_is_made_again(builder, monkeypatch, tmp_path,
+                                                       splits):  # noqa: F811
     build(builder, monkeypatch, tmp_path, splits)
     for name in ("texts.jsonl", "plans.jsonl"):
         path = tmp_path / "cache" / name
         changed = rows(path)
         for row in changed:
-            row["basis"][change] = "another"
+            row["basis"]["manifests"] = "another"
         path.write_text("".join(json.dumps(r) + "\n" for r in changed), encoding="utf-8")
     code, made = build(builder, monkeypatch, tmp_path, splits)
     assert code == 0 and set(rr.played_games(splits, bank_of(splits))) <= set(made)

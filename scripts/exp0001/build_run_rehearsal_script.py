@@ -15,8 +15,9 @@ and won by their plan) and the script is written with its generator's
 provenance. The texts and plans are cached (``--cache``, outside the
 checkout by default), so an interrupted build resumes; a plan that hit the
 time limit or the memory cap is tried again then. A cached row is reused
-only when it was made with the same ALFWorld and TextWorld versions, the
-same verified data release and the same three manifests. The same data,
+only when it was made with the same ALFWorld and TextWorld versions and
+the same three manifests; the data are the manifests' (``verify_data``
+refuses any other), so the manifests' hashes identify them. The same data,
 versions and plans give the same bytes (which plans hit the time limit can
 depend on the machine's load).
 
@@ -159,8 +160,8 @@ def plan_in_process(data_root: str, split: str, game_id: str, *, memory_gb: floa
 
 
 def _cached(path: Path, basis: dict) -> dict:
-    """The cached rows made on ``basis`` (``main``'s versions, data release
-    and manifest hashes); a row of another basis, or of none, is made again."""
+    """The cached rows made on ``basis`` (``main``'s versions and manifest
+    hashes); a row of another basis, or of none, is made again."""
     rows = {}
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -235,8 +236,8 @@ def main(argv: list[str] | None = None) -> int:
 
     splits, pilot, bank = _manifests()
     versions = {name: version(name) for name in ("alfworld", "textworld")}
+    verify_data(args.data_root, splits, pilot, bank)  # data the manifests do not hash fail here
     basis = {"versions": versions,
-             "data_release": verify_data(args.data_root, splits, pilot, bank)["release"],
              "manifests": {"splits": splits["manifest_sha256"], "pilot": pilot["pilot_sha256"],
                            "bank": bank["bank_sha256"]}}
     games = rr.played_games(splits, bank)

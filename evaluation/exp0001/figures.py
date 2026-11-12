@@ -721,24 +721,30 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
              f"(revision {run_start['model']['revision']}); code commit "
              f"{run_start['code']['commit']}.",
              "Every figure shows quantities the run recorded; nothing is re-estimated."]
-    # a rehearsal's stand-in server is not the vLLM serving this sentence describes
-    if run_start["model"].get("backend") != "scripted" and not data.get("rehearsal"):
-        noise = report.get("cell_disagreement")
+    scripted = run_start["model"].get("backend") == "scripted"
+    noise = None if scripted else report.get("cell_disagreement")
+    cells = "" if not noise else (
+        "descriptively (ADR-0012 D8; lower references, not estimates of the changed-prompt "
+        "disagreement a gate contrast carries): "
+        + "; ".join(f"{label} {_disagreement(noise.get(key))}"
+                    for key, label in (("cross_round", "a seed's cells of one game in "
+                                                       "two rounds disagree in"),
+                                       ("cross_seed", "two seeds' cells of one game "
+                                                      "disagree in")))
+        + ".")
+    # a rehearsal's stand-in server is not the vLLM serving the ADR-0011 D2 sentence
+    # describes; its cells still get the D8 clause, through the code a served run uses
+    if data.get("rehearsal"):
+        if cells:
+            lines.append("A rehearsal has no serving to describe; its stand-in's cells, " + cells)
+    elif not scripted:
         lines.append(
             "Under ADR-0011 D2 the serving uses no batch-invariant kernels, so a temperature-0 "
             "reply may depend on the batch; the calibration pilot's temperature-0 repeat "
             "measure (the pilot of manifest "
             f"{run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]})"
-            + (" is the only evidence of its size." if not noise else
-               " is one reference for its size; and, descriptively (ADR-0012 D8; lower "
-               "references, not estimates of the changed-prompt disagreement a gate contrast "
-               "carries): "
-               + "; ".join(f"{label} {_disagreement(noise.get(key))}"
-                           for key, label in (("cross_round", "a seed's cells of one game in "
-                                                              "two rounds disagree in"),
-                                              ("cross_seed", "two seeds' cells of one game "
-                                                             "disagree in")))
-               + "."))
+            + (" is the only evidence of its size." if not cells else
+               " is one reference for its size; and, " + cells))
     lines += [f"Note: {note}." for note in data["notes"]]
     lines.append("")
     # rule outcomes only where the run completed (ADR-0006 D5)

@@ -34,6 +34,7 @@ from evaluation.exp0001.protocol import (
     T_REG_SIZE,
     attempt_sampling_seed,
 )
+from evaluation.metrics.final_statistics import MIN_CONSISTENT_SEEDS
 from inheritance import ablation, generalization, interaction, regression
 from runtime.model_adapters.openai_server import NEUTRAL_SAMPLING
 from runtime.policies.planner_react import STOP_SEQUENCES, ReActPlanner
@@ -141,6 +142,7 @@ def test_the_oracles_constants_are_the_protocols():
     assert rr.HARMFUL_PAIR_DELTA == Fraction(repr(interaction.HARMFUL_PAIR_DELTA))
     assert rr.FINAL_EVALUATION_RESERVE == FINAL_EVALUATION_RESERVE
     assert set(rr.SEED_OFFSET) == set(MINING_SEEDS)
+    assert rr.CONSISTENT_SEEDS_REQUIRED == MIN_CONSISTENT_SEEDS
 
 
 def test_the_oracles_interleave_is_the_allocations(splits):  # noqa: F811
@@ -233,6 +235,12 @@ def test_the_scripted_world_reaches_every_gate_path(world):
     assert expected["cross_round"] == {"pairs": 24, "disagreements": 0}
     assert expected["cross_seed"] == {"pairs": 48, "disagreements": 1}
     assert expected["distinct_genomes"] == 4
+    # what the statistics check can tell apart (its docstring says so): one T_reg count for
+    # every arm and seed, and B and C at A's T_eval count in seeds 23 and 41
+    stats = expected["statistics"]
+    assert len(set(stats["t_reg_failures"].values())) == 1
+    assert all(stats["t_eval_successes"][(arm, s)] == stats["t_eval_successes"][("A", s)]
+               for arm in "BC" for s in (23, 41))
 
 
 # -- the stand-in --------------------------------------------------------------------------
@@ -431,7 +439,15 @@ def test_the_rehearsals_figures_are_stamped(rehearsed):
     assert manifest["rehearsal"] is True and manifest["state"] == "complete"
     assert {f["name"] for f in manifest["figures"] if f["status"] == "drawn"} == \
         set(OUTPUT_NAMES)
-    assert REHEARSAL_STAMP in (rehearsed.out / "figures" / "captions.md").read_text()
+    captions = (rehearsed.out / "figures" / "captions.md").read_text()
+    assert REHEARSAL_STAMP in captions
+    # the D8 clause a served run's captions carry, with both of the report's pair counts
+    noise = json.loads((rehearsed.run / "report.json").read_text())["cell_disagreement"]
+    clause = next(line for line in captions.splitlines()
+                  if line.startswith("A rehearsal has no serving to describe"))
+    for key in ("cross_round", "cross_seed"):
+        assert f"disagree in {noise[key]['disagreements']} of {noise[key]['pairs']} pairs" \
+            in clause
 
 
 CENSUS_CHECK = ("every game a run may play opens through the run's factory, and the scripted "
@@ -522,8 +538,13 @@ def test_the_ledger_checks_fail_when_the_ledger_differs(rehearsed, expected):
         "one reserve check per round, one more for the interrupted round (D9)"]
     attempts = [i for i, r in enumerate(lines) if r.get("type") == "attempt"
                 and r["key"].startswith("gate/11/R1/")]
+    # two admissions with no record of the first one's key between them: a swap past the
+    # first one's own episode would also break the reserve arithmetic, which depends on
+    # the workers' timing
+    i, j = next((i, j) for i, j in zip(attempts, attempts[1:])
+                if not any(r.get("key") == lines[i]["key"] for r in lines[i + 1:j]))
     swapped = list(lines)
-    swapped[attempts[3]], swapped[attempts[4]] = swapped[attempts[4]], swapped[attempts[3]]
+    swapped[i], swapped[j] = swapped[j], swapped[i]
     assert failed(ledger_checks(swapped, expected, interrupted=interrupted)) == [
         "each round's queue in ascending sha256 of its keys (D2)"]
     reserve = next(i for i, r in enumerate(lines) if r.get("type") == "reserve"
@@ -594,6 +615,32 @@ def test_the_report_checks_fail_when_the_report_differs(rehearsed, expected, cha
     report = json.loads((rehearsed.run / "report.json").read_text())
     assert failed(rr.report_checks(report, perturbed(expected, change),
                                    ledger_lines(rehearsed))) == [check]
+
+
+def set_point(statistics, path, value):
+    *keys, name = path
+    for key in keys:
+        statistics = statistics[key]
+    statistics[name]["point_estimate"] = {"exact": f"{value.numerator}/{value.denominator}",
+                                          "float": float(value)}
+
+
+@pytest.mark.parametrize("change", [
+    lambda st: set_point(st, ("t_eval", "contrasts", "C-B"), Fraction(-1, 402)),
+    lambda st: set_point(st, ("t_eval", "contrasts", "C-A"), Fraction(0)),
+    lambda st: set_point(st, ("t_eval", "contrasts", "B-A"), Fraction(1, 134)),
+    lambda st: set_point(st, ("t_reg", "contrast", "reg(C)-reg(B)"), Fraction(-1, 40)),
+    lambda st: st["seed_consistency"].update(met=not st["seed_consistency"]["met"]),
+    lambda st: st["h2"]["seed_clause"].update(met=not st["h2"]["seed_clause"]["met"]),
+])
+def test_the_statistics_check_fails_for_another_point_estimate_or_seed_clause(
+        rehearsed, expected, change):
+    """The exact point estimates and the seed clause need no bootstrap, so
+    the check holds the report to them."""
+    report = json.loads((rehearsed.run / "report.json").read_text())
+    change(report["statistics"])
+    assert failed(rr.report_checks(report, expected, ledger_lines(rehearsed))) == \
+        [STATISTICS_CHECK]
 
 
 def test_the_statistics_check_fails_for_a_report_with_arms_b_and_c_swapped(rehearsed, expected):
@@ -734,12 +781,14 @@ def test_a_rehearsal_fails_at_its_first_failed_check_without_a_record(
 def test_a_run_rehearsal_without_xgrammar_fails_its_compile_check_and_writes_no_record(
         tmp_path, splits, script, monkeypatch, capsys):  # noqa: F811
     """xgrammar that does not import compiles no teacher schema: the
-    rehearsal fails after its preflight, before the passes."""
+    rehearsal fails as soon as the tokenizer loads, before the census."""
     path = stub(monkeypatch, splits, script, tmp_path)
     monkeypatch.setattr(rehearsal, "xgrammar_check", lambda tokenizer: None)
     assert rehearse_run(tmp_path, path) == 2
-    err = capsys.readouterr().err
+    out, err = capsys.readouterr()
     assert cli.XGRAMMAR_CHECK in err and "the locked environment" in err
+    assert err.count("the run rehearsal failed") == 1
+    assert "tokenizer loaded" in out and "census:" not in out
     assert not (tmp_path / "out" / "run").exists()
     assert not (tmp_path / "out" / rr.RUN_REHEARSAL_PASSED).exists()
 
