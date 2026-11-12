@@ -13,11 +13,13 @@ Every file is stored once under its content hash
 (``snapshot-<seq>.json``) of path -> hash, written after its blobs, so a
 crash during a snapshot leaves the previous one whole. A restore takes the
 newest snapshot whose blobs all exist and match their hashes, and records
-itself as a ``restore`` note in the ledger. It also leaves a restore record
-(``.restore.json``, never snapshotted) in the run directory until the
-directory's first snapshot: the snapshot it restored, the snapshots it had
-to skip and why, and a restore note still to be appended when the restored
-ledger ends with a torn line (``repair-ledger`` appends it after its cut).
+itself as a ``restore`` note in the ledger; the note also names every
+newer manifest it passed over, and why (``passed_over``). It also leaves a
+restore record (``.restore.json``, never snapshotted) in the run directory
+until the directory's first snapshot: the snapshot it restored, the
+snapshots it passed over and the files that failed their hash, and a
+restore note still to be appended when the restored ledger ends with a torn
+line (``repair-ledger`` appends it after its cut).
 
 A blob holds its file gzip-compressed (layout 0.2), still named by the hash
 of the uncompressed file, which every reader checks after decompressing:
@@ -38,7 +40,10 @@ a mirror.
 
 Work done after the last snapshot is lost with the VM: its episodes run
 again after a restore, and the model calls and active time they took are
-not counted. The restore notes keep every such gap on record (ADR-0008)."""
+not counted. The restore notes keep every such gap on record (ADR-0008).
+Failed snapshots do not let that gap grow without end: the run command
+pauses the run after ``cli.MIRROR_FAILURES_BEFORE_PAUSE`` of them in a
+row."""
 
 from __future__ import annotations
 
@@ -207,17 +212,29 @@ def _unreadable(mirror: Path, exc: BaseException) -> MirrorError:
                        f"command again")
 
 
-def _whole_snapshots(mirror: Path) -> Iterator[dict]:
-    """The snapshots whose blobs all exist, newest first. A listing or
-    manifest that cannot be read raises MirrorError."""
+def _whole_snapshots(mirror: Path,
+                     passed_over: Callable[[int, str], None] | None = None) -> Iterator[dict]:
+    """The snapshots whose blobs all exist, newest first; ``passed_over(seq,
+    why)`` hears of each manifest skipped on the way (a restore records
+    them). A listing or manifest that cannot be read raises MirrorError."""
     try:
         snapshots = _snapshot_paths(mirror)
         blobs = _blob_names(mirror) if snapshots else set()
         for seq, path in snapshots:
             doc = _read_snapshot(seq, path)
-            if doc is not None and all(entry["sha256"] in blobs
-                                       for entry in doc["files"].values()):
-                yield doc
+            if doc is None:
+                why = "its manifest is not a whole snapshot manifest (torn, or gone since listed)"
+            else:
+                missing = sorted(rel for rel, entry in doc["files"].items()
+                                 if entry["sha256"] not in blobs)
+                if not missing:
+                    yield doc
+                    continue
+                why = (f"the blobs of {len(missing)} of its {len(doc['files'])} files are "
+                       f"missing from the mirror (first: {missing[0]}); Drive may not have "
+                       f"uploaded them")
+            if passed_over is not None:
+                passed_over(seq, why)
     except OSError as exc:
         raise _unreadable(mirror, exc) from None
 
@@ -472,7 +489,14 @@ def restore(mirror_dir: Path, local_dir: Path,
 
     A ledger that ends with a torn line is restored as it is, never cut
     here (ADR-0008 D5): its restore note waits in the restore record until
-    ``repair-ledger`` has cut the line on purpose."""
+    ``repair-ledger`` has cut the line on purpose.
+
+    Every newer manifest the restore passes over (blobs missing, a file
+    that fails its hash, a manifest that is not whole) is printed, and is
+    kept with its number and why in the restore record and in the restore
+    note (``passed_over``, only when there is one): the work after the
+    restored snapshot is lost and runs again uncounted (ADR-0008, the
+    accounting gap), so the records must show how far back it went."""
     import fcntl
     mirror, local = Path(mirror_dir), Path(local_dir)
     local.parent.mkdir(parents=True, exist_ok=True)
@@ -493,9 +517,15 @@ def restore(mirror_dir: Path, local_dir: Path,
             raise _torn_id(mirror / MIRROR_ID_FILE, exc) from None
         except OSError as exc:
             raise _unreadable(mirror, exc) from None
-        failed, skipped, bad_blobs, seen = [], [], [], {}
+        failed, skipped, bad_blobs, seen, passed = [], [], [], {}, []
+
+        def pass_over(seq: int, why: str) -> None:
+            passed.append({"seq": seq, "why": why})
+            _print_warning(f"[restore] snapshot {seq} is passed over: {why}; trying the next "
+                           f"older one")
+
         try:
-            for doc in _whole_snapshots(mirror):
+            for doc in _whole_snapshots(mirror, pass_over):
                 bad = _restore_into(mirror, doc, staging, progress, seen)
                 if not bad:
                     break
@@ -504,6 +534,9 @@ def restore(mirror_dir: Path, local_dir: Path,
                 skipped += [{"seq": doc["seq"], "file": exc.rel,
                              "sha256": doc["files"][exc.rel]["sha256"], "reason": str(exc)}
                             for exc in bad]
+                passed.append({"seq": doc["seq"], "why": (
+                    f"{len(bad)} of its {len(doc['files'])} files fail their hash or are gone "
+                    f"(first: {bad[0]})")})
                 _print_warning(f"[restore] snapshot {doc['seq']} is not whole "
                                f"({'; '.join(map(str, bad))}); trying the next older one")
                 shutil.rmtree(staging, ignore_errors=True)
@@ -517,7 +550,8 @@ def restore(mirror_dir: Path, local_dir: Path,
                 _write_atomic(staging / BINDING_FILE, _id_document(mirror_id))
             digest = _sha256(json.dumps(doc, sort_keys=True,
                                         separators=(",", ":")).encode("utf-8"))
-            note = {"type": "restore", "snapshot_seq": doc["seq"], "snapshot_sha256": digest}
+            note = {"type": "restore", "snapshot_seq": doc["seq"], "snapshot_sha256": digest,
+                    **({"passed_over": passed} if passed else {})}
             ledger = staging / "ledger.jsonl"
             data = ledger.read_bytes() if ledger.exists() else b""
             # a torn last line repair-ledger can cut; an empty ledger or a torn header holds
@@ -525,7 +559,8 @@ def restore(mirror_dir: Path, local_dir: Path,
             torn = b"\n" in data and not data.endswith(b"\n")
             _write_atomic(staging / RESTORE_RECORD, json.dumps(
                 {"schema": RESTORE_SCHEMA, "snapshot_seq": doc["seq"], "snapshot_sha256": digest,
-                 "skipped": skipped, "pending_note": note if torn else None},
+                 "skipped": skipped, "passed_over": passed,
+                 "pending_note": note if torn else None},
                 sort_keys=True).encode("utf-8"))
             if data.endswith(b"\n"):
                 append_note(ledger, note)
@@ -604,9 +639,12 @@ class RunMirror:
     """Snapshots of ``local_dir`` into ``mirror_dir``. Pass ``on_append`` to
     the run ledger: it snapshots at most every ``min_interval_seconds``, and
     always after a terminal record. A failed snapshot (Drive unavailable,
-    say) is counted and reported, and the run goes on; the next one retries
-    after the interval, or at a terminal record. Another process taking
-    over the mirror stops this one.
+    say) is counted and reported, and the next one retries after the
+    interval, or at a terminal record. ``failures_in_a_row`` counts the
+    failures since the last snapshot that succeeded: the run command pauses
+    the run when it reaches ``cli.MIRROR_FAILURES_BEFORE_PAUSE``, before the
+    next admission, so that the work only this machine holds stays small
+    (ADR-0008 D5). Another process taking over the mirror stops this one.
 
     The mirror must be the run directory's own (``_attach``); every
     snapshot first checks that it still is, so an unmounted Drive fails
@@ -629,7 +667,8 @@ class RunMirror:
         self._cache: dict[str, tuple[tuple[int, int], str, int]] = {}  # rel -> (stat, sha, size)
         self._known: set[str] = set()  # blobs known to exist in the mirror
         self._stale = False  # a snapshot failed: _known may name blobs the mirror lacks
-        self.failures = 0
+        self.failures = 0  # every failed snapshot of this command
+        self.failures_in_a_row = 0  # since the last snapshot that succeeded
         self.last_error: str | None = None
         require_no_pending_note(self.local)
         self._restored = restore_record(self.local)
@@ -774,12 +813,14 @@ class RunMirror:
             seq = self._snapshot()
         except OSError as exc:
             self.failures += 1
+            self.failures_in_a_row += 1
             self.last_error = str(exc)
             self._stale = True
             self._last = self._clock()  # a failing Drive is not retried at every record
             self._warn(f"[mirror] snapshot failed ({self.failures} so far): {exc}")
             return None
         self._last = self._clock()
+        self.failures_in_a_row = 0
         return seq
 
     def _check_mirror(self) -> None:

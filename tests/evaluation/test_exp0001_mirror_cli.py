@@ -4,8 +4,9 @@ mirror over and resumes, also after a fallback to an older snapshot; a
 blob that failed its hash is written again; a restored ledger with a torn
 last line waits for ``repair-ledger``; a refused attach and a full disk
 still leave the unmirrored marker; blobs without a manifest are never a new
-run; a torn mirror id is explained. Only the run's preparation and its
-episodes are stand-ins. No GPU, no vLLM, no ALFWorld."""
+run; a torn mirror id is explained; a restore names the snapshots it
+passed over. Only the run's preparation and its episodes are stand-ins.
+No GPU, no vLLM, no ALFWorld."""
 
 import json
 import os
@@ -618,3 +619,24 @@ def test_a_fallback_restore_reads_a_failing_blob_once_and_reports_every_pass(tmp
     assert len(reads) == 1  # snapshot 3 reads it, snapshot 2 knows it fails
     totals = [len(manifest(drive, seq)["files"]) for seq in (3, 2, 1)]
     assert [c for c in calls if c[0] == c[1]] == [(t, t) for t in totals]  # every pass ends
+
+
+def test_the_run_command_says_which_snapshots_its_restore_passed_over(command, tmp_path, capsys):
+    """Through ``run``: the newest snapshot's ledger never reached the
+    mirror; the command restores the older one, says so, and resumes with
+    the note on record."""
+    vm1 = tmp_path / "vm1" / "work"
+    assert command(vm1) == 0 and command(vm1) == 0
+    newest, older = newest_two(command.drive)
+    mirror_module._blob(command.drive, newest["files"]["ledger.jsonl"]["sha256"]).unlink()
+    vm2 = tmp_path / "vm2" / "work"
+    capsys.readouterr()
+    assert command(vm2) == 0
+    out = capsys.readouterr()
+    assert f"[restore] snapshot {newest['seq']} is passed over: the blobs of 1 of its" in out.err
+    assert (f"restored {vm2} from mirror snapshot {older['seq']}" in out.out
+            and f"passed over the newer snapshot(s) {newest['seq']}, whose work runs again"
+            in out.out)
+    note = records(vm2, "restore")[0]
+    assert note["snapshot_seq"] == older["seq"]
+    assert [entry["seq"] for entry in note["passed_over"]] == [newest["seq"]]

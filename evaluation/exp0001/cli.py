@@ -447,6 +447,9 @@ def _preflight(adapter: VLLMServerAdapter, *, gate_shape: bool = False) -> dict:
 
 EXIT_UNMIRRORED = 3
 UNMIRRORED = "UNMIRRORED.json"  # left in a run directory whose last snapshot failed
+# failed snapshots in a row after which `run` admits no new episode (ADR-0008 D5): the
+# work only this machine holds stays a few snapshot intervals, not the rest of the session
+MIRROR_FAILURES_BEFORE_PAUSE = 5
 PILOT_START = "pilot-start.json"  # the code and model a pilot directory belongs to
 
 
@@ -586,9 +589,13 @@ def _restore_if_missing(local: Path, mirror_dir: Path | None) -> bool:
         if done % RESTORE_PROGRESS_EVERY == 0 or done == total:
             _out(f"[restore] {done}/{total} files from {mirror_dir}")
 
+    from evaluation.exp0001.mirror import restore_record
     doc = restore(mirror_dir, local, progress)
     (local / UNMIRRORED).unlink(missing_ok=True)  # describes another machine, never mirrored
-    _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
+    passed = [entry["seq"] for entry in restore_record(local).get("passed_over", [])]
+    _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)"
+         + (f"; passed over the newer snapshot(s) {', '.join(map(str, passed))}, whose work "
+            f"runs again (on record in the restore note)" if passed else ""))
     return True
 
 
@@ -1533,7 +1540,13 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
     """The run from its checks to its last snapshot; ``rehearse-run`` runs the
     same against its stand-in server (``pause_when``, and ``disposable``: no
     unmirrored marker). ``stop_after_hours`` counts from the run's start in
-    this session, after the restore, the checks and the lock."""
+    this session, after the restore, the checks and the lock.
+
+    With a mirror the run also pauses once ``MIRROR_FAILURES_BEFORE_PAUSE``
+    snapshots in a row have failed (ADR-0008 D5): no new episode is
+    admitted, the episodes in flight are recorded, and the last snapshot
+    decides the exit (0 when it succeeds, else the marker and 3). The pause
+    is asked only before an admission, not during a seed's teacher calls."""
     from evaluation.exp0001.pipeline import Exp0001Run
 
     repo, local = Path(args.repo), Path(args.local_dir)
@@ -1552,8 +1565,13 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                                 restored=restored)
         started = time.monotonic()
         budget = None if stop_after_hours is None else stop_after_hours * 3600
+        mirror_failing = [False]  # at the last question: the failing mirror pauses the run
 
         def pause() -> bool:
+            mirror_failing[0] = mirror is not None and \
+                mirror.failures_in_a_row >= MIRROR_FAILURES_BEFORE_PAUSE
+            if mirror_failing[0]:
+                return True
             return (budget is not None and time.monotonic() - started > budget) or \
                 (pause_when is not None and bool(pause_when()))
 
@@ -1567,16 +1585,26 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                                                     args.server_info),
                          on_ledger_append=Progress(mirror, args.progress_every),
                          pause_when=pause if budget is not None or pause_when is not None
-                         else None,
+                         or mirror is not None else None,
                          lock=lock)
         report, stopped, mirrored, broken = None, False, False, None
+        paused_by_mirror = False
         try:
             report = run.run()
         except RunPaused as exc:
-            after = "" if stop_after_hours is None else \
-                f" after {stop_after_hours} h of this session"
-            _out(f"paused{after} ({exc}); every admitted episode is recorded. Run the same "
-                 f"command again to resume.")
+            paused_by_mirror = mirror_failing[0]
+            if paused_by_mirror:
+                _say(f"paused ({exc}): the last {mirror.failures_in_a_row} snapshots to the "
+                     f"mirror failed in a row (last: {mirror.last_error}); no new episode is "
+                     f"admitted and every admitted episode is recorded. The newest records of "
+                     f"{local} exist only on this runtime: keep the runtime, mount Google Drive "
+                     f"again (force_remount=True) and run the same command again. The last "
+                     f"snapshot is tried now.")
+            else:
+                after = "" if stop_after_hours is None else \
+                    f" after {stop_after_hours} h of this session"
+                _out(f"paused{after} ({exc}); every admitted episode is recorded. Run the same "
+                     f"command again to resume.")
         except KeyboardInterrupt:
             stopped = True
         except BrokenProcessPool as exc:
@@ -1585,6 +1613,9 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
             mirrored = _final_snapshot(mirror, local, marker=not disposable)
             if mirror and mirror.failures:
                 _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
+            if paused_by_mirror and mirrored:
+                _say("the last snapshot succeeded: the mirror holds every record again. Run the "
+                     "same command again to resume.")
     if broken is not None:
         raise _worker_died(broken)
     if stopped:
