@@ -721,7 +721,8 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
              f"(revision {run_start['model']['revision']}); code commit "
              f"{run_start['code']['commit']}.",
              "Every figure shows quantities the run recorded; nothing is re-estimated."]
-    if run_start["model"].get("backend") != "scripted":
+    # a rehearsal's stand-in server is not the vLLM serving this sentence describes
+    if run_start["model"].get("backend") != "scripted" and not data.get("rehearsal"):
         noise = report.get("cell_disagreement")
         lines.append(
             "Under ADR-0011 D2 the serving uses no batch-invariant kernels, so a temperature-0 "
@@ -729,8 +730,9 @@ def captions(data: Mapping, drawn: Mapping[str, str]) -> str:
             "measure (the pilot of manifest "
             f"{run_start.get('pilot', {}).get('pilot_sha256', '?')[:12]})"
             + (" is the only evidence of its size." if not noise else
-               "; and, descriptively (ADR-0012 D8; lower references, not estimates of the "
-               "changed-prompt disagreement a gate contrast carries): "
+               " is one reference for its size; and, descriptively (ADR-0012 D8; lower "
+               "references, not estimates of the changed-prompt disagreement a gate contrast "
+               "carries): "
                + "; ".join(f"{label} {_disagreement(noise.get(key))}"
                            for key, label in (("cross_round", "a seed's cells of one game in "
                                                               "two rounds disagree in"),

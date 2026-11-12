@@ -16,7 +16,10 @@ scripted condition wins and the plans that win them, so the gate meets every
 path of ADR-0012 D2-D7: stage 2 passing at looks 1, 2 and 3, meeting alpha
 without a pass at look 4 and stopping for futility; out-of-scope pass, fail
 and vacuous; 4A pass and fail; 4B fail; a harmful pair and two harmless
-ones; an empty seed.
+ones; an empty seed. The out-of-scope, 4A and 4B failures are reached only
+on candidates that already fail stage 2, so they are checked as stage
+records and never decide a verdict here: that a failed out-of-scope, 4A or
+4B stage alone makes a candidate ineligible is covered by tests/gate.
 
 What the run must give is computed here, by ``expected_outcome``, from the
 script and the rule texts alone (an interleave, the D4 decision with
@@ -400,6 +403,19 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
             "t_eval_successes": sum(world.final_win(g, skills) for g in t_eval),
             "t_reg_successes": sum(world.final_win(g, skills) for g in t_reg),
             "transfer_successes": sum(world.final_win(g, skills) for g in transfer)}
+    # the final statistics' inputs (ADR-0006 D3, D4, D7; ADR-0009 D2): each arm and seed
+    # reads the cells of its genome; a regression rate counts T_reg failures
+    arm_final = {(arm, s): final[tuple(sorted(genomes[frozenset(names)]))]
+                 for s in SEED_OFFSET
+                 for arm, names in (("A", ()), ("B", seeds[s]["candidates"]),
+                                    ("C", seeds[s]["promoted"]))}
+    c_minus_b = {s: Fraction(arm_final[("C", s)]["t_eval_successes"]
+                             - arm_final[("B", s)]["t_eval_successes"], len(t_eval))
+                 for s in SEED_OFFSET}
+    statistics = {"t_eval_successes": {k: f["t_eval_successes"] for k, f in arm_final.items()},
+                  "t_reg_failures": {k: T_REG_SIZE - f["t_reg_successes"]
+                                     for k, f in arm_final.items()},
+                  "c_minus_b": c_minus_b, "holding": sum(d > 0 for d in c_minus_b.values())}
     gate_episodes = sum(r["with_trait"] + r["cells"] for rs in rounds.values()
                         for r in rs.values())
     per_genome = len(t_eval) + T_REG_SIZE + len(transfer)
@@ -416,6 +432,7 @@ def expected_outcome(script: Mapping, splits: Mapping, bank: Mapping) -> dict:
             "cross_seed": {"pairs": len(cross_seed),
                            "disagreements": sum(a != b for a, b in cross_seed)},
             "cells": len(cells), "final": final, "distinct_genomes": len(genomes),
+            "statistics": statistics,
             "final_per_genome": {"t_eval": len(t_eval), "t_reg": T_REG_SIZE,
                                  "transfer": len(transfer)},
             "episodes": {"lifetime": lifetime_episodes, "gate": gate_episodes,
@@ -1452,7 +1469,39 @@ def report_checks(report: Mapping, expected: Mapping, lines: Sequence[Mapping]) 
         ok &= (got.get("t_eval", 0), got.get("t_reg", 0), got.get("transfer", 0)) == (
             want["t_eval_successes"], want["t_reg_successes"], want["transfer_successes"])
     checks["the final cells and their sharing (ADR-0009 D2)"] = ok
+    checks["the final statistics' counts and per-seed C-B (ADR-0006)"] = \
+        _statistics_ok(report.get("statistics") or {}, expected["statistics"],
+                       expected["final_per_genome"])
     return checks
+
+
+def _statistics_ok(got: Mapping, exp: Mapping, sizes: Mapping) -> bool:
+    """The report's per-arm, per-seed T_eval success and T_reg failure counts
+    and rates, their pooled rates, and each seed's C-B and its direction,
+    against the oracle's (ADR-0006 D1, D3, D4). The bootstrap bounds are left
+    out: recomputing them would share the code under test."""
+    try:
+        ok = got["status"] == "complete"
+        for name, key, n in (("t_eval", "success_rate", sizes["t_eval"]),
+                             ("t_reg", "regression_rate", sizes["t_reg"])):
+            want = exp["t_eval_successes" if name == "t_eval" else "t_reg_failures"]
+            for arm in ("A", "B", "C"):
+                body = got[name][key][arm]
+                counts = [want[(arm, s)] for s in SEED_OFFSET]
+                ok &= body["pooled"]["exact"] == _exact(Fraction(sum(counts), n * len(counts)))
+                for s, count in zip(SEED_OFFSET, counts):
+                    ok &= body["per_seed"][str(s)] == {
+                        "count": count, "recorded": n,
+                        "rate": {"exact": _exact(Fraction(count, n)),
+                                 "float": float(Fraction(count, n))}}
+        seeds = got["seed_consistency"]
+        ok &= seeds["holding"] == exp["holding"]
+        for s, delta in exp["c_minus_b"].items():
+            ok &= seeds["per_seed"][str(s)]["c_minus_b"]["exact"] == _exact(delta)
+            ok &= seeds["per_seed"][str(s)]["holds"] is (delta > 0)
+        return bool(ok)
+    except (KeyError, TypeError):
+        return False
 
 
 def passed_record(*, checks: Mapping[str, bool], commit: str, python: str, software: Mapping,

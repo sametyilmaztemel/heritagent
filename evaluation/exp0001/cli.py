@@ -658,6 +658,26 @@ def _rehearsal_stopped() -> int:
     return 130
 
 
+XGRAMMAR_CHECK = "the teacher schema compiled with xgrammar and the model's tokenizer"
+REHEARSAL_UNMIRRORED = ("the rehearsal's last snapshot to the mirror failed (the message above "
+                        "names the error); check that Google Drive is mounted, then start the "
+                        "rehearsal again with a new directory and a new mirror directory")
+
+
+def _require_schema_compiled(server, check_schema, checks: dict) -> None:
+    """After the preflight's teacher request: the stand-in compiled its
+    schema with xgrammar and the model's tokenizer, as the server's grammar
+    backend does (ADR-0008). Without that compile a rehearsal proves
+    nothing about the teacher's request shape, so it fails now."""
+    checks[XGRAMMAR_CHECK] = server.schemas_compiled > 0
+    if not checks[XGRAMMAR_CHECK]:
+        raise CliError(
+            f"the rehearsal failed: {[XGRAMMAR_CHECK]}; "
+            + ("xgrammar does not import here: run the rehearsal in the locked environment "
+               "(the notebook's install cell, then `env-check`)" if check_schema is None
+               else "the preflight sent no teacher schema to compile"))
+
+
 def cmd_rehearse(args) -> int:
     """The pilot without a GPU or a model (``evaluation.exp0001.rehearsal``):
     the same checks, games, workers, ledger, tokenizer, mirror and report,
@@ -745,6 +765,7 @@ def cmd_rehearse(args) -> int:
 
         preflight = _preflight(adapter())
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []}
+        _require_schema_compiled(server, check_schema, checks)
         server.outage_seed = attempt_sampling_seed(PILOT_ATTEMPT_SEED, games[len(games) // 2], 1)
         try:
             if run() == 130:  # stopped (the stop button, or the kernel): no second pass
@@ -756,8 +777,11 @@ def cmd_rehearse(args) -> int:
         first = {r["key"] for r in _ledger_lines(out / "ledger.jsonl")
                  if r.get("type") == "episode"}
         checks["the first pass recorded part of the pilot"] = 0 < len(first)
-        checks["the first pass left no unmirrored marker"] = not (out / UNMIRRORED).exists()
         if mirror_dir is not None:
+            # the next pass restores from the mirror: its last snapshot must hold this
+            # pass's ledger, byte for byte (a rehearsal leaves no UNMIRRORED marker)
+            checks["the mirror's last snapshot holds the first pass's ledger"] = \
+                snapshot_file(mirror_dir, "ledger.jsonl") == (out / "ledger.jsonl").read_bytes()
             latest = latest_snapshot(mirror_dir)
             # one snapshot at the first record and one at the end (the 60-second cadence
             # between them needs a longer pass than a fast machine plays)
@@ -770,6 +794,8 @@ def cmd_rehearse(args) -> int:
         code = run()
         if code == 130:
             return _rehearsal_stopped()
+        if code == EXIT_UNMIRRORED:
+            raise CliError(REHEARSAL_UNMIRRORED)
         checks["the second pass finished"] = code == 0
         second_requests = server.requests - before[0] - (server.refused - before[1])
     report = _json(out / rehearsal.REHEARSAL_REPORT)
@@ -976,9 +1002,10 @@ def cmd_rehearse_run(args) -> int:
     _out(f"[rehearsal] census: {len(census)} games opened, {len(failures)} failed"
          + (f" (first {failures[0]})" if failures else ""))
     so_far("the census")
+    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
                                  template_kwargs=CHAT_TEMPLATE_KWARGS,
-                                 check_schema=rehearsal.xgrammar_check(counter.tokenizer),
+                                 check_schema=check_schema,
                                  check_request=rr.run_protocol_issues, fail_request=faults,
                                  count_completion=counter.count_tokens) as server:
         session = Namespace(repo=repo, data_root=args.data_root, local_dir=local,
@@ -1003,6 +1030,7 @@ def cmd_rehearse_run(args) -> int:
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []} and \
             policy.kinds["preflight"] == 3
         so_far("the preflight")
+        _require_schema_compiled(server, check_schema, checks)
 
         def restore_next() -> None:
             """The next pass restores the run from the mirror: its last snapshot
@@ -1023,6 +1051,8 @@ def cmd_rehearse_run(args) -> int:
                                f"rehearsal of that worker count") from None
             if code == 130:
                 raise KeyboardInterrupt  # stopped: a rehearsal never resumes (main says so)
+            if code == EXIT_UNMIRRORED:
+                raise CliError(REHEARSAL_UNMIRRORED)
             if overdue() and not (local / "report.json").exists():
                 raise CliError(f"the run rehearsal took more than --max-hours {args.max_hours}; "
                                f"start it again with a new directory and mirror directory")
