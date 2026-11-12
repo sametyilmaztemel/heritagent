@@ -20,11 +20,13 @@ the standard library's HTTP client only.
   constrained oneOf schema over the offered tools.
 
 Every request also sends the neutral sampling values (top_p 1, top_k 0,
-min_p 0, repetition_penalty 1, no presence or frequency penalty). The
-server otherwise fills unset fields from the model's
-``generation_config.json`` (vLLM's default ``--generation-config auto``;
-Qwen3.8-27B's sets temperature 1.0, top_p 0.95, top_k 20), which the
-offline ``SamplingParams`` path never applies.
+min_p 0, repetition_penalty 1, no presence or frequency penalty), so a
+request is neutral whatever the server's ``--generation-config``. The run
+serves with ``--generation-config vllm`` (``evaluation/exp0001/serving.py``);
+under vLLM's default, ``auto``, the server would fill unset fields from the
+model's ``generation_config.json`` (Qwen3.8-27B's sets temperature 1.0,
+top_p 0.95, top_k 20), which the offline ``SamplingParams`` path never
+applies.
 
 Token counts come from the server's ``usage`` block, counted by the
 server's own tokenizer. A transport failure (connection refused, a 5xx, a
@@ -116,7 +118,13 @@ class VLLMServerAdapter(ModelAdapter):
                 with urllib.request.urlopen(request, timeout=self._timeout) as response:
                     body = response.read()
             except urllib.error.HTTPError as exc:
-                detail = exc.read()[:2000].decode("utf-8", "replace")
+                try:
+                    detail = exc.read()[:2000].decode("utf-8", "replace")
+                except (http.client.HTTPException, OSError) as read_error:
+                    # the body decides between an overflow and a rejection, so
+                    # an unreadable one is a transport failure, as the reset is
+                    last = read_error
+                    continue
                 if exc.code >= 500 or exc.code == 429:
                     last = exc
                     continue
@@ -196,7 +204,7 @@ class VLLMServerAdapter(ModelAdapter):
         payload = self._payload(messages, settings)
         payload["response_format"] = self._json_schema_format(server_constraint(schema))
         result = self._complete(payload)
-        self._validate_structured(result.text, schema)  # the full schema
+        self._validate_structured(result.text, schema, result.finish_reason)  # the full schema
         return result
 
     def tool_call(self, messages: list[ModelMessage], settings: GenerationSettings,

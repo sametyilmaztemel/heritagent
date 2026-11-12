@@ -1,7 +1,9 @@
 """ALFWorld ToolEnvironment adapter (ADR-0003) against a scripted fake of
-TextWorld's single-game gym API; no ALFWorld data or install needed."""
+TextWorld's single-game gym API; no ALFWorld data or install needed, except
+for one test that opens a real game when the alfworld extra is installed."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -212,12 +214,21 @@ def test_order_is_enforced():
     assert not unknown.ok and not unknown.retryable
 
 
-@pytest.mark.skipif(not os.environ.get("ALFWORLD_GAMEFILE"),
-                    reason="needs the alfworld extra and ALFWORLD_GAMEFILE pointing at a game.tw-pddl")
+# one unmodified ALFWorld game (see tests/fixtures/alfworld/README.md)
+FIXTURE_GAME = Path(__file__).resolve().parents[1] / "fixtures" / "alfworld" / "game.tw-pddl"
+
+
 def test_real_game_opens_and_steps():
+    """D8: a real game opens and steps (on Python 3.13 only through the
+    TextWorld eval fix). ALFWORLD_GAMEFILE picks the game, else the committed
+    fixture; skipped only without the alfworld extra."""
+    gamefile = os.environ.get("ALFWORLD_GAMEFILE")
+    if not gamefile:
+        pytest.importorskip("alfworld.agents.environment.alfred_tw_env",
+                            reason="needs the alfworld extra (pip install -e .[alfworld])")
+        gamefile = str(FIXTURE_GAME)
     from runtime.tool_adapters.alfworld import open_game
-    env = AlfworldEnvironment(open_game(os.environ["ALFWORLD_GAMEFILE"], max_episode_steps=50),
-                              game_id="real")
+    env = AlfworldEnvironment(open_game(gamefile, max_episode_steps=50), game_id="real")
     assert "Your task is to:" in env.start()
     observation = env.call("act", {"command": "look"})
     assert ADMISSIBLE_HEADER in observation.content

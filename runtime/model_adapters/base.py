@@ -20,6 +20,28 @@ from runtime.model_adapters.errors import (
     ModelResponseError,
 )
 
+# A model reply nested deeper than this is refused before anything walks it
+# recursively: the recorder's deep copy raises RecursionError at about a
+# thousand levels, json.loads itself further down (at about a thousand on
+# Python 3.10). The act tool takes one string (depth 1) and the teacher
+# schema nests five levels, so no reply that keeps its contract comes near
+# the bound.
+MAX_JSON_DEPTH = 32
+
+
+def json_depth(value) -> int:
+    """How many lists and objects ``value`` nests (0 for a scalar), counted
+    without recursion."""
+    depth, stack = 0, [(value, 1)]
+    while stack:
+        item, level = stack.pop()
+        if isinstance(item, dict):
+            item = list(item.values())
+        if isinstance(item, list):
+            depth = max(depth, level)
+            stack.extend((child, level + 1) for child in item)
+    return depth
+
 
 @dataclass(frozen=True)
 class GenerationSettings:
@@ -110,18 +132,36 @@ class ModelAdapter(ABC):
 
     # -- shared helper ----------------------------------------------------
     @staticmethod
-    def _validate_structured(text: str, schema: dict) -> dict:
+    def _validate_structured(text: str, schema: dict, finish_reason: str | None = None) -> dict:
+        """The reply as a JSON object that satisfies ``schema``, else a
+        ModelResponseError carrying the reply and its finish_reason. NaN and
+        Infinity are not JSON (RFC 8259) and pass jsonschema's bounds, so
+        they are rejected here, as is a payload that cannot be stored as
+        strict UTF-8 JSON or nests deeper than MAX_JSON_DEPTH."""
+        def reject(message):
+            return ModelResponseError(message, raw_text=text, finish_reason=finish_reason)
+
+        def no_constant(name):
+            raise reject(f"structured output contains {name}, which is not valid JSON")
+
+        too_deep = f"structured output nests deeper than {MAX_JSON_DEPTH} levels"
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ModelResponseError(f"structured output is not valid JSON: {exc}",
-                                      raw_text=text) from None
+            payload = json.loads(text, parse_constant=no_constant)
+        except RecursionError:
+            raise reject(too_deep) from None
+        except ValueError as exc:  # also an integer past Python's digit limit
+            raise reject(f"structured output is not valid JSON: {exc}") from None
+        if json_depth(payload) > MAX_JSON_DEPTH:
+            raise reject(too_deep)
+        try:  # an overflowing literal (inf) or a lone surrogate escape
+            json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except ValueError as exc:
+            raise reject(f"structured output cannot be stored as strict JSON: {exc}") from None
         if not isinstance(payload, dict):
-            raise ModelResponseError("structured output must be a JSON object",
-                                      raw_text=text)
+            raise reject("structured output must be a JSON object")
         errors = [e.message for e in Draft202012Validator(schema).iter_errors(payload)]
         if errors:
-            raise ModelResponseError(sorted(errors), raw_text=text)
+            raise reject(sorted(errors))
         return payload
 
 

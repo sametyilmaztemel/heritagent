@@ -11,7 +11,9 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   every locked package found once, nothing outside the lock
                   but this project, vllm on the PATH from it)
   mirror-check    write, replace, read and time small files in the mirror
-                  directory (on Colab, Google Drive)
+                  directory (on Colab, Google Drive), and report its free space
+                  as the mount reports it (fails below ``--need-gb``, 10 GB
+                  by default)
   run-commit      the code commit a run started at, from its mirror (empty for
                   a new run)
   prepare-model   download and hash one pinned model revision -> prepared.json
@@ -43,7 +45,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   status          a read-only summary of a run (or pilot) directory
   snapshot        take a snapshot of a run (or pilot) directory now, for example
                   after Drive is mounted again (exit code 3 if it fails)
-  repair-ledger   cut off a torn last ledger line, keeping it on record
+  repair-ledger   cut off a torn last ledger line, keeping it on record, then
+                  append the restore note a restore of that ledger left pending
   figures         paper figures, their tables and captions from a run directory
                   or its mirror (read-only; needs matplotlib)
 
@@ -57,14 +60,22 @@ variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
 Python's traceback (1). A failed last snapshot leaves ``UNMIRRORED.json`` in
 the run directory, also after an error: the newest records exist only on
 this machine, and the notebooks keep the runtime. So does a SIGTERM while
-the command holds its directory (the stop button's second press). For
-``run``, ``pilot`` and ``snapshot`` the one exception is another machine
-taking over the mirror: it holds the run now, and the command stops with
-exit 2 and no marker. ``rehearse`` and ``rehearse-run`` never leave the
-marker: a rehearsal is started again, never resumed. The last snapshot is
-not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
-directory's one-writer lock from before they touch the mirror until after
-their last snapshot.
+the command holds its directory (the stop button's second press), and a
+refusal to attach a directory that holds a ledger to its mirror (the mirror
+missing, unreadable or not its own: exit 2 with the marker). The marker is
+made first, empty, and then filled: a full disk still leaves it. For
+``run``, ``pilot`` and ``snapshot`` the exceptions are another machine
+taking over the mirror (it holds the run now) and a directory behind its
+mirror or diverged from it (another machine took the run over): the
+command stops with exit 2 and no marker, and records only that directory
+holds stay in it. A restored directory whose restore note waits for
+``repair-ledger`` gets the marker (exit 2), so the runtime is kept for
+``repair-ledger``; the last snapshot of a later command (or `snapshot`)
+removes it.
+``rehearse`` and ``rehearse-run`` never leave the marker: a rehearsal is
+started again, never resumed. The last snapshot is not cut short by a stop.
+``run``, ``pilot`` and ``snapshot`` hold the run directory's one-writer lock
+from before they touch the mirror until after their last snapshot.
 
 ``run`` and ``pilot`` take ``--workers`` for parallel episodes against the
 one server (ADR-0008). Every run directory lives outside the repository
@@ -79,6 +90,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -94,9 +106,15 @@ from evaluation.exp0001.data import fetch_data, verify_data
 from evaluation.exp0001.ledger import LedgerError, RunLedger, repair_torn_tail
 from evaluation.exp0001.mirror import (
     MirrorError,
+    NothingUnmirrored,
+    RestoreNotePending,
     RunMirror,
+    append_pending_restore_note,
+    broken_mirror_text,
     check_mirror_dir,
     latest_snapshot,
+    mirror_state,
+    read_snapshot_file,
     restore,
     snapshot_file,
 )
@@ -149,9 +167,18 @@ def _json(path: Path) -> dict:
 
 
 def _write_json(path: Path, document) -> None:
+    """Through a temporary file and a replace: a reader (``serve`` reading
+    its server file, say) never meets a half-written file."""
+    import os
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def git_state(repo: Path) -> tuple[str, bool]:
@@ -279,14 +306,32 @@ def cmd_env_check(args) -> int:
     return 0
 
 
+# The Drive a run may need with compressed snapshots, kept files and the
+# Trash's 30 days together (M, from the pilot's sizes and throughput): about
+# 8.7 GB if the 14,500-episode cap took all 96 active hours, 3.9 GB if it
+# ends at the pilot's throughput, about 1 GB for the expected run.
+RUN_DRIVE_GB = 10.0
+
+
 def cmd_mirror_check(args) -> int:
-    print(json.dumps(check_mirror_dir(args.mirror_dir)))
+    if not 0 <= args.need_gb < float("inf"):
+        raise CliError(f"--need-gb must be a number of 0 or more, not {args.need_gb}")
+    report = check_mirror_dir(args.mirror_dir, need_bytes=round(args.need_gb * 1e9))
+    print(json.dumps(report))
+    if report["free_bytes"] is None:
+        _say(f"the free space of {args.mirror_dir} is unknown (its filesystem does not report "
+             f"it); check at drive.google.com/settings/storage that {args.need_gb:g} GB are free")
     return 0
 
 
 def cmd_run_commit(args) -> int:
-    data = snapshot_file(args.mirror_dir, "run-start.json") if Path(args.mirror_dir).exists() \
-        else None
+    """The commit of the run in the mirror, or an empty line for a new run:
+    only a mirror without snapshots or blobs is a new run (a run notebook
+    starts one on the empty line)."""
+    doc = latest_snapshot(args.mirror_dir)
+    if doc is None and mirror_state(args.mirror_dir) == "broken":
+        raise MirrorError(broken_mirror_text(args.mirror_dir))
+    data = None if doc is None else read_snapshot_file(args.mirror_dir, doc, "run-start.json")
     print("" if data is None else json.loads(data.decode("utf-8"))["code"]["commit"])
     return 0
 
@@ -456,22 +501,95 @@ def _final_snapshot(mirror: RunMirror | None, local: Path, *, marker: bool = Tru
         if not marker:
             _say(f"the rehearsal's last snapshot failed ({error or mirror.last_error})")
             return False
-        _write_json(path, {"failures": mirror.failures,
-                           "last_error": error or mirror.last_error, "at": _now()})
+        _leave_marker(local, {"failures": mirror.failures,
+                              "last_error": error or mirror.last_error, "at": _now()})
     _say(f"UNMIRRORED: the last snapshot failed ({error or mirror.last_error}); the newest "
          f"records of {local} exist only on this machine. Mount Google Drive again and run "
          f"`snapshot` before the runtime is released.")
     return False
 
 
-def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
-    if mirror_dir is None or (local.exists() and any(local.iterdir())):
-        return
-    if latest_snapshot(mirror_dir) is None:
-        return  # a fresh run
-    doc = restore(mirror_dir, local)
+def _leave_marker(local: Path, document: Mapping) -> None:
+    """The unmirrored marker: first an empty file, which is all the
+    notebooks look for, then its content, best effort. A full disk fails
+    the second write (a temporary file and a replace), never the first."""
+    path = local / UNMIRRORED
+    path.touch()
+    try:
+        _write_json(path, document)
+    except OSError as exc:
+        _say(f"the marker {path} is left empty ({exc!r})")
+
+
+def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True,
+                   restored: bool = False):
+    """``RunMirror`` for a command that holds ``local``, or None without a
+    mirror; ``restored`` when this command has just restored ``local`` (it
+    takes the mirror over, ADR-0008 D5). A refusal while ``local`` holds a
+    ledger leaves the unmirrored marker first, since its newest records may
+    exist only here (the mirror missing, unreadable or another's); not when
+    the mirror holds every record (``NothingUnmirrored``), nor for a
+    rehearsal (``marker=False``), nor on a directory this command has just
+    restored (nothing was written since). A restore note waiting for
+    ``repair-ledger`` leaves it too, so the runtime that must run
+    ``repair-ledger`` is kept (ADR-0008 D5)."""
+    if mirror_dir is None:
+        return None
+    try:
+        return RunMirror(local, mirror_dir, restored=restored)
+    except NothingUnmirrored:
+        raise
+    except RestoreNotePending as exc:
+        if marker:
+            _leave_marker(local, {"failures": None, "at": _now(),
+                                  "last_error": f"waits for repair-ledger: {exc}"})
+            _say(f"UNMIRRORED: {local} waits for repair-ledger; this marker keeps the runtime "
+                 f"so that it can run here. Do what the error below says; the last snapshot of "
+                 f"that command (or `snapshot`) removes this marker.")
+        raise
+    except MirrorError as exc:
+        if marker and not restored and (local / "ledger.jsonl").exists():
+            _leave_marker(local, {"failures": None, "at": _now(),
+                                  "last_error": f"not attached to the mirror: {exc}"})
+            _say(f"UNMIRRORED: {local} could not be attached to its mirror; its newest records "
+                 f"may exist only on this machine. Fix what the error below says, then run "
+                 f"`snapshot` before the runtime is released.")
+        raise
+
+
+RESTORE_PROGRESS_EVERY = 1000  # files; a run's restore from Drive takes minutes
+
+
+def _restore_if_missing(local: Path, mirror_dir: Path | None) -> bool:
+    """The run or pilot directory from its mirror (ADR-0008 D5); True when it
+    was restored now. One that holds a run resumes in place (``RunMirror``
+    checks that it belongs to the mirror and is not behind it); an absent or
+    empty one is restored in full, or starts a new run on a mirror without
+    snapshots. A mirror with
+    snapshots but none whole, or one that cannot be read now, stops the
+    command: a new run never starts over an old one."""
+    if mirror_dir is None:
+        return False
+    if local.exists() and any(local.iterdir()):
+        if not (local / "ledger.jsonl").exists() and mirror_state(mirror_dir) == "whole":
+            raise CliError(f"{local} holds files but no ledger, and the mirror {mirror_dir} "
+                           f"holds a run: move {local} away and run the command again to "
+                           f"restore the run")
+        return False
+    state = mirror_state(mirror_dir)
+    if state == "empty":
+        return False  # a new run
+    if state == "broken":
+        raise MirrorError(broken_mirror_text(mirror_dir))
+
+    def progress(done: int, total: int) -> None:
+        if done % RESTORE_PROGRESS_EVERY == 0 or done == total:
+            _out(f"[restore] {done}/{total} files from {mirror_dir}")
+
+    doc = restore(mirror_dir, local, progress)
     (local / UNMIRRORED).unlink(missing_ok=True)  # describes another machine, never mirrored
     _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
+    return True
 
 
 STOPPED = "stopped: every recorded episode is kept; run the same command again to resume"
@@ -511,9 +629,9 @@ def _marker_on_sigterm(local: Path):
 
     def terminated(signum, frame):
         try:
-            _write_json(local / UNMIRRORED, {"failures": None, "at": _now(),
-                                             "last_error": "terminated (SIGTERM) before its "
-                                                           "last snapshot was confirmed"})
+            _leave_marker(local, {"failures": None, "at": _now(),
+                                  "last_error": "terminated (SIGTERM) before its last snapshot "
+                                                "was confirmed"})
         except Exception as exc:  # noqa: BLE001 - say so; the process ends either way
             _say(f"UNMIRRORED: the marker could not be written ({exc!r}); the newest records "
                  f"of {local} may exist only on this machine. Run `snapshot` before the "
@@ -563,7 +681,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
     splits, pilot, bank = _manifests(repo)
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     out = Path(args.out_dir)
-    _restore_if_missing(out, args.mirror_dir)
+    restored = _restore_if_missing(out, args.mirror_dir)
     report_path = out / report_name
     if report_path.exists():
         _out(report_path.read_text(encoding="utf-8"))
@@ -585,7 +703,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
                            f"new mirror)")
         if not started.exists():
             _write_json(started, identity)
-        mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
+        mirror = _attach_mirror(out, args.mirror_dir, marker=not disposable, restored=restored)
         ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=PILOT_CAPS,
                            session_info=_session_info(gpu, adapter, args.workers,
                                                       args.server_info),
@@ -599,7 +717,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
             ledger=ledger, trajectories_dir=out / "trajectories", run_id=run_id,
             code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
         started = _now()
-        report, stopped, mirrored = None, False, False
+        report, stopped, mirrored, broken = None, False, False, None
         try:
             try:
                 measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry),
@@ -613,13 +731,25 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
             freeze_json(report_path, report)
         except KeyboardInterrupt:
             stopped = True
+        except BrokenProcessPool as exc:
+            broken = exc
         finally:
             mirrored = _final_snapshot(mirror, out, marker=not disposable)
+    if broken is not None:
+        raise _worker_died(broken)
     if stopped:  # a rehearsal's records are disposable: it says itself that it stopped
         return 130 if disposable else _stopped(mirrored)
     _out(json.dumps({"measures": report["measures"], "projection": report["projection"]},
                     indent=2))
     return 0 if mirrored else EXIT_UNMIRRORED
+
+
+def _worker_died(exc: BaseException) -> CliError:
+    """A worker process killed (by the memory limit or a full disk): an
+    explained error after the last snapshot, its marker rule unchanged."""
+    return CliError(f"a worker process of the run ended abruptly ({exc}); out of memory or "
+                    f"disk? A High-RAM runtime, or fewer workers, then a rehearsal of that worker "
+                    f"count")
 
 
 def _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verified, commit,
@@ -658,6 +788,37 @@ def _rehearsal_stopped() -> int:
     return 130
 
 
+XGRAMMAR_CHECK = "the teacher schema compiled with xgrammar and the model's tokenizer"
+REHEARSAL_UNMIRRORED = ("the rehearsal's last snapshot to the mirror failed (the message above "
+                        "names the error); check that Google Drive is mounted, then start the "
+                        "rehearsal again with a new directory and a new mirror directory")
+
+
+XGRAMMAR_MISSING = ("xgrammar does not import here: run the rehearsal in the locked environment "
+                    "(the notebook's install cell, then `env-check`)")
+
+
+def _require_xgrammar(check_schema, failed: str) -> None:
+    """Right after the tokenizer loads: without xgrammar the compile check
+    after the preflight cannot pass, so a rehearsal fails before the
+    minutes of CPU its games take, not after them."""
+    if check_schema is None:
+        raise CliError(f"{failed}: {[XGRAMMAR_CHECK]}; {XGRAMMAR_MISSING}")
+
+
+def _require_schema_compiled(server, check_schema, checks: dict, failed: str) -> None:
+    """After the preflight's teacher request: the stand-in compiled its
+    schema with xgrammar and the model's tokenizer, as the server's grammar
+    backend does (ADR-0008). Without that compile a rehearsal proves
+    nothing about the teacher's request shape, so it fails now."""
+    checks[XGRAMMAR_CHECK] = server.schemas_compiled > 0
+    if not checks[XGRAMMAR_CHECK]:
+        raise CliError(
+            f"{failed}: {[XGRAMMAR_CHECK]}; "
+            + (XGRAMMAR_MISSING if check_schema is None
+               else "the preflight sent no teacher schema to compile"))
+
+
 def cmd_rehearse(args) -> int:
     """The pilot without a GPU or a model (``evaluation.exp0001.rehearsal``):
     the same checks, games, workers, ledger, tokenizer, mirror and report,
@@ -688,6 +849,8 @@ def cmd_rehearse(args) -> int:
     revision = resolve_revision(args.model, args.revision)
     counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
     _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python {sys.version.split()[0]}")
+    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
+    _require_xgrammar(check_schema, "the rehearsal failed")
 
     games = sorted(g["game_id"] for g in pilot["games"])
     factory = AlfworldEnvFactory(args.data_root, splits, extra_games={
@@ -722,7 +885,6 @@ def cmd_rehearse(args) -> int:
                 "weights": {"sha256": None, "note": "a rehearsal loads no weights"}}
     checks: dict[str, bool] = {}
     from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS
-    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
                                  template_kwargs=CHAT_TEMPLATE_KWARGS,
                                  check_schema=check_schema) as server:
@@ -745,7 +907,10 @@ def cmd_rehearse(args) -> int:
 
         preflight = _preflight(adapter())
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []}
+        _require_schema_compiled(server, check_schema, checks, "the rehearsal failed")
         server.outage_seed = attempt_sampling_seed(PILOT_ATTEMPT_SEED, games[len(games) // 2], 1)
+        if mirror_dir is not None:  # a mirror is made without parents: its own new directory
+            Path(mirror_dir).mkdir(parents=True, exist_ok=True)
         try:
             if run() == 130:  # stopped (the stop button, or the kernel): no second pass
                 return _rehearsal_stopped()
@@ -756,8 +921,15 @@ def cmd_rehearse(args) -> int:
         first = {r["key"] for r in _ledger_lines(out / "ledger.jsonl")
                  if r.get("type") == "episode"}
         checks["the first pass recorded part of the pilot"] = 0 < len(first)
-        checks["the first pass left no unmirrored marker"] = not (out / UNMIRRORED).exists()
         if mirror_dir is not None:
+            # the next pass restores from the mirror: its last snapshot must hold this
+            # pass's ledger, byte for byte (a rehearsal leaves no UNMIRRORED marker)
+            checks["the mirror's last snapshot holds the first pass's ledger"] = \
+                snapshot_file(mirror_dir, "ledger.jsonl") == (out / "ledger.jsonl").read_bytes()
+            if not checks["the mirror's last snapshot holds the first pass's ledger"]:
+                # the second pass would restore an older ledger: its checks would mean nothing
+                raise CliError(f"the rehearsal failed before the second pass: "
+                               f"{[name for name, ok in checks.items() if not ok]}")
             latest = latest_snapshot(mirror_dir)
             # one snapshot at the first record and one at the end (the 60-second cadence
             # between them needs a longer pass than a fast machine plays)
@@ -770,6 +942,8 @@ def cmd_rehearse(args) -> int:
         code = run()
         if code == 130:
             return _rehearsal_stopped()
+        if code == EXIT_UNMIRRORED:
+            raise CliError(REHEARSAL_UNMIRRORED)
         checks["the second pass finished"] = code == 0
         second_requests = server.requests - before[0] - (server.refused - before[1])
     report = _json(out / rehearsal.REHEARSAL_REPORT)
@@ -949,6 +1123,8 @@ def cmd_rehearse_run(args) -> int:
     counter = hf_token_counter(args.model, revision)  # the tokenizer alone, no weights
     _out(f"[rehearsal] {args.model}@{revision}: tokenizer loaded; Python "
          f"{sys.version.split()[0]}; the run will play {expected['episodes']['total']} episodes")
+    check_schema = rehearsal.xgrammar_check(counter.tokenizer)
+    _require_xgrammar(check_schema, "the run rehearsal failed")  # before the census's minutes
     deadline = time.monotonic() + args.max_hours * 3600
 
     def overdue() -> bool:
@@ -978,7 +1154,7 @@ def cmd_rehearse_run(args) -> int:
     so_far("the census")
     with rehearsal.StandInServer(args.model, policy, count_prompt=counter.count_chat_tokens,
                                  template_kwargs=CHAT_TEMPLATE_KWARGS,
-                                 check_schema=rehearsal.xgrammar_check(counter.tokenizer),
+                                 check_schema=check_schema,
                                  check_request=rr.run_protocol_issues, fail_request=faults,
                                  count_completion=counter.count_tokens) as server:
         session = Namespace(repo=repo, data_root=args.data_root, local_dir=local,
@@ -1003,6 +1179,7 @@ def cmd_rehearse_run(args) -> int:
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []} and \
             policy.kinds["preflight"] == 3
         so_far("the preflight")
+        _require_schema_compiled(server, check_schema, checks, "the run rehearsal failed")
 
         def restore_next() -> None:
             """The next pass restores the run from the mirror: its last snapshot
@@ -1023,12 +1200,15 @@ def cmd_rehearse_run(args) -> int:
                                f"rehearsal of that worker count") from None
             if code == 130:
                 raise KeyboardInterrupt  # stopped: a rehearsal never resumes (main says so)
+            if code == EXIT_UNMIRRORED:
+                raise CliError(REHEARSAL_UNMIRRORED)
             if overdue() and not (local / "report.json").exists():
                 raise CliError(f"the run rehearsal took more than --max-hours {args.max_hours}; "
                                f"start it again with a new directory and mirror directory")
             return code
 
         # pass 1: the blip, then the server dies in seed 11's R2
+        Path(args.mirror_dir).mkdir(parents=True, exist_ok=True)  # made without parents
         try:
             one_pass()
             checks["the server's death stopped the first pass"] = False
@@ -1262,6 +1442,35 @@ def _require_recycled_workers(workers: int) -> None:
 
 GAME_DISK_BYTES = 33 * 2 ** 20  # what an opened game keeps until its process ends (measured)
 RUN_DISK_BYTES = 2 * 2 ** 30  # the rehearsal's run directory and trajectories, with room
+# a run directory's disk per episode: the calibration pilot's largest trajectory was 1.22 MB
+# (its mean 0.36 MB; a trajectory grows with the square of its steps), and a ledger line is
+# about 1 KB
+EPISODE_DISK_BYTES = 1_250_000
+
+
+def _disk_needs(games: int, out_dir: Path | None, out_bytes: int) -> dict[str, int]:
+    """Bytes needed per filesystem: ``games`` under the temporary directory
+    and ``out_bytes`` under ``out_dir``, summed when they share a disk."""
+    import os
+    import tempfile
+    temp = tempfile.gettempdir()
+    if out_dir is None:
+        return {temp: games + out_bytes}
+    existing = next(p for p in (Path(out_dir), *Path(out_dir).absolute().parents) if p.exists())
+    if os.stat(existing).st_dev == os.stat(temp).st_dev:
+        return {temp: games + out_bytes}
+    return {temp: games, str(existing): out_bytes}
+
+
+def _require_free(needs: Mapping[str, int], what: str) -> None:
+    import shutil
+    for where, need in needs.items():
+        free = shutil.disk_usage(where).free
+        if free < need:
+            raise CliError(f"{what} needs about {need / 2 ** 30:.0f} GB of free disk under "
+                           f"{where}; {free / 2 ** 30:.0f} GB are free (GB here: 2**30 bytes, "
+                           f"GiB). Free space there (delete files you no longer need under it) "
+                           f"or use a runtime with a larger disk, then run the command again")
 
 
 def _require_rehearsal_disk(workers: int, out_dir: Path | None = None) -> None:
@@ -1271,25 +1480,35 @@ def _require_rehearsal_disk(workers: int, out_dir: Path | None = None) -> None:
     (the same disk unless it is elsewhere): a full disk would show hours in.
     The mirror's own disk (Drive on Colab) is not measured."""
     import os
-    import shutil
-    import tempfile
     from evaluation.exp0001 import run_rehearsal as rr
     from evaluation.exp0001.episodes import WORKER_TASKS
     census = min(workers, os.cpu_count() or 1) * rr.CENSUS_TASKS_PER_CHILD
     games = max(workers * WORKER_TASKS, census) * GAME_DISK_BYTES
-    temp = tempfile.gettempdir()
-    needs = {temp: games + RUN_DISK_BYTES}
-    if out_dir is not None:
-        existing = next(p for p in (Path(out_dir), *Path(out_dir).absolute().parents)
-                        if p.exists())
-        if os.stat(existing).st_dev != os.stat(temp).st_dev:
-            needs = {temp: games, str(existing): RUN_DISK_BYTES}
-    for where, need in needs.items():
-        free = shutil.disk_usage(where).free
-        if free < need:
-            raise CliError(f"the run rehearsal with {workers} workers needs about "
-                           f"{need / 2 ** 30:.0f} GB of free disk under {where}; "
-                           f"{free / 2 ** 30:.0f} GB are free")
+    _require_free(_disk_needs(games, out_dir, RUN_DISK_BYTES),
+                  f"the run rehearsal with {workers} workers")
+
+
+def _require_run_disk(workers: int, local: Path) -> None:
+    """Before anything is written: room under the temporary directory for
+    TextWorld's copies in the run's worker processes (``WORKER_TASKS``
+    games each, until a process is replaced), and under ``local`` for
+    ``EPISODE_DISK_BYTES`` per episode the cap still allows (ADR-0012 D9),
+    summed when both are one disk. The mirror's disk (Drive) is not
+    measured here."""
+    from evaluation.exp0001.episodes import WORKER_TASKS
+    from evaluation.exp0001.protocol import CAPS
+    recorded = 0
+    ledger = local / "ledger.jsonl"
+    if ledger.exists():
+        for line in ledger.read_bytes().splitlines():
+            try:
+                recorded += json.loads(line).get("type") == "episode"
+            except (ValueError, AttributeError):
+                continue  # a torn last line: repair-ledger's, not this check's
+    remaining = max(CAPS["episodes_max"] - recorded, 0)
+    _require_free(_disk_needs(workers * WORKER_TASKS * GAME_DISK_BYTES, local,
+                              remaining * EPISODE_DISK_BYTES),
+                  f"the run with {workers} workers and {remaining} episodes left under the cap")
 
 
 def _require_run_rehearsal(args, prepared: dict) -> None:
@@ -1321,13 +1540,16 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
     commit, dirty = git_state(repo)
     splits, pilot, bank = _manifests(repo)
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
-    _restore_if_missing(local, args.mirror_dir)
+    if not disposable:  # a rehearsal checks its own, smaller disk
+        _require_run_disk(args.workers, local)
+    restored = _restore_if_missing(local, args.mirror_dir)
     adapter = adapter()
     counter = counter()
     record = _run_start(args, local, prepared, adapter, splits, pilot, bank, commit, dirty,
                         counter.identity, _environment(verified))
     with _run_dir_lock(local, marker=not disposable) as lock:  # one writer, before the mirror
-        mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
+        mirror = _attach_mirror(local, args.mirror_dir, marker=not disposable,
+                                restored=restored)
         started = time.monotonic()
         budget = None if stop_after_hours is None else stop_after_hours * 3600
 
@@ -1347,7 +1569,7 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                          pause_when=pause if budget is not None or pause_when is not None
                          else None,
                          lock=lock)
-        report, stopped, mirrored = None, False, False
+        report, stopped, mirrored, broken = None, False, False, None
         try:
             report = run.run()
         except RunPaused as exc:
@@ -1357,10 +1579,14 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                  f"command again to resume.")
         except KeyboardInterrupt:
             stopped = True
+        except BrokenProcessPool as exc:
+            broken = exc
         finally:
             mirrored = _final_snapshot(mirror, local, marker=not disposable)
             if mirror and mirror.failures:
                 _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
+    if broken is not None:
+        raise _worker_died(broken)
     if stopped:
         return 130 if disposable else _stopped(mirrored)
     if report is not None:
@@ -1375,7 +1601,7 @@ def cmd_snapshot(args) -> int:
     if not (local / "ledger.jsonl").exists():
         raise CliError(f"{local} holds no run or pilot ledger")
     with _run_dir_lock(local):  # a command still running takes its own snapshots
-        if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
+        if not _final_snapshot(_attach_mirror(local, args.mirror_dir), local):
             return EXIT_UNMIRRORED
     _out(f"snapshot of {local} taken in {args.mirror_dir}")
     return 0
@@ -1426,10 +1652,28 @@ def cmd_figures(args) -> int:
 
 
 def cmd_repair_ledger(args) -> int:
-    note = repair_torn_tail(Path(args.run_dir) / "ledger.jsonl")
+    local = Path(args.run_dir)
+    if not (local / "ledger.jsonl").exists():
+        raise CliError(f"{local} holds no run or pilot ledger")
+    with _run_dir_lock(local):  # never under a command that still appends to it
+        note = repair_torn_tail(local / "ledger.jsonl")
+        restored = append_pending_restore_note(local)  # after the cut, never before
     print("the ledger ends with a complete record; nothing to repair" if note is None
           else json.dumps(note))
+    if restored is not None:
+        print(json.dumps(restored))
     return 0
+
+
+def _hours(text: str) -> float:
+    import math
+    try:
+        hours = float(text)
+    except ValueError:
+        hours = math.nan
+    if not math.isfinite(hours) or hours <= 0:
+        raise argparse.ArgumentTypeError(f"a finite number of hours above 0, not {text!r}")
+    return hours
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1454,6 +1698,8 @@ def parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("mirror-check")
     p.add_argument("--mirror-dir", type=Path, required=True)
+    p.add_argument("--need-gb", type=float, default=RUN_DRIVE_GB,
+                   help="free space the mirror's filesystem must have, when it reports it")
     p.set_defaults(func=cmd_mirror_check)
 
     p = sub.add_parser("run-commit")
@@ -1505,7 +1751,7 @@ def parser() -> argparse.ArgumentParser:
         else:
             p.add_argument("--local-dir", type=Path, required=True)
             p.add_argument("--run-id", default=None, help="required for a new run")
-            p.add_argument("--stop-after-hours", type=float, default=None,
+            p.add_argument("--stop-after-hours", type=_hours, default=None,
                            help="admit no new episode after this many hours of this session; "
                                 "the run stays resumable (compute-unit budgeting)")
             p.add_argument("--rehearsal-passed", type=Path, required=True,

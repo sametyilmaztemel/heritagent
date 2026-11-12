@@ -331,12 +331,16 @@ def test_the_protocol_constants_are_the_manifests():
         LOCKED_SPLIT_MANIFEST_SHA256,
         MINING_SEEDS,
     )
+    from evaluation.metrics.final_statistics import MINING_SEEDS as FINAL_MINING_SEEDS
     from tests.evaluation.test_exp0001_artifacts import MANIFESTS
     text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
     for name in ("episodes_max", "model_calls_max", "wall_clock_hours_max", "accelerator_nodes_max"):
         assert int(re.search(rf"^\s+{name}: (\d+)", text, re.MULTILINE).group(1)) == CAPS[name]
-    assert re.search(r"^\s+mining_seeds: \[11, 23, 41\]", text, re.MULTILINE)
-    assert MINING_SEEDS == (11, 23, 41)
+    # evaluation.mining_seeds in its own block: compute_cap carries the same line first
+    evaluation = re.search(r"^evaluation:[^\n]*\n((?:  .*\n|\n)+)", text, re.MULTILINE)
+    assert evaluation, "the evaluation block is missing"
+    assert re.search(r"^  mining_seeds: \[11, 23, 41\]", evaluation.group(1), re.MULTILINE)
+    assert MINING_SEEDS == FINAL_MINING_SEEDS == (11, 23, 41)
     assert int(re.search(r"^\s+cap: (\d+)\s+# K", text, re.MULTILINE).group(1)) == CANDIDATE_CAP
     assert f"sha256: {LOCKED_SPLIT_MANIFEST_SHA256}" in text and \
         f"sha256: {LOCKED_PILOT_SHA256}" in text and f"sha256: {LOCKED_BENEFIT_BANK_SHA256}" in text

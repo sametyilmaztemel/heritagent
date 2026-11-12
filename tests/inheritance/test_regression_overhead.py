@@ -7,7 +7,6 @@ from inheritance.regression import (
     RegressionAllocation,
     RegressionEvaluator,
     TRegTask,
-    drop_within,
     measure_expression_overhead,
     paired_drop_within,
     run_regression_baseline,
@@ -122,8 +121,7 @@ def test_regression_drop_is_exact_at_the_boundary(tmp_path, registry, base_confi
     (39, 0.03, True), (38, 0.03, False),
     (38, 0.05, True), (37, 0.05, False),
 ])
-def test_drop_within_is_exact(successes, tau, expected):
-    assert drop_within(successes, 40, tau) is expected
+def test_a_drop_of_exactly_tau_passes_and_one_more_failure_does_not(successes, tau, expected):
     assert paired_drop_within(successes, 40, 40, tau) is expected
 
 

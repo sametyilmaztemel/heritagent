@@ -4,6 +4,7 @@ writer, and every cap counts the episodes in flight. Scripted games and
 models only."""
 
 import json
+from concurrent.futures.process import BrokenProcessPool
 
 import pytest
 
@@ -13,7 +14,7 @@ from evaluation.exp0001.lifetime import lifetime_specs, run_lifetime, run_lifeti
 from evaluation.exp0001.protocol import CAPS, MINING_SEEDS
 from runtime.seed_g0 import g0_runtime_config
 from tests.conftest import registry  # noqa: F401 (fixture)
-from tests.evaluation.exp0001_workers import FailOnTask, GameFactory
+from tests.evaluation.exp0001_workers import DyingGameFactory, FailOnTask, GameFactory
 from tests.evaluation.test_exp0001_lifetime import (
     COMMIT,
     PATTERN,
@@ -195,3 +196,41 @@ def test_a_submit_failure_charges_the_admitted_attempt(tmp_path, registry, monke
     reloaded = RunLedger(tmp_path / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
     assert (ledger.in_flight, ledger.aborted_attempts, ledger.model_calls) == \
         (0, reloaded.aborted_attempts, reloaded.model_calls) == (0, 1, 60)
+
+
+def test_a_dying_worker_charges_every_attempt_in_flight(tmp_path, registry):  # noqa: F811
+    """A worker killed mid-episode (an out-of-memory kill) breaks the pool:
+    every attempt in flight is aborted and charged, as a reload charges it,
+    and a new executor resumes to the sequential results (ADR-0008 D5)."""
+    config, seed = g0_runtime_config(registry), MINING_SEEDS[0]
+    specs = lifetime_specs(tasks(), config, seed)
+    path = tmp_path / "par" / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=CAPS)
+    dying = EpisodeExecutor(model=SeededModel(wins=wins_for(PATTERN)),
+                            env_factory=DyingGameFactory(specs[4].task_id), ledger=ledger,
+                            trajectories_dir=tmp_path / "par" / "trajectories", run_id=RUN_ID,
+                            code_commit=COMMIT, workers=2, sleep_between_retries=False)
+    try:
+        with pytest.raises(BrokenProcessPool):
+            dying.run_many(specs)
+    finally:
+        dying.close()
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    attempts = sum(1 for r in lines if r["type"] == "attempt")
+    assert ledger.state == "running" and ledger.in_flight == 0
+    assert ledger.aborted_attempts == attempts - ledger.episodes >= 1
+    assert not ledger.is_done(specs[4].key)
+    reloaded = RunLedger(path, run_id=RUN_ID, clock=Clock(), caps=CAPS)
+    assert (reloaded.episodes, reloaded.aborted_attempts, reloaded.model_calls) == \
+        (ledger.episodes, ledger.aborted_attempts, ledger.model_calls)
+    sequential, _ = parallel_executor(tmp_path / "seq", SeededModel(wins=wins_for(PATTERN)),
+                                      workers=1)
+    expected = run_lifetime(sequential, tasks(), config, seed)
+    resumed, again = parallel_executor(tmp_path / "par", SeededModel(wins=wins_for(PATTERN)))
+    try:
+        results = resumed.run_many(specs)
+    finally:
+        resumed.close()
+    assert [{**r, "trajectory_path": None, "resumed": None} for r in map(vars, results)] == \
+        [{**r, "trajectory_path": None, "resumed": None} for r in map(vars, expected)]
+    assert again.episodes == 12 and again.in_flight == 0

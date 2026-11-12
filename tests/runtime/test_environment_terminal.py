@@ -71,6 +71,44 @@ def test_retryable_failure_still_retries(g0_config):
     assert result.status == "finished"
 
 
+class _StepLimitedSession:
+    """TextWorld's single-game API opened with max_episode_steps: the game
+    itself reports done on its last step, without a win."""
+
+    def __init__(self, max_episode_steps: int):
+        self.max_episode_steps = max_episode_steps
+        self.steps = 0
+
+    def reset(self):
+        return "You are in a room.\n\nYour task is to: put a hot egg in fridge.", {
+            "won": False, "admissible_commands": ["look"]}
+
+    def step(self, command):
+        self.steps += 1
+        done = self.steps >= self.max_episode_steps
+        return "You are in a room.", 0.0, done, {"won": False, "admissible_commands": ["look"]}
+
+
+def test_a_loss_on_the_last_allowed_step_ends_as_environment_terminal(g0_config):
+    """The game is opened with the episode budget as its own step limit
+    (backends.py, EPISODE_MAX_STEPS), so a 50-step loss ends on the game's
+    done, before the loop's max_steps check: environment_terminal, no
+    exhausted budget."""
+    from runtime.model_adapters import ScriptedAdapter
+    from runtime.seed_g0 import EPISODE_MAX_STEPS
+    from runtime.tool_adapters.alfworld import AlfworldEnvironment
+    env = AlfworldEnvironment(_StepLimitedSession(EPISODE_MAX_STEPS), game_id="g")
+    task = env.start()
+    adapter = ScriptedAdapter([react_action("act", {"command": "look"})] * (EPISODE_MAX_STEPS + 1))
+    result = run_agent(config=g0_config, model=adapter, env=env, task=task,
+                       budgets=Budgets(max_steps=EPISODE_MAX_STEPS, max_total_retries=10),
+                       sleep=lambda _delay: None)
+    assert (result.status, result.steps) == ("environment_terminal", EPISODE_MAX_STEPS)
+    assert not result.events.of_kind("budget_exhausted")
+    record = env.record()
+    assert (record.won, record.done, record.steps) == (False, True, EPISODE_MAX_STEPS)
+
+
 def test_planner_schema_allows_the_adr0003_step_budget():
     schema = json.loads(Path(
         "runtime/expression/payload_schemas/planner_policy.schema.json").read_text())

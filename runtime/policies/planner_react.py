@@ -13,6 +13,7 @@ import json
 import re
 
 from runtime.model_adapters import ModelMessage, ToolSpec
+from runtime.model_adapters.base import MAX_JSON_DEPTH, json_depth
 from runtime.policies.decisions import StepDecision, ToolAction
 from runtime.policies.errors import PlanParseError
 from runtime.skills import skill_block
@@ -102,9 +103,20 @@ class ReActPlanner:
         input_match = _INPUT_RE.search(text)
         if not (thought_match and action_match and input_match):
             raise PlanParseError("reply does not match the ReAct format (Thought/Action/Action Input or Final Answer)")
+        too_deep = f"Action Input nests deeper than {MAX_JSON_DEPTH} levels"
         try:
             arguments = json.loads(input_match.group(1))
-        except json.JSONDecodeError as exc:
+        except RecursionError:
+            raise PlanParseError(too_deep) from None
+        except ValueError as exc:  # also an integer past Python's digit limit
+            raise PlanParseError(f"Action Input is not valid JSON: {exc}") from None
+        if json_depth(arguments) > MAX_JSON_DEPTH:
+            raise PlanParseError(too_deep)
+        try:
+            # NaN, an overflowing literal and a lone surrogate escape load here
+            # but cannot be recorded as strict UTF-8 JSON: retry them instead
+            json.dumps(arguments, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except ValueError as exc:
             raise PlanParseError(f"Action Input is not valid JSON: {exc}") from None
         if not isinstance(arguments, dict):
             raise PlanParseError("Action Input must be a JSON object")

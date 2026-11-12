@@ -35,7 +35,7 @@ from evaluation.exp0001.gate_runner import (
     key_round,
     queue_order,
 )
-from evaluation.exp0001.ledger import RunLedger
+from evaluation.exp0001.ledger import RunLedger, append_note, repair_torn_tail
 from evaluation.exp0001.pilot import build_pilot_manifest
 from evaluation.exp0001.pipeline import Exp0001Run, RunError, _record_store_issues, cig_id
 from evaluation.exp0001.protocol import CAPS, FINAL_EVALUATION_RESERVE, MINING_SEEDS
@@ -957,6 +957,28 @@ def test_a_t_reg_shortfall_stops_the_run_and_a_crash_before_the_stop_is_finished
     assert ledger.state == "incomplete" and ledger.reason == report["reason"]
 
 
+def test_a_repair_between_a_protocol_stop_report_and_its_stop_record_is_finished(
+        tmp_path, splits, monkeypatch):
+    run_dir = tmp_path / "run"
+
+    def torn(self, reason):
+        with self._path.open("a", encoding="utf-8") as handle:
+            handle.write('{"type":"incomplete","rea')
+        raise SystemExit("VM lost while writing the stop record")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(RunLedger, "abandon", torn)
+        with pytest.raises(SystemExit):
+            make_run(run_dir, splits, agent=NeverWins()).run()
+    report = json.loads((run_dir / "report.json").read_text())
+    assert report["status"] == "incomplete" and report["ledger_notes"] == []
+    assert repair_torn_tail(run_dir / "ledger.jsonl")["type"] == "repair"
+    assert make_run(run_dir, splits, agent=NeverWins()).run() == report
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.state == "incomplete" and ledger.reason == report["reason"]
+    assert [n["type"] for n in ledger.notes] == ["repair"]
+
+
 def test_a_cap_stop_whose_report_was_lost_gets_a_rebuilt_report(tmp_path, splits):
     run_dir = tmp_path / "run"
     caps = {**CAPS, "episodes_max": 100}
@@ -1072,6 +1094,50 @@ def test_a_crash_between_the_report_and_the_complete_record_is_finished(tmp_path
     agent = Agent()
     assert make_run(run_dir, splits, agent=agent).run() == clean[1] and agent.calls == 0
     assert RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock()).state == "complete"
+
+
+def test_a_restore_between_the_report_and_the_complete_record_is_finished(tmp_path, clean,
+                                                                          splits):
+    """ADR-0008 D5: a restore note may follow the frozen report; the report
+    keeps the notes it was frozen with, and the ledger holds the new one."""
+    run_dir = reopened_copy(clean, tmp_path)
+    (run_dir / "report.json").write_text(json.dumps(clean[1]))  # frozen before the crash
+    append_note(run_dir / "ledger.jsonl", {"type": "restore", "snapshot_seq": 7})
+    agent = Agent()
+    assert make_run(run_dir, splits, agent=agent).run() == clean[1] and agent.calls == 0
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.state == "complete" and [n["type"] for n in ledger.notes] == ["restore"]
+    assert json.loads((run_dir / "report.json").read_text()) == clean[1]
+    note = {"type": "restore", "snapshot_seq": 3}
+    for name, frozen in (("other-count", {**clean[1], "episodes": clean[1]["episodes"] + 1}),
+                         ("unknown-note", {**clean[1], "ledger_notes": [note]})):
+        broken = reopened_copy(clean, tmp_path / name)
+        (broken / "report.json").write_text(json.dumps(frozen))
+        append_note(broken / "ledger.jsonl", {"type": "restore", "snapshot_seq": 7})
+        with pytest.raises(ProvenanceError, match="frozen with other content"):
+            make_run(broken, splits).run()
+
+
+def test_a_report_frozen_with_a_note_keeps_it_when_a_later_note_follows(tmp_path, clean,
+                                                                         splits):
+    """The notes a report was frozen with must be the ledger's first notes;
+    a later note stays in the ledger only."""
+    first, later = {"type": "restore", "snapshot_seq": 3}, {"type": "restore", "snapshot_seq": 7}
+    run_dir = reopened_copy(clean, tmp_path)
+    append_note(run_dir / "ledger.jsonl", first)
+    frozen = {**clean[1], "ledger_notes": [first]}
+    (run_dir / "report.json").write_text(json.dumps(frozen))
+    append_note(run_dir / "ledger.jsonl", later)
+    agent = Agent()
+    assert make_run(run_dir, splits, agent=agent).run() == frozen and agent.calls == 0
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.state == "complete" and [n["snapshot_seq"] for n in ledger.notes] == [3, 7]
+    broken = reopened_copy(clean, tmp_path / "not-first")
+    append_note(broken / "ledger.jsonl", first)
+    (broken / "report.json").write_text(json.dumps({**clean[1], "ledger_notes": [later]}))
+    append_note(broken / "ledger.jsonl", later)
+    with pytest.raises(ProvenanceError, match="frozen with other content"):
+        make_run(broken, splits).run()
 
 
 def test_a_crash_between_the_frozen_set_and_its_charge_is_charged_once(tmp_path, splits,

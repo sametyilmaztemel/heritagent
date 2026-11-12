@@ -211,3 +211,15 @@ def test_the_installed_versions_list_a_name_on_every_path_entry_in_order(tmp_pat
     ("--extra-index-url https://download.pytorch.org/whl/cu129", None)])
 def test_a_pin_is_a_name_and_a_version(line, pin):
     assert environment.pinned_versions(line) == ({} if pin is None else dict([pin]))
+
+
+def test_env_check_names_a_distribution_without_metadata(tmp_path, monkeypatch, capsys):
+    """A broken install leaves a .dist-info without METADATA: the check
+    names it instead of failing with a TypeError."""
+    import importlib
+    (tmp_path / "broken-1.0.dist-info").mkdir()
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    assert cli.main(["env-check", "--repo", str(ROOT)]) == 2
+    assert f"a distribution without METADATA at {tmp_path / 'broken-1.0.dist-info'}" in \
+        capsys.readouterr().err

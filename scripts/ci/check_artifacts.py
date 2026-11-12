@@ -6,7 +6,8 @@ Default mode (offline, gates PRs):
 2. the example genomes pass the EAG loader (schema + semantic checks): the
    doc example in architecture/eag-v0-schema.md and the G0 seed genome;
 3. every tracked experiment manifest parses as a YAML mapping (style lint is
-   yamllint's job, see .yamllint.yaml);
+   yamllint's job, see .yamllint.yaml), and EXP-0001's locked values equal
+   the constants the run executes;
 4. every relative Markdown link in a tracked *.md file resolves.
 
 --external-links instead checks the citations in research/**/*.md for link
@@ -50,6 +51,7 @@ PREREGISTERED_STATUS = "preregistered-locked"
 EXP0001_LIFECYCLE_STATUSES = {PREREGISTERED_STATUS, "running", "completed",
                                "incomplete", "aborted"}
 EXP0001_ID = "EXP-0001"
+EXP0001_MANIFEST = "experiments/manifests/EXP-0001-minimal-cig.yaml"
 PREREG_GATE_STAGES = ("replay", "ablation", "generalization_combined",
                       "interaction_regression_overhead", "final_promoted")
 PREREG_CAP_FIELDS = ("accelerator_nodes_max", "episodes_max",
@@ -60,6 +62,8 @@ LOCKED_MINING_SEEDS = [11, 23, 41]
 LOCKED_H2_CRITERION = "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
 LOCKED_H1_CRITERION = "C-A > 0, CI excl. 0"
 LOCKED_SEED_CRITERION = "direction holds in >= 2/3 mining seeds"
+LOCKED_PRIMARY_STATISTIC = "cluster bootstrap 95% CI over tasks, 10k resamples"
+LOCKED_LIFETIME_PAIRING = "first-success-first-failure"  # ADR-0007 E1; no code constant
 
 
 def _valid_iso_date(value) -> bool:
@@ -89,7 +93,22 @@ def _generic_prereg_checks(prereg: dict, err) -> None:
 def _enforce_exp0001_locked_values(manifest: dict, prereg: dict, err) -> None:
     """EXP-0001's locked scientific preregistration: enforced at EVERY
     lifecycle status (preregistered-locked, running, completed, incomplete,
-    aborted) — a status change never exempts the locked values."""
+    aborted) — a status change never exempts the locked values. The
+    decision rules come first: a broken expected_results block never hides
+    them."""
+    # the PRIMARY support criteria are locked decision rules — expectations
+    # never replace them, at any lifecycle status
+    evaluation = manifest.get("evaluation")
+    statistics = evaluation.get("statistics") if isinstance(evaluation, dict) else None
+    if not isinstance(statistics, dict):
+        statistics = {}
+    for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
+                          ("h1_supported_if", LOCKED_H1_CRITERION),
+                          ("seed_consistency", LOCKED_SEED_CRITERION)):
+        actual = statistics.get(field)
+        if actual != locked:
+            err(f"locked primary support criterion {field} changed: "
+                f"{actual!r} != {locked!r}")
     if prereg.get("expected_results_filled") is not True:
         err("preregistration.expected_results_filled must be true (the "
             "preregistration is locked and can never revert to unfilled)")
@@ -196,19 +215,8 @@ def _enforce_exp0001_locked_values(manifest: dict, prereg: dict, err) -> None:
 
     scan(prereg, "preregistration")
 
-    # the PRIMARY support criteria are locked decision rules — expectations
-    # never replace them, at any lifecycle status
-    statistics = (manifest.get("evaluation") or {}).get("statistics") or {}
-    for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
-                          ("h1_supported_if", LOCKED_H1_CRITERION),
-                          ("seed_consistency", LOCKED_SEED_CRITERION)):
-        actual = statistics.get(field)
-        if actual != locked:
-            err(f"locked primary support criterion {field} changed: "
-                f"{actual!r} != {locked!r}")
 
-
-def check_preregistration(manifest: dict, label: str) -> list[str]:
+def check_preregistration(manifest: dict, label: str, *, bound: bool = False) -> list[str]:
     """Manifest preregistration checks (issue #6, SPEC section 33).
 
     Lifecycle-safe and scoped: a preregistration block claiming
@@ -219,7 +227,9 @@ def check_preregistration(manifest: dict, label: str) -> list[str]:
     the exact prereg (drift still fails CI), and ``preregistered-locked``
     is the only valid pre-execution status. Future experiment manifests
     (EXP-0002, ...) are never constrained by EXP-0001's seeds, criteria
-    strings, gate shape or caps."""
+    strings, gate shape or caps. ``bound``: the file at EXP-0001's own
+    path, checked as EXP-0001 whatever its id or blocks say; a missing
+    preregistration block there is a FAIL line, never a skip."""
     issues: list[str] = []
 
     def err(message: str) -> None:
@@ -227,26 +237,108 @@ def check_preregistration(manifest: dict, label: str) -> list[str]:
 
     experiment = manifest.get("experiment")
     if not isinstance(experiment, dict):
-        return issues  # not an experiment manifest body
+        if not bound:
+            return issues  # not an experiment manifest body
+        experiment = {}
     prereg = experiment.get("preregistration")
-    if prereg is None:
+    if bound and not isinstance(prereg, dict):
+        err(f"is the EXP-0001 manifest, but has no preregistration block (got "
+            f"{type(prereg).__name__}); restore it")
+        prereg = {}
+    elif prereg is None:
         return issues  # pre-preregistration manifests are allowed
-    if not isinstance(prereg, dict):
+    elif not isinstance(prereg, dict):
         err(f"preregistration must be a mapping, got {type(prereg).__name__}")
         return issues
+    else:
+        _generic_prereg_checks(prereg, err)
 
-    _generic_prereg_checks(prereg, err)
-
-    if experiment.get("id") != EXP0001_ID:
+    if experiment.get("id") != EXP0001_ID and not bound:
         return issues  # future experiments: generic checks only
 
     status = experiment.get("status")
-    if status not in EXP0001_LIFECYCLE_STATUSES:
+    if not isinstance(status, str) or status not in EXP0001_LIFECYCLE_STATUSES:
         err(f"invalid EXP-0001 lifecycle status {status!r}; allowed: "
             f"{sorted(EXP0001_LIFECYCLE_STATUSES)}")
     # locked values are enforced REGARDLESS of the (valid or invalid)
     # status — a status change never exempts the preregistration
     _enforce_exp0001_locked_values(manifest, prereg, err)
+    return issues
+
+
+def exp0001_code_bindings() -> list[tuple[str, object, str]]:
+    """(manifest path, value the run executes, its source) for the locked
+    EXP-0001 values that a code constant carries. Each path is read in its
+    own parent block, so a value that also appears elsewhere in the
+    manifest (mining_seeds under compute_cap) cannot stand in for it."""
+    from evaluation.benchmarks.alfworld.splits import POOL_PER_FAMILY_MIN, T_EVAL_SIZE
+    from evaluation.exp0001 import protocol
+    from evaluation.exp0001.benefit_bank import BANK_PER_FAMILY
+    from evaluation.metrics import final_statistics
+    from inheritance.interaction import HARMFUL_PAIR_DELTA
+    from inheritance.overlay import EVAL_TEMPERATURE, evaluation_settings
+    from inheritance.regression import REGRESSION_TASK_COUNT, TAU_K_TOKENS
+    from runtime.seed_g0 import EPISODE_MAX_STEPS
+
+    return [
+        ("evaluation.mining_seeds", list(final_statistics.MINING_SEEDS),
+         "final_statistics.MINING_SEEDS"),
+        ("evaluation.mining_seeds", list(protocol.MINING_SEEDS), "protocol.MINING_SEEDS"),
+        ("evaluation.statistics.primary", LOCKED_PRIMARY_STATISTIC,
+         "check_artifacts.LOCKED_PRIMARY_STATISTIC"),
+        ("environment.splits.T_eval.size", T_EVAL_SIZE, "splits.T_EVAL_SIZE"),
+        ("environment.splits.T_reg.size", REGRESSION_TASK_COUNT,
+         "regression.REGRESSION_TASK_COUNT"),
+        ("environment.splits.T_mine.per_family_min", POOL_PER_FAMILY_MIN["t_mine"],
+         "splits.POOL_PER_FAMILY_MIN['t_mine']"),
+        ("environment.splits.T_gate.benefit_bank.per_family", BANK_PER_FAMILY,
+         "benefit_bank.BANK_PER_FAMILY"),
+        ("environment.episode_max_steps", EPISODE_MAX_STEPS, "seed_g0.EPISODE_MAX_STEPS"),
+        ("model.eval_temperature", EVAL_TEMPERATURE, "overlay.EVAL_TEMPERATURE"),
+        ("model.eval_temperature", evaluation_settings().temperature,
+         "overlay.evaluation_settings().temperature"),
+        ("model.mining_temperature", protocol.MINING_TEMPERATURE,
+         "protocol.MINING_TEMPERATURE"),
+        ("genome.candidate_set.cap", protocol.CANDIDATE_CAP, "protocol.CANDIDATE_CAP"),
+        ("inheritance.expression_overhead_cap_tokens", TAU_K_TOKENS,
+         "regression.TAU_K_TOKENS"),
+        ("inheritance.stages.interaction.harmful_pair_threshold", HARMFUL_PAIR_DELTA,
+         "interaction.HARMFUL_PAIR_DELTA"),
+        ("run_protocol.lifetime.attempts_per_task", protocol.LIFETIME_ATTEMPTS_PER_TASK,
+         "protocol.LIFETIME_ATTEMPTS_PER_TASK"),
+        ("run_protocol.lifetime.temperature", protocol.MINING_TEMPERATURE,
+         "protocol.MINING_TEMPERATURE"),
+        ("run_protocol.lifetime.pairing", LOCKED_LIFETIME_PAIRING,
+         "check_artifacts.LOCKED_LIFETIME_PAIRING"),
+        ("run_protocol.t_reg.size", protocol.T_REG_SIZE, "protocol.T_REG_SIZE"),
+        ("run_protocol.t_reg.seed", protocol.T_REG_SEED, "protocol.T_REG_SEED"),
+        ("run_protocol.benefit_bank.per_family", BANK_PER_FAMILY,
+         "benefit_bank.BANK_PER_FAMILY"),
+    ]
+
+
+def _same(actual, expected) -> bool:
+    """Equal and of the same type, so 1 never stands in for 1.0 or True."""
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) == len(expected) and \
+            all(_same(a, e) for a, e in zip(actual, expected))
+    return type(actual) is type(expected) and actual == expected
+
+
+def check_exp0001_code_binding(manifest: dict, label: str) -> list[str]:
+    """The locked EXP-0001 manifest values equal the constants the run
+    executes (SPEC section 33): a manifest edit, or a code edit, that
+    separates them fails CI. Change both only through a pre-registered
+    amendment."""
+    issues = []
+    for path, expected, source in exp0001_code_bindings():
+        node = manifest
+        for key in path.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+        if not _same(node, expected):
+            issues.append(f"{label}: {path} is {node!r}, but {source} is {expected!r}; the "
+                          f"manifest is locked, so restore the value or pre-register an "
+                          f"amendment")
     return issues
 
 FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
@@ -374,6 +466,8 @@ def check_manifests() -> list[str]:
     paths = tracked("experiments/manifests/*.yaml") + tracked("experiments/manifests/*.yml")
     if not paths:
         return ["no experiment manifests found"]
+    if EXP0001_MANIFEST not in {rel(path) for path in paths}:
+        errors.append(f"{EXP0001_MANIFEST} is missing")
     for path in paths:
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -383,7 +477,16 @@ def check_manifests() -> list[str]:
         if not isinstance(data, dict):
             errors.append(f"{rel(path)}: top level is {type(data).__name__}, expected a mapping")
             continue
-        errors.extend(check_preregistration(data, rel(path)))
+        errors.extend(check_preregistration(data, rel(path),
+                                            bound=rel(path) == EXP0001_MANIFEST))
+        experiment = data.get("experiment")
+        experiment_id = experiment.get("id") if isinstance(experiment, dict) else None
+        # bound by its path: editing its own id must not lift the binding
+        if rel(path) == EXP0001_MANIFEST and experiment_id != EXP0001_ID:
+            errors.append(f"{rel(path)}: is the EXP-0001 manifest, but its experiment.id is "
+                          f"{experiment_id!r}; restore {EXP0001_ID!r}")
+        if rel(path) == EXP0001_MANIFEST or experiment_id == EXP0001_ID:
+            errors.extend(check_exp0001_code_binding(data, rel(path)))
     print(f"manifests: {len(paths)} checked")
     return errors
 

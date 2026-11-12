@@ -42,3 +42,17 @@ def test_a_hostile_line_fails_closed_with_a_typed_error(tmp_path, registry, cont
     for allow_incomplete in (False, True):
         with pytest.raises(MalformedTrajectoryError, match=message):
             load_trajectory(bad, allow_incomplete=allow_incomplete)
+
+
+def test_a_line_with_a_duplicate_key_fails_closed(tmp_path, registry, context):
+    """A parser that keeps the first value would read the forged answer;
+    the digest binds only the last one, so such a line is refused."""
+    path = finalized(tmp_path, registry, context)
+    lines = path.read_bytes().split(b"\n")
+    index = next(i for i, line in enumerate(lines) if b'"kind":"finished"' in line)
+    lines[index] = lines[index].replace(b'"data":{', b'"data":{"answer":"FORGED",', 1)
+    path.write_bytes(b"\n".join(lines))
+    for allow_incomplete in (False, True):
+        with pytest.raises(MalformedTrajectoryError,
+                           match=f"line {index + 1}: duplicate key 'answer'"):
+            load_trajectory(path, allow_incomplete=allow_incomplete)

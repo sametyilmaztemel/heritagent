@@ -219,7 +219,8 @@ def xgrammar_unsupported(schema) -> str | None:
 def xgrammar_check(tokenizer) -> Callable[[dict], None] | None:
     """A compile of a response-format schema with xgrammar and the model's
     own tokenizer, as the server's grammar backend does at request time;
-    None when xgrammar is not installed (the notebooks install it)."""
+    None when xgrammar is not installed (the notebooks install it), and the
+    rehearsals then fail their compile check."""
     if tokenizer is None:
         return None
     try:

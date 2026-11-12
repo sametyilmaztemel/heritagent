@@ -80,12 +80,19 @@ class TrajectoryRecorder:
         self._events: list[dict] = []
         self._finalized = False
         self._closed = False
+        header = {"record": "header", "schema_version": "0.1",
+                  "trajectory_id": self.trajectory_id,
+                  "context": self._context_snapshot}
+        try:
+            canonical_json(header).encode("utf-8")  # refuse before the file exists, not after
+        except (TypeError, ValueError) as exc:
+            raise RecorderError(
+                f"trajectory header is not strict JSON ({exc}); nothing was written to "
+                f"{str(self.path)!r}; fix the TrajectoryContext fields") from None
         # atomic exclusive creation happens inside JsonlWriter (mode "x"):
         # fail closed BEFORE writing any bytes, no check-then-open race
         self._writer = JsonlWriter(self.path)
-        self._writer.append({"record": "header", "schema_version": "0.1",
-                             "trajectory_id": self.trajectory_id,
-                             "context": self._context_snapshot})
+        self._writer.append(header)
 
     # -- hook contract ------------------------------------------------------
     def _require_open(self) -> None:
@@ -121,8 +128,8 @@ class TrajectoryRecorder:
             "data": copy.deepcopy(event.data),
         }
         try:
-            serialized = canonical_json(record)
-        except ValueError as exc:  # non-finite floats etc. — strict JSON
+            serialized = canonical_json(record).encode("utf-8")
+        except ValueError as exc:  # non-finite floats, lone surrogates — strict UTF-8 JSON
             raise RecorderError(f"event payload is not strict JSON: {exc}") from None
         incremental_issues = validate_event_stream(self._events + [record],
                                                     require_terminal=False)

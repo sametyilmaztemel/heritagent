@@ -367,7 +367,7 @@ class SomaticStore:
         replay_history: dict[tuple[str, int], list[dict]] = {}
         prev: str | None = None
         for index, record in enumerate(records):
-            seq = record["seq"]
+            seq = record.get("seq")  # a record without seq is reported, not raised
             if seq != index + 1:
                 issues_sink.append(f"record {index + 1}: seq {seq!r} is not contiguous")
                 continue
@@ -388,36 +388,44 @@ class SomaticStore:
 
             key = (record["trait"]["gene_id"], record["trait"]["version"])
             envelope = record["envelope"]
-            envelope_key = (envelope["candidate"]["gene_id"],
-                             envelope["candidate"]["version"])
-            if envelope_key != key:
-                issues_sink.append(f"record {seq}: envelope identity {envelope_key} "
-                                    f"disagrees with record trait {key}")
-                continue
-            op = record["op"]
-            # centralized transition validation FIRST (same contract as the
-            # live write path), then the existing schema/registry boundary
-            if op == "candidate_added":
-                transition_issues = self._candidate_insert_issues(envelope)
-                if key in replay_envelopes:
-                    transition_issues.append(
-                        f"duplicate candidate insertion for {key}")
-                if transition_issues:
-                    issues_sink.extend(f"record {seq}: {issue}"
-                                        for issue in transition_issues)
+            try:
+                envelope_key = (envelope["candidate"]["gene_id"],
+                                 envelope["candidate"]["version"])
+                if envelope_key != key:
+                    issues_sink.append(f"record {seq}: envelope identity {envelope_key} "
+                                        f"disagrees with record trait {key}")
                     continue
-            elif op == "decision_recorded":
-                current = replay_envelopes.get(key)
-                if current is None:
-                    issues_sink.append(f"record {seq}: decision for unknown trait {key}")
+                op = record["op"]
+                # centralized transition validation FIRST (same contract as the
+                # live write path), then the existing schema/registry boundary
+                if op == "candidate_added":
+                    transition_issues = self._candidate_insert_issues(envelope)
+                    if key in replay_envelopes:
+                        transition_issues.append(
+                            f"duplicate candidate insertion for {key}")
+                    if transition_issues:
+                        issues_sink.extend(f"record {seq}: {issue}"
+                                            for issue in transition_issues)
+                        continue
+                elif op == "decision_recorded":
+                    current = replay_envelopes.get(key)
+                    if current is None:
+                        issues_sink.append(f"record {seq}: decision for unknown trait {key}")
+                        continue
+                    transition_issues = self._decision_transition_issues(current, envelope)
+                    if transition_issues:
+                        issues_sink.extend(f"record {seq}: {issue}"
+                                            for issue in transition_issues)
+                        continue
+                else:
+                    issues_sink.append(f"record {seq}: unknown op {op!r}")
                     continue
-                transition_issues = self._decision_transition_issues(current, envelope)
-                if transition_issues:
-                    issues_sink.extend(f"record {seq}: {issue}"
-                                        for issue in transition_issues)
-                    continue
-            else:
-                issues_sink.append(f"record {seq}: unknown op {op!r}")
+            except (KeyError, TypeError) as exc:
+                # the record schema leaves the envelope's inner shape to
+                # load_somatic, which runs only after the transition checks
+                issues_sink.append(
+                    f"record {seq}: envelope is malformed ({type(exc).__name__}: {exc}); "
+                    f"it is not an envelope the store writes")
                 continue
 
             try:

@@ -1,5 +1,5 @@
 # CI-only tools (issue #18). The project itself and its test dependencies are
 # installed with `pip install -e ".[dev]"` from pyproject.toml.
-pyyaml>=6
-yamllint>=1.35
+pyyaml==6.0.3
+yamllint==1.38.0
 ruff==0.6.9

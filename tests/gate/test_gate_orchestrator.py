@@ -643,3 +643,14 @@ def test_a_harmful_pair_compares_the_stage_2_points(tmp_path):
     assert contributions == {"a": Fraction(43, 48), "b": Fraction(11, 48)}
     outcome = orch.run(inputs)
     assert outcome.verdicts == {"a": "promote", "b": "reject"}
+
+
+def test_each_pair_entry_names_the_seeds_round_6_cells(tmp_path):
+    """ADR-0012 D2, D6: the neither side of a pair is the seed's R6 cells."""
+    orch, _, _, _, inputs, _ = build_world(tmp_path, candidates=("a", "b"),
+                                           interaction={"both": (True, ("a", "b")),
+                                                        "neither": (True, ())})
+    for result in orch.run(inputs).results:
+        entries = result.stage4_child["measurements"]["interaction"]["pair_evidence"]
+        assert [entry["neither_cells"] for entry in entries] == [
+            {"seed": MINING_SEED, "round": 6}]

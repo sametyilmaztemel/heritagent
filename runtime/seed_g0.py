@@ -29,7 +29,12 @@ RETRY_PAYLOAD = {"max_retries": 3, "backoff": "exponential"}
 G0_LINEAGE_ID = "L-alpha"
 
 # ADR-0003 D4: the EXP-0001 episode budget, Budgets.max_steps, identical in
-# every arm and recorded in the manifest (environment.episode_max_steps)
+# every arm and recorded in the manifest (environment.episode_max_steps).
+# Each game is opened with the same number as its own step limit
+# (evaluation/exp0001/backends.py), so a loss on the last step ends on the
+# game's done: status environment_terminal with no exhausted budget, not
+# budget_exhausted/max_steps, which only an episode with steps that never
+# reached the game (rejected actions) can reach.
 EPISODE_MAX_STEPS = 50
 
 

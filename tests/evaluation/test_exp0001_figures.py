@@ -162,6 +162,40 @@ def test_captions_quote_the_record_and_the_figures_avoid_claim_words(clean, tmp_
     assert "B − A (no rule)" in texts["fig1_t_eval_contrasts"]
 
 
+@pytest.mark.parametrize("noise", [False, True])
+def test_the_serving_sentence_of_a_served_run_is_whole(clean, noise):
+    data = figures.collect(figures.RunFiles(run_dir=clean[0]))
+    data["run_start"] = {**data["run_start"], "pilot": {"pilot_sha256": "9cde33415b78" * 2},
+                         "model": {**data["run_start"]["model"], "backend": "vllm-server"}}
+    pairs = {"pairs": 24, "disagreements": 0, "interval_95": [0.0, 0.142]}
+    data["report"] = {**data["report"], "cell_disagreement": (
+        {"cross_round": pairs, "cross_seed": pairs, "cells": 72} if noise else None)}
+    sentence = next(line for line in figures.captions(data, {}).splitlines()
+                    if line.startswith("Under ADR-0011 D2"))
+    measure = ("Under ADR-0011 D2 the serving uses no batch-invariant kernels, so a "
+               "temperature-0 reply may depend on the batch; the calibration pilot's "
+               "temperature-0 repeat measure (the pilot of manifest 9cde33415b78)")
+    if noise:
+        assert sentence.startswith(measure + " is one reference for its size; and, "
+                                   "descriptively (ADR-0012 D8; ")
+        assert sentence.endswith("two seeds' cells of one game disagree in "
+                                 + figures._disagreement(pairs) + ".")
+    else:
+        assert sentence == measure + " is the only evidence of its size."
+    # a rehearsal's stand-in is no vLLM serving: no sentence about it, but its D8 clause
+    data["rehearsal"] = True
+    text = figures.captions(data, {})
+    assert "ADR-0011 D2" not in text and "calibration pilot" not in text
+    rehearsal = [line for line in text.splitlines()
+                 if line.startswith("A rehearsal has no serving to describe")]
+    if noise:
+        assert rehearsal == [sentence.replace(
+            measure + " is one reference for its size; and, ",
+            "A rehearsal has no serving to describe; its stand-in's cells, ")]
+    else:
+        assert rehearsal == []
+
+
 def test_a_run_stopped_in_the_final_evaluation_gets_descriptive_figures_only(splits, tmp_path,
                                                                               texts):
     import evaluation.exp0001.pipeline as pipeline

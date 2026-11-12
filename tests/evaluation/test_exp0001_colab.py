@@ -3,6 +3,7 @@ the run mirror, the vLLM server adapter (against a local HTTP server), the
 A100 80 GB check, the calibration pilot and the command line. No GPU, no
 vLLM, no ALFWorld."""
 
+import gzip
 import json
 import pickle
 import subprocess
@@ -23,7 +24,13 @@ from evaluation.exp0001.backends import (
 )
 from evaluation.exp0001.episodes import EpisodeExecutor
 from evaluation.exp0001.ledger import RunLedger
-from evaluation.exp0001.mirror import MirrorError, RunMirror, latest_snapshot, restore
+from evaluation.exp0001.mirror import (
+    RESTORE_RECORD,
+    MirrorError,
+    RunMirror,
+    latest_snapshot,
+    restore,
+)
 from evaluation.exp0001.pilot import PILOT_MEASURES
 from evaluation.exp0001.pilot_run import (
     GATE_EPISODES_PER_CANDIDATE,
@@ -75,6 +82,8 @@ def test_a_snapshot_restores_byte_for_byte_and_leaves_a_restore_note(tmp_path):
     assert doc["seq"] == 2
     restored = files(tmp_path / "restored")
     ledger_bytes = restored.pop("ledger.jsonl")
+    record = json.loads(restored.pop(RESTORE_RECORD))  # this machine's, until the first snapshot
+    assert record["snapshot_seq"] == 2 and record["skipped"] == [] and not record["pending_note"]
     assert ledger_bytes.startswith(expected.pop("ledger.jsonl")) and restored == expected
     reopened = RunLedger(tmp_path / "restored" / "ledger.jsonl", run_id="r", clock=Clock())
     assert reopened.notes[0]["type"] == "restore" and reopened.notes[0]["snapshot_seq"] == 2
@@ -137,11 +146,12 @@ def test_snapshots_are_throttled_and_old_blobs_collected(tmp_path, monkeypatch):
     mirror.on_append({"type": "complete"})  # a terminal record always snapshots
     assert mirror.seq == 3
     monkeypatch.setattr(mirror_module, "GC_EVERY", 1)
+    monkeypatch.setattr(mirror_module, "KEEP_SNAPSHOTS", 2)
     for content in ("2", "3", "4"):
         (local / "a.json").write_text(content)
         mirror.snapshot()
     assert len(list(drive.glob("snapshot-*.json"))) == 2
-    blobs = {b.read_text() for b in (drive / "blobs").glob("*/*")}
+    blobs = {gzip.decompress(b.read_bytes()).decode() for b in (drive / "blobs").glob("*/*")}
     assert blobs == {"3", "4"}  # only what the two kept snapshots reference
 
 
@@ -990,6 +1000,7 @@ def stub_command(monkeypatch, tmp_path):
         metadata=lambda: types.SimpleNamespace(backend_version="0.29.0")))
     monkeypatch.setattr(cli, "_require_run_rehearsal", lambda args, prepared: None)
     monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)
+    monkeypatch.setattr(cli, "_require_run_disk", lambda workers, local: None)
     monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: types.SimpleNamespace(
         identity="t", count_teacher_prompt_tokens=len))
     monkeypatch.setattr(cli, "_run_start", lambda *a: {})

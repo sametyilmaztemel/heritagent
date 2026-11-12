@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from genome.validation.errors import RecordConsistencyError
-from somatic.journal import compute_record_digest
+from somatic.journal import build_record, compute_record_digest
 from somatic.store import SomaticStore
 from tests.somatic.conftest import acquired_envelope
 
@@ -60,6 +60,27 @@ def test_decision_without_gate_reports_rejected_on_replay(tmp_path, registry):
         SomaticStore.open(path, registry)
     assert "decision requires non-empty gate_reports" in str(exc_info.value)
 
+
+
+def test_duplicate_candidate_after_decision_rejected_on_replay(tmp_path, registry):
+    """A hash-valid candidate_added appended after a terminal decision
+    would put the trait back to 'candidate'; replay refuses it, so a
+    terminal decision stays immutable on disk as well as live."""
+    path = tmp_path / "journal.jsonl"
+    store = SomaticStore.create(path, registry)
+    envelope = acquired_envelope(registry)
+    store.add_candidate(envelope)
+    store.decide("look_before_heat_v1", 1, "rejected", ["CIG-0007"])
+    last = json.loads(path.read_text().splitlines()[-1])
+    again = build_record(seq=3, op="candidate_added", gene_id="look_before_heat_v1",
+                         version=1, envelope=envelope, prev_sha256=last["record_sha256"])
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(again, sort_keys=True, separators=(",", ":")) + "\n")
+    assert any("record 3: duplicate candidate insertion" in issue
+               for issue in store.verify())
+    store.close()
+    with pytest.raises(RecordConsistencyError, match="duplicate candidate insertion"):
+        SomaticStore.open(path, registry)
 
 def re_sign_with_edit(path: Path, edit):
     """Apply a semantic edit to the last record, then recompute ALL hashes

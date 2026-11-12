@@ -35,12 +35,19 @@ INDEX_FILE = "index.json"
 
 
 def canonical_bytes(payload) -> bytes:
-    """Canonical serialization used for content addressing."""
+    """Canonical serialization used for content addressing. Non-finite
+    floats are refused, as in the trajectory store's canonical JSON."""
     if isinstance(payload, bytes):
         return payload
     if isinstance(payload, str):
         return payload.encode("utf-8")
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    try:
+        text = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                          allow_nan=False)
+    except ValueError as exc:
+        raise GenomeValidationError(
+            f"registry payload is not strict JSON ({exc}); store only finite numbers") from None
+    return text.encode("utf-8")
 
 
 def parse_uri(uri: str) -> dict:

@@ -412,8 +412,8 @@ def test_required_prereg_sections_must_exist():
 
 
 def _load_manifest():
-    """Parse the REAL tracked EXP-0001 manifest (requires pyyaml; skipped
-    in envs without it — the CI artifacts job always has it)."""
+    """Parse the REAL tracked EXP-0001 manifest (requires pyyaml, which the
+    dev extra installs for the CI tests jobs; skipped where it is missing)."""
     yaml = pytest.importorskip("yaml")
     root = Path(__file__).resolve().parents[2]
     path = root / "experiments" / "manifests" / "EXP-0001-minimal-cig.yaml"
@@ -425,3 +425,163 @@ def test_real_exp0001_manifest_satisfies_prereg_invariants(ca):
     invariant checker."""
     data = _load_manifest()
     assert ca.check_preregistration(data, "EXP-0001-minimal-cig.yaml") == []
+
+
+def test_the_real_manifest_names_the_values_the_run_executes(ca):
+    """SPEC section 33: each locked value equals its code constant."""
+    assert ca.check_exp0001_code_binding(_load_manifest(), "EXP-0001-minimal-cig.yaml") == []
+
+
+def _drifted(value):
+    if isinstance(value, list):
+        return value[:-1] + [value[-1] + 1]
+    if isinstance(value, str):
+        return value + " (edited)"
+    return value + (1 if isinstance(value, int) else 0.25)
+
+
+# every locked value with a code constant; a binding row removed fails here
+@pytest.mark.parametrize("path", sorted({
+    "evaluation.mining_seeds", "evaluation.statistics.primary",
+    "environment.splits.T_eval.size", "environment.splits.T_reg.size",
+    "environment.splits.T_mine.per_family_min",
+    "environment.splits.T_gate.benefit_bank.per_family", "environment.episode_max_steps",
+    "model.eval_temperature", "model.mining_temperature", "genome.candidate_set.cap",
+    "inheritance.expression_overhead_cap_tokens",
+    "inheritance.stages.interaction.harmful_pair_threshold",
+    "run_protocol.lifetime.attempts_per_task", "run_protocol.lifetime.pairing",
+    "run_protocol.lifetime.temperature", "run_protocol.t_reg.size",
+    "run_protocol.t_reg.seed", "run_protocol.benefit_bank.per_family"}))
+def test_a_locked_value_edited_in_its_own_block_fails_the_binding(ca, path):
+    """The same list or number elsewhere in the manifest (compute_cap's
+    mining_seeds, the budgets' 512) never stands in for the edited one."""
+    manifest = _load_manifest()
+    *parents, key = path.split(".")
+    node = manifest
+    for parent in parents:
+        node = node[parent]
+    node[key] = _drifted(node[key])
+    issues = ca.check_exp0001_code_binding(manifest, "m")
+    assert issues and all(issue.startswith(f"m: {path} is ") for issue in issues)
+
+
+def test_a_value_of_another_type_fails_the_binding(ca):
+    manifest = _load_manifest()
+    manifest["model"]["eval_temperature"] = 0  # YAML 0, not 0.0
+    manifest["environment"]["splits"]["T_eval"]["size"] = 134.0
+    manifest["genome"]["candidate_set"].pop("cap")
+    issues = ca.check_exp0001_code_binding(manifest, "m")
+    assert sorted({issue.split(" is ")[0] for issue in issues}) == [
+        "m: environment.splits.T_eval.size", "m: genome.candidate_set.cap",
+        "m: model.eval_temperature"]
+
+
+def test_the_locked_primary_statistic_is_the_final_bootstrap(ca):
+    """ADR-0006 D2: the primary line names the final analysis's confidence
+    and resample count."""
+    from evaluation.metrics.final_statistics import (
+        FINAL_BOOTSTRAP_CONFIDENCE,
+        FINAL_BOOTSTRAP_RESAMPLES,
+    )
+    assert ca.LOCKED_PRIMARY_STATISTIC == (
+        f"cluster bootstrap {FINAL_BOOTSTRAP_CONFIDENCE:.0%} CI over tasks, "
+        f"{FINAL_BOOTSTRAP_RESAMPLES // 1000}k resamples")
+    assert FINAL_BOOTSTRAP_RESAMPLES % 1000 == 0
+
+
+def test_only_the_exp0001_manifest_is_bound_to_the_code(ca, monkeypatch, tmp_path):
+    yaml = pytest.importorskip("yaml")
+    manifest = _load_manifest()
+    manifest["evaluation"]["mining_seeds"] = [11, 23, 42]
+    other = {"experiment": {"id": "EXP-0002"}, "evaluation": {"mining_seeds": [1]}}
+    folder = tmp_path / "experiments" / "manifests"
+    folder.mkdir(parents=True)
+    (folder / "EXP-0001-minimal-cig.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (folder / "EXP-0002.yaml").write_text(yaml.safe_dump(other), encoding="utf-8")
+    monkeypatch.setattr(ca, "REPO_ROOT", tmp_path)
+    errors = ca.check_manifests()
+    assert len(errors) == 2 and all(
+        e.startswith("experiments/manifests/EXP-0001-minimal-cig.yaml: evaluation.mining_seeds")
+        for e in errors)
+
+
+def _check_manifest_file(ca, monkeypatch, tmp_path, manifest, name="EXP-0001-minimal-cig.yaml"):
+    yaml = pytest.importorskip("yaml")
+    folder = tmp_path / "experiments" / "manifests"
+    folder.mkdir(parents=True)
+    (folder / name).write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(ca, "REPO_ROOT", tmp_path)
+    return ca.check_manifests()
+
+
+@pytest.mark.parametrize("edit", ["id changed", "experiment removed", "experiment a list"])
+def test_the_exp0001_manifest_is_bound_by_its_path_not_by_its_own_id(ca, monkeypatch,
+                                                                      tmp_path, edit):
+    """Changing the manifest's own id must not lift the binding of its values."""
+    manifest = _load_manifest()
+    manifest["evaluation"]["mining_seeds"] = [11, 23, 42]
+    if edit == "id changed":
+        manifest["experiment"]["id"] = "EXP-0001-R1"
+    elif edit == "experiment removed":
+        del manifest["experiment"]
+    else:
+        manifest["experiment"] = [1]
+    errors = _check_manifest_file(ca, monkeypatch, tmp_path, manifest)
+    prefix = "experiments/manifests/EXP-0001-minimal-cig.yaml: "
+    assert any(e.startswith(prefix + "is the EXP-0001 manifest, but its experiment.id is")
+               for e in errors), errors
+    assert any(e.startswith(prefix + "evaluation.mining_seeds is [11, 23, 42]") for e in errors)
+
+
+def test_a_missing_exp0001_manifest_fails(ca, monkeypatch, tmp_path):
+    errors = _check_manifest_file(ca, monkeypatch, tmp_path, {"experiment": {"id": "EXP-0002"}},
+                                  name="EXP-0002.yaml")
+    assert errors == ["experiments/manifests/EXP-0001-minimal-cig.yaml is missing"]
+
+
+@pytest.mark.parametrize("value", [5, [1], {"statistics": 5}])
+def test_an_evaluation_block_that_is_not_a_mapping_is_a_fail_line(ca, value):
+    manifest = _load_manifest()
+    manifest["evaluation"] = value
+    issues = ca.check_preregistration(manifest, "m")
+    assert any(i.startswith("m: locked primary support criterion h2_supported_if changed: None")
+               for i in issues), issues
+
+
+@pytest.mark.parametrize("edit", ["block renamed", "block null", "block renamed, completed"])
+def test_the_exp0001_manifest_without_its_preregistration_block_is_still_checked(
+        ca, monkeypatch, tmp_path, edit):
+    """At its own path the manifest's decision rules and status are checked
+    whatever its preregistration block says."""
+    manifest = _load_manifest()
+    experiment = manifest["experiment"]
+    block = experiment.pop("preregistration")
+    if edit == "block null":
+        experiment["preregistration"] = None
+    else:
+        experiment["prereg"] = block
+    if edit.endswith("completed"):
+        experiment["status"] = "done"
+        manifest["evaluation"]["statistics"]["seed_consistency"] = "any seed"
+        changed = "seed_consistency"
+    else:
+        manifest["evaluation"]["statistics"]["h2_supported_if"] = "always"
+        changed = "h2_supported_if"
+    errors = _check_manifest_file(ca, monkeypatch, tmp_path, manifest)
+    prefix = "experiments/manifests/EXP-0001-minimal-cig.yaml: "
+    assert prefix + "is the EXP-0001 manifest, but has no preregistration block (got " \
+        "NoneType); restore it" in errors, errors
+    assert any(e.startswith(prefix + f"locked primary support criterion {changed} changed")
+               for e in errors), errors
+    if edit.endswith("completed"):
+        assert any(e.startswith(prefix + "invalid EXP-0001 lifecycle status 'done'")
+                   for e in errors), errors
+
+
+@pytest.mark.parametrize("status", [[1], {"a": 1}])
+def test_a_status_that_is_a_list_or_a_mapping_is_a_fail_line(ca, status):
+    manifest = _load_manifest()
+    manifest["experiment"]["status"] = status
+    issues = ca.check_preregistration(manifest, "m")
+    assert any(i.startswith(f"m: invalid EXP-0001 lifecycle status {status!r}")
+               for i in issues), issues

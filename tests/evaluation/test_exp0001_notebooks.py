@@ -234,6 +234,12 @@ def test_the_stop_button_reaches_the_command_once_and_lets_it_stop_cleanly(
     # its own process group: a signal to the kernel's group never reaches it twice
     assert group == pid != os.getpgrp()
     assert f"stop-with-parent {os.getpid()}" in out and "Durduruluyor" in out
+    # Stop is a KeyboardInterrupt, which the error handler does not catch: the runtime
+    # stays attached, and the helper and the notebooks name the last cell as the next step
+    assert "hâlâ bağlı" in out.split("stopped cleanly", 1)[1] and "release()" in out
+    for name in NAMES:
+        intro = markdown_cells(name)[0]
+        assert "Durdur" in intro and "release()" in intro, name
 
 
 def error_cell(monkeypatch, *, auto_release, drive_root, flush_fails=False, scan_proc=False):
@@ -328,6 +334,8 @@ def test_release_waits_for_a_command_that_still_stops(tmp_path, monkeypatch, cap
         assert calls == ["traceback"]  # neither flushed nor released
         out = capsys.readouterr().out
         assert "GPU BIRAKILMADI" in out and "os.killpg" in out  # and the way out
+        # after a kernel restart the install cell is the one that failed
+        assert "hata veren hücreyi ve sonrakileri yeniden" in out
         stopping.kill()
         stopping.wait()
         namespace["running_commands"] = lambda: []  # only this test's processes count here
@@ -679,3 +687,166 @@ def test_the_figures_notebook_reads_the_mirror_on_a_cpu_runtime():
         ["if AUTO_RELEASE:", "release()"]
     notebook = json.loads((NOTEBOOKS / FIGURES).read_text(encoding="utf-8"))
     assert notebook["metadata"]["accelerator"] == "None"
+
+
+def markdown_cells(name):
+    notebook = json.loads((NOTEBOOKS / name).read_text(encoding="utf-8"))
+    return ["".join(cell["source"]) for cell in notebook["cells"]
+            if cell["cell_type"] == "markdown"]
+
+
+@pytest.mark.parametrize("name", ALL + [FIGURES])
+def test_a_notebook_is_committed_without_outputs_and_on_its_own_runtime_type(name):
+    """A notebook saved from Colab keeps no output (Drive paths, model text) and
+    asks for the runtime it is written for: an A100 for the pilot and the run
+    (ADR-0008 D1), no GPU for the CPU notebooks."""
+    notebook = json.loads((NOTEBOOKS / name).read_text(encoding="utf-8"))
+    assert notebook["nbformat"] == 4
+    for cell in notebook["cells"]:
+        if cell["cell_type"] == "code":
+            assert cell["outputs"] == [] and cell["execution_count"] is None, cell["source"][:1]
+    metadata = notebook["metadata"]
+    if name in NAMES:
+        assert metadata["accelerator"] == "GPU" and metadata["colab"]["gpuType"] == "A100"
+    else:
+        assert metadata["accelerator"] != "GPU" and "gpuType" not in metadata.get("colab", {})
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_a_finished_run_is_found_where_its_report_is_copied_before_any_spend(name):
+    """The 'already finished' check reads the path the report cell writes, and
+    it stops the notebook before the install, the model and any episode."""
+    cells = code_cells(name)
+    done = first(cells, "DONE = ")
+    tree = ast.parse(cells[done])
+    (value,) = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                and getattr(node.targets[0], "id", None) == "DONE"]
+    local = "/content/exp0001-run/report.json" if "run" in name else \
+        "/content/pilot/pilot-report.json"
+    report = first(cells, f'shutil.copy("{local}"')
+    targets = [call.args[1] for call in ast.walk(ast.parse(cells[report]))
+               if isinstance(call, ast.Call) and ast.unparse(call.func) == "shutil.copy"
+               and getattr(call.args[0], "value", None) == local]
+    assert any(getattr(target, "id", None) == "DONE" or ast.dump(target) == ast.dump(value)
+               for target in targets), [ast.unparse(target) for target in targets]
+    bitti = first(cells, "raise Bitti(")
+    assert "if os.path.exists(DONE):" in cells[bitti]
+    spend = 'cli("run"' if "run" in name else 'cli("pilot"'
+    assert bitti < first(cells, "def install():") < first(cells, '"prepare-model"') < \
+        first(cells, spend)
+
+
+def test_the_run_notebook_takes_its_cost_and_its_cap_from_adr_0012():
+    """The cost estimate is ADR-0012's (D9 and its experiment-level table), not
+    the pilot report's projection, which predates ADR-0012's gate and caps."""
+    intro = markdown_cells(NAMES[1])[0]
+    (cap,) = [line for line in intro.splitlines() if line.startswith("3. ")]
+    assert "ADR-0012 D9" in cap
+    cost = intro.split("**Tahmini maliyet", 1)[1]
+    assert "pilot projeksiyonuna bakın" not in cost and "5000 bölüm" not in cost
+    for needed in ("ADR-0012", "345 bölüm (R)", "134–160 CU", "315 CU", "(M)", "~30–50 dk"):
+        assert needed in cost, needed
+
+
+def test_the_run_notebook_says_where_the_model_revision_comes_from():
+    """A resumed run's commit comes from its record on Drive; the revision comes
+    from the revision file, which the pilot or a rehearsal writes."""
+    intro = markdown_cells(NAMES[1])[0]
+    assert "model revizyonuyla devam eder; bunlar Drive'daki kayıttan okunur" not in intro
+    assert "model-revision-" in intro
+    cells = code_cells(NAMES[1])
+    revision = cells[first(cells, "revision_file = ")]
+    assert "Önce pilot notebook'unu çalıştırın" not in revision
+    assert "pilot ya da prova" in revision
+    prepare = cells[first(cells, 'cli("prepare-model"')]
+    assert "pilotun sabitlediği" not in prepare and "pilot ya da prova" in prepare
+
+
+@pytest.mark.parametrize("name", CPU)
+def test_the_cpu_rehearsals_stop_when_the_locked_grammar_backend_does_not_import(name):
+    """The rehearsals' stand-in compiles the teacher schema with xgrammar; when
+    the lock pins it, the environment check imports it before the rehearsal."""
+    from evaluation.exp0001 import environment
+    lock = (NOTEBOOKS.parent / environment.ENVIRONMENT_DIR / environment.LOCK_FILE).read_text(
+        encoding="utf-8")
+    if not any(line.startswith("xgrammar==") for line in lock.splitlines()):
+        pytest.skip("the lock does not pin xgrammar")
+    cells = code_cells(name)
+    check = cells[first(cells, 'cli("env-check"')]
+    probe = check.split('cli("env-check"', 1)[1].split("assert check.returncode == 0", 1)[0]
+    assert "import torch, transformers, tokenizers, matplotlib, xgrammar;" in probe
+    assert first(cells, 'cli("rehearse') > first(cells, 'cli("env-check"')
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_gpu_cell_asks_for_an_a100_on_a_runtime_without_nvidia_smi(name, tmp_path,
+                                                                       monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))  # an empty directory: no nvidia-smi
+    cells = code_cells(name)
+    with pytest.raises(AssertionError, match="A100 GPU seçin"):
+        exec(compile(cells[first(cells, "nvidia-smi")], "<gpu cell>", "exec"), {})
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_the_drive_check_asks_for_the_space_the_notebook_writes(name):
+    """The run's mirror needs the default bound; the pilot and the CPU
+    rehearsals write far less and ask for 1 GB. The cell says that the free
+    space is reported and comes from the mount."""
+    cells = code_cells(name)
+    cell = cells[first(cells, 'cli("mirror-check"')]
+    (call,) = cli_calls(cell)
+    need = cli.parser().parse_args(argv(call, {})).need_gb
+    assert need == (cli.RUN_DRIVE_GB if name == NAMES[1] else 1.0)
+    assert "boş alan" in cell and "drive.google.com/settings/storage" in cell
+
+
+def test_the_run_notebook_stops_on_code_older_than_the_mirror_identity(tmp_path):
+    """Code without the mirror identity reads a mirror of the compressed
+    layout as empty: its run-commit prints an empty line and its run starts
+    a new run there. The run notebook stops on such a CODE_REF before
+    run-commit runs."""
+    cells = code_cells(NAMES[1])
+    cell = cells[first(cells, '"run-commit"')]
+    mirror = tmp_path / "evaluation" / "exp0001" / "mirror.py"
+    mirror.parent.mkdir(parents=True)
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="\n", stderr="")
+
+    def namespace():
+        return {"REPO": str(tmp_path), "RUN_DRIVE": str(tmp_path / "drive"), "COMMIT": "c" * 40,
+                "subprocess": SimpleNamespace(run=run), "checkout": lambda ref: ref}
+
+    mirror.write_text('MIRROR_SCHEMA = "heritagent/exp0001-mirror/0.1"\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="CODE_REF'e daha yeni bir commit"):
+        exec(compile(cell, "<run-commit cell>", "exec"), namespace())
+    assert calls == []  # neither the install nor run-commit ran
+    mirror.write_text((NOTEBOOKS.parent / "evaluation" / "exp0001" / "mirror.py").read_text(
+        encoding="utf-8"), encoding="utf-8")
+    exec(compile(cell, "<run-commit cell>", "exec"), namespace())
+    assert any("run-commit" in argv for argv in calls)
+
+
+def test_the_run_notebook_stops_on_code_without_the_mirror_module(tmp_path):
+    """A CODE_REF older than the mirror module gets the same Turkish
+    message, not a traceback, before anything is installed."""
+    cells = code_cells(NAMES[1])
+    cell = cells[first(cells, '"run-commit"')]
+    calls = []
+    namespace = {"REPO": str(tmp_path), "RUN_DRIVE": str(tmp_path / "drive"), "COMMIT": "c" * 40,
+                 "subprocess": SimpleNamespace(run=lambda argv, **kwargs: calls.append(argv)),
+                 "checkout": lambda ref: ref}
+    with pytest.raises(RuntimeError, match="CODE_REF'e daha yeni bir commit"):
+        exec(compile(cell, "<run-commit cell>", "exec"), namespace)
+    assert calls == []
+
+
+def test_the_run_rehearsal_notebook_says_which_gate_failures_decide_nothing_there():
+    """The scripted world reaches the out-of-scope, 4A and 4B failures only on
+    candidates that also fail stage 2 (run_rehearsal's docstring)."""
+    intro = "".join(markdown_cells(RUN_REHEARSAL))
+    assert "kapsam dışı ve 4A'da kalan, 4B'de kalan aday" in intro
+    assert "Kapsam dışı, 4A ve 4B kalışları yalnızca 2. aşamada da kalan adaylarda görülür" \
+        in intro and "birim testlerinde" in intro

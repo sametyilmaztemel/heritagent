@@ -6,6 +6,7 @@ then fails when the report does not say what the stand-in did. Scripted
 games; no ALFWorld, no tokenizer download."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,6 +184,8 @@ def stubbed(monkeypatch, splits):  # noqa: F811
     monkeypatch.setattr(serving, "resolve_revision", lambda model, revision=None: "b" * 40)
     monkeypatch.setattr(cli, "hf_token_counter", lambda *a, **k: CharCounter())
     monkeypatch.setattr(cli, "AlfworldEnvFactory", lambda *a, **k: GameFactory())
+    # no xgrammar and no tokenizer here: a stand-in compile of the teacher schema
+    monkeypatch.setattr(rehearsal, "xgrammar_check", lambda tokenizer: json.dumps)
     winnable = set(games[::2])
     monkeypatch.setattr(rehearsal, "expert_commands", lambda gamefile, max_steps: (
         (["win"], True) if gamefile.split("/train/")[1].rsplit("/", 1)[0] in winnable
@@ -202,7 +205,8 @@ def test_the_rehearsal_runs_the_pilot_through_an_outage_and_a_restore(tmp_path, 
     passed = json.loads((tmp_path / "out" / rehearsal.REHEARSAL_PASSED).read_text())
     assert passed["passed"] is True and all(passed["checks"].values())
     assert set(passed["checks"]) >= {"the outage stopped the first pass",
-                                     "the restore is on record",
+                                     "the restore is on record", cli.XGRAMMAR_CHECK,
+                                     "the mirror's last snapshot holds the first pass's ledger",
                                      "every pilot episode recorded once",
                                      "the temperature-0.7 pairs"}
     assert passed["code"] == {"commit": "a" * 40}
@@ -217,6 +221,71 @@ def test_the_rehearsal_runs_the_pilot_through_an_outage_and_a_restore(tmp_path, 
     ledger = (tmp_path / "out" / "ledger.jsonl").read_text()
     assert json.loads(ledger.splitlines()[0])["run_id"] == rehearsal.REHEARSAL_RUN_ID
     assert "PASSED" in capsys.readouterr().out
+
+
+def test_a_rehearsal_without_xgrammar_fails_its_compile_check_and_writes_no_record(
+        tmp_path, stubbed, monkeypatch, capsys):
+    """xgrammar that does not import compiles no teacher schema: the
+    rehearsal fails as soon as the tokenizer loads, before its games open,
+    and says where it must run."""
+    monkeypatch.setattr(rehearsal, "xgrammar_check", lambda tokenizer: None)
+    assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 2
+    out, err = capsys.readouterr()
+    assert cli.XGRAMMAR_CHECK in err and "the locked environment" in err
+    assert "tokenizer loaded" in out and "pilot games opened" not in out
+    assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
+    assert not (tmp_path / "out" / "ledger.jsonl").exists()
+
+
+def test_a_preflight_that_compiled_no_teacher_schema_fails_the_rehearsal():
+    checks = {}
+    with pytest.raises(cli.CliError, match="the preflight sent no teacher schema to compile"):
+        cli._require_schema_compiled(SimpleNamespace(schemas_compiled=0), json.dumps, checks,
+                                     "the rehearsal failed")
+    assert checks == {cli.XGRAMMAR_CHECK: False}
+
+
+def test_a_first_pass_whose_last_snapshot_failed_fails_the_rehearsal(tmp_path, stubbed,
+                                                                     monkeypatch, capsys):
+    """The second pass restores from the mirror: a first pass whose last
+    snapshot failed leaves it an older ledger, and the check says so."""
+    from evaluation.exp0001.mirror import RunMirror
+    real, snapshot, calls, failing = cli._final_snapshot, RunMirror.snapshot, [], []
+
+    def flaky(self):
+        if failing:
+            raise OSError("Drive is gone")
+        return snapshot(self)
+
+    def final(mirror, local, *, marker=True):
+        calls.append(1)
+        failing[:] = [True] if len(calls) == 1 else []  # the first pass's last snapshot
+        try:
+            return real(mirror, local, marker=marker)
+        finally:
+            failing.clear()
+
+    monkeypatch.setattr(RunMirror, "snapshot", flaky)
+    monkeypatch.setattr(cli, "_final_snapshot", final)
+    assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 2
+    err = capsys.readouterr().err
+    assert "the mirror's last snapshot holds the first pass's ledger" in err
+    assert "before the second pass" in err and len(calls) == 1  # no second pass ran
+    assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
+
+
+def test_a_second_pass_whose_last_snapshot_failed_names_the_mirror(tmp_path, stubbed,
+                                                                   monkeypatch, capsys):
+    real, calls = cli._final_snapshot, []
+
+    def final(mirror, local, *, marker=True):
+        calls.append(1)
+        return len(calls) == 1 and real(mirror, local, marker=marker)
+
+    monkeypatch.setattr(cli, "_final_snapshot", final)
+    assert rehearse(tmp_path, "--mirror-dir", str(tmp_path / "mirror")) == 2
+    assert "Google Drive is mounted" in capsys.readouterr().err
+    assert not (tmp_path / "out" / rehearsal.REHEARSAL_PASSED).exists()
 
 
 def test_the_rehearsal_resumes_in_place_without_a_mirror(tmp_path, stubbed):
@@ -337,6 +406,33 @@ def test_the_stand_in_keeps_from_xgrammar_what_vllm_does():
                           ({"anyOf": [{"type": "object", "propertyNames": {}}]}, "propertyNames")]:
         result = rehearsal.xgrammar_unsupported(schema)
         assert result is None if found is None else found in result, (schema, result)
+
+
+def test_the_teacher_schema_compiles_with_xgrammar_where_it_imports():
+    """The rehearsals' compile check with the real xgrammar: the schema the
+    miner sends compiles, and a schema xgrammar cannot compile raises. It
+    runs only where xgrammar imports (the notebooks' locked environment); a
+    byte-level tokenizer built here stands in for the model's, so nothing
+    is downloaded."""
+    try:
+        import xgrammar  # noqa: F401
+        from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+        from transformers import PreTrainedTokenizerFast
+    except ImportError as exc:  # CI and a development checkout: the notebooks install it
+        pytest.skip(f"xgrammar does not import here ({exc})")
+    from runtime.model_adapters.openai_server import server_constraint
+    from traits.miner.miner import output_schema
+    alphabet = sorted(pre_tokenizers.ByteLevel.alphabet())
+    tokenizer = Tokenizer(models.BPE(vocab={"<unk>": 0, **{c: i + 1 for i, c in enumerate(
+        alphabet)}}, merges=[], unk_token="<unk>"))
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.decoder = decoders.ByteLevel()
+    check = rehearsal.xgrammar_check(PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer, unk_token="<unk>", eos_token="<unk>"))
+    assert check is not None
+    check(server_constraint(output_schema()))
+    with pytest.raises(RuntimeError):  # a $ref to nowhere
+        check({"type": "object", "properties": {"a": {"$ref": "#/nowhere"}}})
 
 
 def test_a_rehearsals_lock_installs_no_sigterm_marker(tmp_path):

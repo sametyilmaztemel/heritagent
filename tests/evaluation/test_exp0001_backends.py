@@ -90,6 +90,37 @@ def test_the_token_counter_uses_the_tokenizer():
 
 def test_the_model_revision_must_be_pinned():
     with pytest.raises(BackendError, match="pinned"):
-        pinned_vllm_model("Qwen/Qwen2.5-7B-Instruct", "")
-    adapter = pinned_vllm_model("Qwen/Qwen2.5-7B-Instruct", "abc123")
+        pinned_vllm_model("Qwen/Qwen3.8-27B", "")
+    adapter = pinned_vllm_model("Qwen/Qwen3.8-27B", "abc123")
     assert adapter.metadata().revision == "abc123"  # no engine is created
+
+
+def test_the_pinned_offline_model_uses_the_protocols_window_and_thinking_off(monkeypatch):
+    """ADR-0009 D4 and ADR-0011 D3 reach the engine and every chat call."""
+    import sys
+    import types
+
+    from evaluation.exp0001.protocol import CONTEXT_WINDOW
+    from runtime.model_adapters import GenerationSettings, ModelMessage
+
+    seen = {}
+
+    class LLM:
+        def __init__(self, **kwargs):
+            seen["engine"] = kwargs
+
+        def chat(self, messages, params, **kwargs):
+            seen["chat"] = kwargs
+            output = types.SimpleNamespace(text="Final Answer: x", finish_reason="stop",
+                                           token_ids=[1, 2])
+            return [types.SimpleNamespace(outputs=[output], prompt_token_ids=[1])]
+
+    module = types.ModuleType("vllm")
+    module.LLM = LLM
+    module.SamplingParams = lambda **kwargs: types.SimpleNamespace(**kwargs)
+    monkeypatch.setitem(sys.modules, "vllm", module)
+    adapter = pinned_vllm_model("Qwen/Qwen3.8-27B", "abc123")
+    adapter.generate([ModelMessage("user", "u")], GenerationSettings())
+    assert (seen["engine"]["model"], seen["engine"]["revision"],
+            seen["engine"]["max_model_len"]) == ("Qwen/Qwen3.8-27B", "abc123", CONTEXT_WINDOW)
+    assert seen["chat"] == {"chat_template_kwargs": {"enable_thinking": False}}

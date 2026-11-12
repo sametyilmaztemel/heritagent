@@ -5,6 +5,7 @@ both acts and finishes fails closed, so the retry policy reprompts instead
 of ending the run without sending the action."""
 
 import json
+import sys
 
 import pytest
 
@@ -104,3 +105,108 @@ def test_a_mixed_reply_is_reprompted_and_the_action_is_sent(g0_config):
         "reply contains both an Action and a Final Answer; exactly one step is allowed"]
     assert env.calls == [("act", json.loads(ACTION.split("Action Input: ", 1)[1]))]
     assert result.status == "finished" and result.answer == "done"
+
+
+@pytest.mark.skipif(not getattr(sys, "get_int_max_str_digits", lambda: 0)(),
+                    reason="this interpreter has no integer digit limit")
+def test_an_integer_past_pythons_digit_limit_is_a_parse_failure_that_is_retried(g0_config):
+    """json.loads raises a plain ValueError for an integer of more than 4,300
+    digits; the loop retries it as any other malformed Action Input."""
+    from runtime.model_adapters import ScriptedAdapter
+    huge = "Thought: t\nAction: act\nAction Input: {\"command\": " + "1" * 5000 + "}"
+    with pytest.raises(PlanParseError, match="Action Input is not valid JSON"):
+        ReActPlanner.parse(huge)
+    adapter = ScriptedAdapter([huge, react_final("done")])
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({"act": []}), task="t",
+                       budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64),
+                       sleep=lambda _delay: None)
+    assert len(result.events.of_kind("plan_parse_failed")) == 1
+    assert result.status == "finished"
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "1e999", '"\\ud800"'])
+def test_an_action_input_that_parses_but_cannot_be_stored_is_a_parse_failure(value):
+    """NaN, an overflowing literal and a lone surrogate escape load in Python
+    but cannot be written to the trajectory as strict UTF-8 JSON."""
+    with pytest.raises(PlanParseError, match="Action Input is not valid JSON"):
+        ReActPlanner.parse(f'Thought: t\nAction: act\nAction Input: {{"command": {value}}}')
+
+
+@pytest.mark.parametrize("value", ["NaN", "1e999", '"\\ud800"'])
+def test_a_recorded_run_retries_an_action_input_that_cannot_be_stored(g0_config, tmp_path, value):
+    """Through the loop with a recorder attached: the reply is retried with the
+    existing message instead of stopping the episode at the recorder."""
+    from runtime.model_adapters import ScriptedAdapter
+    from trajectory.recorder.context import TrajectoryContext
+    from trajectory.recorder.recorder import TrajectoryRecorder
+    recorder = TrajectoryRecorder(TrajectoryContext(genome_id=g0_config.genome_id),
+                                  tmp_path / "t.jsonl", trajectory_id="T-0123456789ab")
+    adapter = ScriptedAdapter([f'Thought: t\nAction: act\nAction Input: {{"command": {value}}}',
+                               react_final("done")])
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({"act": []}), task="t",
+                       budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64),
+                       hooks=(recorder,), sleep=lambda _delay: None)
+    assert len(result.events.of_kind("plan_parse_failed")) == 1
+    assert result.status == "finished"
+    assert recorder.finalize().document["events"]
+
+
+def nested_action(depth):
+    """A reply whose Action Input nests ``depth`` containers deep."""
+    inner = "[" * (depth - 1) + '"x"' + "]" * (depth - 1)
+    return f'Thought: t\nAction: act\nAction Input: {{"command": {inner}}}'
+
+
+def test_an_action_input_nested_up_to_the_bound_parses():
+    from runtime.model_adapters.base import MAX_JSON_DEPTH
+    decision = ReActPlanner.parse(nested_action(MAX_JSON_DEPTH))
+    assert decision.action.name == "act"
+
+
+@pytest.mark.parametrize("extra", [1, 1000, 100000])
+def test_an_action_input_nested_past_the_bound_is_a_parse_failure(extra):
+    """At 100,000 levels json.loads itself raises RecursionError; at about
+    1,000 the recorder's deep copy did. Both are parse failures."""
+    from runtime.model_adapters.base import MAX_JSON_DEPTH
+    with pytest.raises(PlanParseError, match="Action Input nests deeper than"):
+        ReActPlanner.parse(nested_action(MAX_JSON_DEPTH + extra))
+
+
+@pytest.mark.parametrize("depth", [1000, 100000])
+def test_a_recorded_run_retries_an_action_input_nested_too_deep(g0_config, tmp_path, depth):
+    from runtime.model_adapters import ScriptedAdapter
+    from trajectory.recorder.context import TrajectoryContext
+    from trajectory.recorder.recorder import TrajectoryRecorder
+    recorder = TrajectoryRecorder(TrajectoryContext(genome_id=g0_config.genome_id),
+                                  tmp_path / "t.jsonl", trajectory_id="T-0123456789ab")
+    adapter = ScriptedAdapter([nested_action(depth), react_final("done")])
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({"act": []}), task="t",
+                       budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64),
+                       hooks=(recorder,), sleep=lambda _delay: None)
+    assert len(result.events.of_kind("plan_parse_failed")) == 1
+    assert result.status == "finished"
+    assert recorder.finalize().document["events"]
+
+
+# sha256 of the messages of every model call in the episode below, at the code
+# before unstorable Action Inputs were retried
+MESSAGES_SHA256_OF_A_RETRIED_EPISODE = "4ceff25c247814de2c22b071dd606666129036814fa4f110b0a9d0e5f28bcd9d"
+
+
+def test_the_messages_of_a_retried_episode_are_byte_for_byte_unchanged(g0_config):
+    """Retrying an unstorable Action Input changes nothing the model sees: the
+    prompt and the retry message of this scripted episode keep their bytes."""
+    import hashlib
+
+    from runtime.model_adapters import ScriptedAdapter
+    adapter = ScriptedAdapter(["Thought: t\nAction: act\nAction Input: not json", ACTION,
+                               react_final("done")])
+    env = ScriptedEnv({"act": [ToolObservation(ok=True, content="You put the egg 1 in the microwave 1.")]})
+    result = run_agent(config=g0_config, model=adapter, env=env, task="Put an egg in the microwave.",
+                       budgets=Budgets(max_steps=2, max_total_retries=2, max_tokens_per_request=64),
+                       sleep=lambda _delay: None)
+    assert result.status == "finished"
+    messages = [e.data["messages"] for e in result.events.of_kind("model_called")]
+    assert len(messages) == 3
+    blob = json.dumps(messages, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert hashlib.sha256(blob.encode("utf-8")).hexdigest() == MESSAGES_SHA256_OF_A_RETRIED_EPISODE

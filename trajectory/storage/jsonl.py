@@ -90,6 +90,19 @@ def finite_float(text: str) -> float:
     return value
 
 
+def reject_duplicate_keys(pairs: list[tuple]) -> dict:
+    """``object_pairs_hook``: a repeated key is refused. ``json.loads`` keeps
+    the last value, which is the one the digest binds, while a reader that
+    keeps the first would see another record. Writers emit canonical JSON,
+    which never repeats a key."""
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {key!r} in a JSON object")
+        seen.add(key)
+    return dict(pairs)
+
+
 def split_jsonl(data: bytes) -> list[bytes]:
     """``data`` as raw record lines, split on b"\\n" only (see ``jsonl_lines``)."""
     lines = data.split(b"\n")
@@ -116,7 +129,8 @@ def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
     corruption after an already-finalized trajectory is ALWAYS an error —
     recovery must not hide post-finalization tampering. Non-standard JSON
     constants (NaN/Infinity/-Infinity) and overflowing numbers are rejected
-    unconditionally, and so is a line that is not a JSON object. A
+    unconditionally, and so is a line that is not a JSON object or that
+    repeats a key. A
     trailing line cut inside a multi-byte UTF-8 character is a truncated
     crash artifact like any other."""
     records: list[dict] = []
@@ -136,7 +150,8 @@ def read_records(path: Path, *, allow_incomplete: bool = False) -> list[dict]:
             continue
         try:
             parsed = json.loads(line, parse_constant=_reject_non_finite_constant,
-                                parse_float=finite_float)
+                                parse_float=finite_float,
+                                object_pairs_hook=reject_duplicate_keys)
         except json.JSONDecodeError as exc:
             if allow_incomplete and is_trailing and not has_finalization:
                 break  # unfinished prefix: tolerate the truncated crash artifact
@@ -206,6 +221,20 @@ def _validate_envelope(header: dict, finalization: dict | None, path: Path) -> N
         raise MalformedTrajectoryError(f"{path}: " + "; ".join(issues))
 
 
+def _context_part(cls, header_context: dict, field: str, path: Path):
+    """The header context's ``field`` as ``cls``; the schema leaves model and
+    budget open, so a key the recorder never writes is refused here."""
+    value = header_context.get(field)
+    if not value:
+        return None
+    try:
+        return cls(**value)
+    except TypeError as exc:
+        raise MalformedTrajectoryError(
+            f"{path}: header context {field} does not fit {cls.__name__} ({exc}); "
+            f"the recorder writes only that class's fields") from None
+
+
 def load_trajectory(path: Path, *, allow_incomplete: bool = False) -> LoadedTrajectory:
     """Reload a trajectory file: strict JSONL parse, header/version checks,
     structural invariants, envelope coherence, and integrity-digest
@@ -246,13 +275,13 @@ def load_trajectory(path: Path, *, allow_incomplete: bool = False) -> LoadedTraj
         genome_id=header_context["genome_id"],
         run_id=header_context.get("run_id"),
         experiment_id=header_context.get("experiment_id"),
-        model=ModelProvenance(**header_context["model"]) if header_context.get("model") else None,
+        model=_context_part(ModelProvenance, header_context, "model", path),
         seed=header_context.get("seed"),
         code_commit=header_context.get("code_commit"),
         environment=header_context.get("environment"),
         benchmark=header_context.get("benchmark"),
         split=header_context.get("split"),
-        budget=BudgetSnapshot(**header_context["budget"]) if header_context.get("budget") else None,
+        budget=_context_part(BudgetSnapshot, header_context, "budget", path),
         tags=header_context.get("tags") or {},
         metadata=header_context.get("metadata") or {})
     return LoadedTrajectory(

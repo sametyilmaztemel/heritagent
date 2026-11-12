@@ -81,7 +81,7 @@ def read_journal_records(path: Path) -> list[dict]:
     """Strictly parse journal lines; corruption fails closed (no recovery
     path in v0.1 — somatic memory is never silently salvaged)."""
     from trajectory.recorder.errors import MalformedTrajectoryError
-    from trajectory.storage.jsonl import finite_float, split_jsonl
+    from trajectory.storage.jsonl import finite_float, reject_duplicate_keys, split_jsonl
     data = Path(path).read_bytes()
     if data and not data.endswith(b"\n"):
         # every commit writes its record and newline together: an
@@ -102,7 +102,8 @@ def read_journal_records(path: Path) -> list[dict]:
             continue
         try:
             record = json.loads(line, parse_constant=_reject_non_finite_constant,
-                                parse_float=finite_float)
+                                parse_float=finite_float,
+                                object_pairs_hook=reject_duplicate_keys)
         except json.JSONDecodeError as exc:
             raise MalformedTrajectoryError(
                 f"{path}: malformed journal JSON at line {index + 1}: {exc}") from None

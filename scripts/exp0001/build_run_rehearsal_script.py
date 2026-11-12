@@ -14,9 +14,12 @@ only when the run's environment reports ``won``. Then
 and won by their plan) and the script is written with its generator's
 provenance. The texts and plans are cached (``--cache``, outside the
 checkout by default), so an interrupted build resumes; a plan that hit the
-time limit or the memory cap is tried again then. The same data, versions
-and plans give the same bytes (which plans hit the time limit can depend
-on the machine's load).
+time limit or the memory cap is tried again then. A cached row is reused
+only when it was made with the same ALFWorld and TextWorld versions and
+the same three manifests; the data are the manifests' (``verify_data``
+refuses any other), so the manifests' hashes identify them. The same data,
+versions and plans give the same bytes (which plans hit the time limit can
+depend on the machine's load).
 
 Usage: python scripts/exp0001/build_run_rehearsal_script.py --data-root <json_2.1.1>
            [--out evaluation/exp0001/run_rehearsal_script.json] [--cache DIR]
@@ -156,7 +159,9 @@ def plan_in_process(data_root: str, split: str, game_id: str, *, memory_gb: floa
     return answer
 
 
-def _cached(path: Path) -> dict:
+def _cached(path: Path, basis: dict) -> dict:
+    """The cached rows made on ``basis`` (``main``'s versions and manifest
+    hashes); a row of another basis, or of none, is made again."""
     rows = {}
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -164,7 +169,8 @@ def _cached(path: Path) -> dict:
                 row = json.loads(line)
             except ValueError:  # the torn last line of an interrupted build
                 continue
-            rows[(row["split"], row["game_id"])] = row
+            if row.get("basis") == basis:
+                rows[(row["split"], row["game_id"])] = row
     return rows
 
 
@@ -203,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     from importlib.metadata import version
 
     from evaluation.exp0001 import run_rehearsal as rr
+    from evaluation.exp0001.data import verify_data
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--data-root", type=Path, required=True,
@@ -228,16 +235,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     splits, pilot, bank = _manifests()
+    versions = {name: version(name) for name in ("alfworld", "textworld")}
+    verify_data(args.data_root, splits, pilot, bank)  # data the manifests do not hash fail here
+    basis = {"versions": versions,
+             "manifests": {"splits": splits["manifest_sha256"], "pilot": pilot["pilot_sha256"],
+                           "bank": bank["bank_sha256"]}}
     games = rr.played_games(splits, bank)
     import tempfile
     cache = args.cache or Path(tempfile.gettempdir()) / "heritagent-run-rehearsal-script"
     cache.mkdir(parents=True, exist_ok=True)
-    texts = _cached(cache / "texts.jsonl")
+    texts = _cached(cache / "texts.jsonl", basis)
     todo = [g for g in games if g not in texts or texts[g]["error"]]
     options = {"max_tasks_per_child": TASKS_PER_CHILD} if sys.version_info >= (3, 11) else {}
     done = []
 
     def text_read(row: dict) -> None:
+        row = {**row, "basis": basis}
         texts[(row["split"], row["game_id"])] = row
         _append(cache / "texts.jsonl", row)
         done.append(1)
@@ -248,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
                              mp_context=multiprocessing.get_context("spawn"), **options) as pool:
         _bounded_map(pool, start_text, [(str(args.data_root), *g) for g in todo], args.workers,
                      text_read)
-    errors = [r for r in texts.values() if r["error"] or r["text"] is None]
+    errors = [texts[g] for g in games if texts[g]["error"] or texts[g]["text"] is None]
     if errors:
         for r in errors[:10]:
             print(f"ERROR {r['split']}/{r['game_id']}: {r['error']}", file=sys.stderr)
@@ -257,12 +270,13 @@ def main(argv: list[str] | None = None) -> int:
     # designated (run_rehearsal.choose_script)
     counts = Counter(texts[g]["text"] for g in games)
     unique = [g for g in games if counts[texts[g]["text"]] == 1]
-    plans = _cached(cache / "plans.jsonl")
+    plans = _cached(cache / "plans.jsonl", basis)
     todo = [g for g in unique if g not in plans
             or (plans[g]["error"] or "").startswith(LOAD_DEPENDENT)]
     tried = []
 
     def plan_tried(row: dict) -> None:
+        row = {**row, "basis": basis}
         plans[(row["split"], row["game_id"])] = row
         _append(cache / "plans.jsonl", row)
         tried.append(1)
@@ -280,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         generator={"script": "scripts/exp0001/build_run_rehearsal_script.py",
                    "planner": "TextWorld policy_commands, replayed through the run's "
                               "environment factory (won)",
-                   "versions": {name: version(name) for name in ("alfworld", "textworld")},
+                   "versions": versions,
                    "python": sys.version.split()[0],
                    "played_games": len(games), "text_unique": len(unique),
                    "winning_plans": sum(plans[g]["plan"] is not None for g in unique)})

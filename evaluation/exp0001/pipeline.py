@@ -769,6 +769,19 @@ class Exp0001Run:
                 # its calls and time are not counted (ADR-0008 D5)
                 "ledger_notes": [dict(note) for note in self.ledger.notes], **content}
 
+    def _freeze_report(self, path: Path, report: dict) -> dict:
+        """Freeze the report before the terminal record. A repair or restore
+        note appended between the two writes (ADR-0008 D5) differs from the
+        frozen report only by ``ledger_notes``: those notes stay in the
+        ledger, the frozen report keeps the notes it was frozen with, and the
+        resume writes the terminal record. Any other difference fails closed."""
+        frozen = _load(path)
+        if isinstance(frozen, dict) and isinstance(frozen.get("ledger_notes"), list):
+            kept, notes = frozen["ledger_notes"], report["ledger_notes"]
+            if kept == notes[:len(kept)]:  # notes are only ever appended
+                report = {**report, "ledger_notes": kept}
+        return freeze_json(path, report)
+
     # -- the run ----------------------------------------------------------------
     def run(self) -> dict:
         """Run (or resume) once. The object is single-use: its ledger view is
@@ -822,12 +835,12 @@ class Exp0001Run:
                 statistics = analyze_final_evaluation(
                     self._final_input(t_reg, complete=False, reason=reason))
             # the report is frozen before a protocol stop reaches the ledger
-            report = freeze_json(report_path, self._report("incomplete", stage, reason,
-                                                           statistics=statistics))
+            report = self._freeze_report(report_path, self._report(
+                "incomplete", stage, reason, statistics=statistics))
             if self.ledger.state == "running":
                 self.ledger.abandon(reason)
             return report
-        report = freeze_json(report_path, self._report("complete", "done", None, **final))
+        report = self._freeze_report(report_path, self._report("complete", "done", None, **final))
         self.ledger.complete()  # after the report, so a crash in between re-runs to it
         return report
 

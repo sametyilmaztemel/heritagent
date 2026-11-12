@@ -171,6 +171,56 @@ def test_max_total_retries_budget_enforced(g0_config):
     assert result.events.of_kind("budget_exhausted")[-1].data["budget"] == "max_total_retries"
 
 
+def test_the_retry_budget_allows_exactly_max_total_retries_parse_retries(g0_config):
+    """ADR-0007 E5: with max_total_retries=N and a policy that allows more per
+    step, N malformed replies are retried and the next one ends the episode."""
+    from runtime.model_adapters import ScriptedAdapter
+    n = 2  # below the G0 policy's 3 retries per step
+    adapter = ScriptedAdapter(["malformed"] * (n + 1) + [react_final("never asked")])
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({}), task="t",
+                       budgets=Budgets(max_steps=3, max_total_retries=n,
+                                       max_tokens_per_request=64),
+                       sleep=lambda _delay: None)
+    assert len(result.events.of_kind("retry_scheduled")) == n
+    assert len(result.events.of_kind("model_called")) == n + 1
+    assert result.events.kinds()[-1] == "budget_exhausted"
+    assert result.events.of_kind("budget_exhausted")[-1].data == {
+        "budget": "max_total_retries", "retries": n + 1}
+
+
+def test_a_g0_episode_makes_at_most_max_steps_plus_max_total_retries_model_calls(g0_config):
+    """ADR-0007 E5's worst case for the locked budgets (50 steps, 10 retries):
+    a malformed reply before each of the first ten actions spends every retry,
+    and the episode makes exactly 60 model calls."""
+    from runtime.model_adapters import ScriptedAdapter
+    action = react_action("act", {"command": "look"})
+    script = ["malformed", action] * 10 + [action] * 40 + [react_final("never asked")] * 5
+    adapter = ScriptedAdapter(script)
+    env = ScriptedEnv({"act": [ToolObservation(ok=True, content="ok")] * 60})
+    result = run_agent(config=g0_config, model=adapter, env=env, task="t",
+                       budgets=Budgets(max_steps=50, max_total_retries=10,
+                                       max_tokens_per_request=64),
+                       sleep=lambda _delay: None)
+    assert len(result.events.of_kind("model_called")) == 60
+    assert len(result.events.of_kind("retry_scheduled")) == 10
+    assert len(env.calls) == 50
+    assert result.events.of_kind("budget_exhausted")[-1].data["budget"] == "max_steps"
+
+
+def test_model_called_records_the_finish_reason(g0_config):
+    from runtime.model_adapters import ScriptedAdapter
+    adapter = ScriptedAdapter([])
+    adapter.enqueue_text("Thought: I will heat the pla", finish_reason="length")
+    adapter.enqueue_text(react_final("done"))
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({}), task="t",
+                       budgets=Budgets(max_steps=1, max_total_retries=1,
+                                       max_tokens_per_request=64),
+                       sleep=lambda _delay: None)
+    assert [e.data["finish_reason"] for e in result.events.of_kind("model_called")] == [
+        "length", "stop"]
+    assert result.status == "finished"
+
+
 def test_max_total_tokens_budget_enforced(g0_config):
     from runtime.model_adapters import ScriptedAdapter
     adapter = ScriptedAdapter([])

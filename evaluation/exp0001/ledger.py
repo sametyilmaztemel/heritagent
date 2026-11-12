@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections.abc import Callable, Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -97,8 +98,10 @@ class RunLedger:
                  on_append: Callable[[dict], None] | None = None, readonly: bool = False):
         """``session_info`` is recorded in this process's session record
         (for example the accelerator); ``on_append`` is called after every
-        appended record, when no other run file is half-written (the run
-        mirror takes its snapshots there). A ``readonly`` ledger reads the
+        appended record (the run mirror takes its snapshots there): every file
+        a ledger record refers to is whole then; the trajectory of an episode
+        still in flight may be half-written, has no record, and a resume
+        replaces it (ADR-0008 D5). A ``readonly`` ledger reads the
         file and never writes, so it opens no session."""
         self._path = Path(path)
         self._clock = clock
@@ -117,7 +120,16 @@ class RunLedger:
         self._notes: list[dict] = []
         self._reserve_checks: list[dict] = []
         self._session_start: float | None = None  # this process's session
-        if self._path.exists():
+        self._write_failed: str | None = None  # set once a write fails: no later write
+        try:
+            os.stat(self._path)
+            new = False
+        except FileNotFoundError:
+            new = True
+        except OSError as exc:
+            raise LedgerError(f"{self._path} cannot be read ({exc!r}); nothing was written. Fix "
+                              f"the cause, then run the command again") from exc
+        if not new:
             self._load(run_id)
         elif readonly:
             raise LedgerError(f"{self._path} does not exist")
@@ -125,7 +137,7 @@ class RunLedger:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._write({"type": "header", "schema": LEDGER_SCHEMA, "run_id": run_id,
                          "started_clock": float(clock()), "caps": self._caps,
-                         "wall_clock_basis": WALL_CLOCK_BASIS})
+                         "wall_clock_basis": WALL_CLOCK_BASIS}, header=True)
         if self._state == "running" and not readonly:
             now = float(clock())
             self._session_start = now
@@ -136,7 +148,12 @@ class RunLedger:
 
     def _load(self, run_id: str) -> None:
         data = self._path.read_bytes()
-        if data and not data.endswith(b"\n"):
+        if b"\n" not in data:  # empty, or a crash tore the header: repair_torn_tail cannot help
+            raise LedgerError(f"{self._path} holds no whole record (it is empty, or its header "
+                              f"line is torn), so nothing in it can be kept: start the run again "
+                              f"under a new RUN_ID (a pilot: in a new directory with a new "
+                              f"mirror)")
+        if not data.endswith(b"\n"):
             # a torn last write: appending would glue the next record onto it
             raise LedgerError(f"{self._path} does not end with a newline (torn write); "
                               f"it is never silently salvaged (repair_torn_tail cuts it off "
@@ -211,15 +228,74 @@ class RunLedger:
                 self._aborted.append(attempt)
                 self._model_calls += attempt["reserved"]
 
-    def _write(self, record: dict) -> None:
+    def _write(self, record: dict, *, header: bool = False) -> None:
+        """Append one line; ``header`` for the constructor's first line, the
+        only write that makes the file and may remove it again. A write that
+        fails with an error (a full disk, say) is cut back off, and this
+        process writes nothing more: a later line glued onto a part-written
+        one would leave a corrupt line inside the ledger, which no repair can
+        cut off (ADR-0008 D5). If the cut fails too, the torn line is the
+        last one, and repair_torn_tail cuts it off. A Stop (KeyboardInterrupt)
+        is not a disk error: a line it left whole, or a file it left
+        untouched, is kept and later writes go on, so the episodes still in
+        flight are recorded; only a part-written line is cut and stops the
+        writes."""
         if self._readonly:
             raise LedgerError(f"{self._path} is open read-only")
-        line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-            handle.flush()
+        if self._write_failed is not None:
+            raise LedgerError(f"{self._path}: an earlier write in this process failed "
+                              f"({self._write_failed}); nothing more is written. Resume in a new "
+                              f"process (run repair-ledger first if the ledger ends with a torn "
+                              f"line)")
+        line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        try:
+            size = None if header else self._size()
+        except OSError as exc:
+            raise LedgerError(f"{self._path}: its size could not be read before writing a "
+                              f"{record.get('type')} record ({exc!r}); nothing was written. Fix "
+                              f"the cause, then resume the run in a new process") from exc
+        try:
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+                handle.flush()
+        except Exception as exc:
+            self._write_failed = repr(exc)
+            cut_error = self._cut_back(size)
+            torn = ("" if cut_error is None else
+                    f"; the part-written line could not be cut off ({cut_error!r}), so run "
+                    f"repair-ledger first")
+            raise LedgerError(f"{self._path}: writing the {record.get('type')} record failed "
+                              f"({exc!r}); nothing more is written in this process{torn}. Fix "
+                              f"the cause (free disk space, say), then resume the run in a new "
+                              f"process") from exc
+        except BaseException:
+            try:
+                after = self._size()
+            except FileNotFoundError:
+                after = None  # a header write that made no file
+            except OSError:
+                after = -1  # unknown: treated as a part-written line
+            if after != size and after != (size or 0) + len(line.encode("utf-8")):
+                self._write_failed = "a Stop interrupted it part-way"
+                self._cut_back(size)
+            raise
         if self._on_append is not None:
             self._on_append(record)
+
+    def _size(self) -> int:
+        return os.stat(self._path).st_size  # every error is raised, a missing file too
+
+    def _cut_back(self, size: int | None) -> OSError | None:
+        """Restore the file to ``size`` bytes (None: the header write made
+        it); the error if that fails, when the torn line stays last."""
+        try:
+            if size is None:
+                self._path.unlink(missing_ok=True)
+            else:
+                os.truncate(self._path, size)
+        except OSError as exc:
+            return exc
+        return None
 
     def _append(self, record: dict) -> None:
         """A run record of this process's session, stamped with its clock."""
