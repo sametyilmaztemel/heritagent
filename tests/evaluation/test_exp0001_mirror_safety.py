@@ -335,7 +335,7 @@ def test_run_checks_its_free_disk_before_anything_is_written(tmp_path, monkeypat
     assert cli.main(command_argv("run", local, tmp_path / "mirror")) == 2
     err = capsys.readouterr().err
     # 16 workers x 50 games x 33 MiB, and 14,500 episodes x 1.25 MB, on one disk
-    assert "needs about 43 GB of free disk" in err and "1 GB are free" in err
+    assert "needs about 42.7 GB of free disk" in err and "; 1.0 GB are free" in err
     assert not local.exists() and not (tmp_path / "mirror").exists()
 
 

@@ -1,6 +1,6 @@
 # ADR-0003 — ALFWorld `ToolEnvironment` adapter for EXP-0001
 
-Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat); **amendment A2** chosen by the owner on 2026-10-14 (explicit answer in chat). **Amended by ADR-0009** (owner, 2026-10-15): a pre-registered context window of 32,768 tokens with an overflow that ends the episode as a failure (D4); D8's data tree is the two pinned ALFWorld 0.2.2 archives plus every game's content hash (ADR-0008 D6); the task text's repetition as observation 0 is part of the frozen G0 prompt (D5); `won` fails closed (D6). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
+Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accept the recommendations"); **amendment A1** chosen by the owner the same day (explicit answer in chat); **amendment A2** chosen by the owner on 2026-10-14 (explicit answer in chat); **note N1** (the prompt's history) recorded on the owner's decision of 2026-11-12 (explicit answer in chat). **Amended by ADR-0009** (owner, 2026-10-15): a pre-registered context window of 32,768 tokens with an overflow that ends the episode as a failure (D4); D8's data tree is the two pinned ALFWorld 0.2.2 archives plus every game's content hash (ADR-0008 D6); the task text's repetition as observation 0 is part of the frozen G0 prompt (D5); `won` fails closed (D6). **Codex cross-review requested (SPEC §32).** Proposal and alternatives: `research/proposals/ADR-draft-alfworld-tool-environment.md` · Artifacts: `runtime/loop.py` (`ToolObservation.terminal` / `retryable`, status `environment_terminal`), `trajectory/` (terminal kind), `runtime/expression/payload_schemas/planner_policy.schema.json`, and later `runtime/tool_adapters/alfworld.py`.
 
 **Problem.** EXP-0001 runs on ALFWorld, but the repo has no adapter from ALFWorld's text games to the runtime's `ToolEnvironment` boundary. The adapter's protocol choices set G0's success level. Published Qwen2.5-7B-Instruct results span 14.8–45.5 % across protocols, and rendering alone moves 83.6 % to 1.5 %. G0's level in turn sets T_reg feasibility, the expected number of mining pairs and every power number. These choices are therefore pre-registration elements.
 
@@ -93,3 +93,32 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
   - The gate's stage 1–2 evidence check now requires the protocol stop in each replay and ablation child (it required an empty stop before). Every stage, regression included, runs with `evaluation_settings`.
   - The vLLM backend already forwards `stop`. The scripted test adapters return replies as if the backend had applied it.
   - No CIG record or trajectory exists yet, so no stored evidence changes.
+
+**Note N1: the prompt's history is the observations only.** The owner decided this in chat on 2026-11-12 ("21 a kalsın"), on the question builder-2 put as item 21 of the takeover note's §5, before any EXP-0001 episode. builder-2's Critic cross-review of this note is posted on issue #13.
+- *Problem.*
+  - No locked text said what history the model sees at each step. D2, D7, A1 and A2 describe the observation, the task text and the stop, not the history (R, takeover note §5 item 21, searched 2026-11-12).
+  - At each step the model receives two messages (V, `runtime/policies/planner_react.py` `ReActPlanner.build_messages` and `runtime/loop.py` `run_agent`, re-read at `1a16a40`):
+    - a system message: the format instructions, the tool catalog and the expressed skills;
+    - one user message: `Task:` and the task text (D7, A1); then `Observations so far:` with `[0]` and the task text again (ADR-0009 D5) and `[i]` and entry i for every earlier step; then `Step N of at most 50. Provide the next single step.`
+  - An entry is the game's observation rendered as D2. When the loop rejected the call before the game saw it, the entry is `rejected tool call '<tool>': <errors>` (V, same files).
+  - The model's own earlier replies (Thought, Action, Action Input) are never part of a later step's messages. After an inadmissible command the entry is "Nothing happens." with the admissible commands (D3); the command the agent sent is not shown (V, same files).
+  - Two places show the model something of its own output (V, same files):
+    - a format retry inside one step appends the rejected reply as an assistant message and the user message "Your previous reply was not valid ReAct format. Reply again using exactly one required format."; the next step's messages do not carry them;
+    - a rejected tool call's entry names the tool and the schema errors, which can quote an argument's name or its value (for example "Additional properties are not allowed ('cmd' was unexpected)", or "3 is not of type 'string'" for a command that is not a string).
+- *Decision.*
+  - The owner answered "21 a kalsın", that is option (a) as builder-2 put it in chat: "Olduğu gibi kalsın; ADR-0003'e tarihli bir not ve tasarımın tehditler bölümüne bir satır eklensin. Ek GPU gerekmez." The history stays as described above.
+  - This history is part of the frozen G0 prompt. It is the same in every arm.
+  - Nothing changes in the code.
+  - A test pins the messages of a scripted G0 episode: `tests/runtime/test_g0_prompt_pin.py`.
+- *Reason.*
+  - It is the prompt the calibration pilot ran with. A scripted episode gives byte-identical model messages at the pilot's commit `492d06b` and at `1a16a40` (V, main session, 2026-11-12). ADR-0012's recalibration rests on that pilot's measures (R).
+  - Showing the actions, the option the owner did not choose, would change what every arm's model sees. The pilot would then have to run again (127 episodes) and ADR-0012's calibration be checked against the new measures (takeover note §5 item 21).
+- *Research implication.*
+  - Every arm has the same history, so the paired contrasts between arms compare like with like.
+  - The size of any effect of a skill text is measured for an agent that does not see its own earlier actions. It may not carry over to an agent that does (S). This is unmeasured here: no comparison run exists.
+  - Like D1, D2, D4, D7, A1 and A2, the history stays frozen through the run. A change after the run starts is a new experiment id.
+  - No novelty or causal claim.
+- *Compatibility.*
+  - No code changes.
+  - The design's threats to validity (§6) gain item 7.
+  - `tests/runtime/test_g0_prompt_pin.py` fails when the messages of its scripted episode change.

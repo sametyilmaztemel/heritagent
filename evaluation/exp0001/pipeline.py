@@ -89,6 +89,7 @@ from evaluation.exp0001.protocol import (
     MINER_MAX_TOKENS,
     MINING_SEEDS,
     MINING_TEMPERATURE,
+    TEACHER_PROPOSALS_PER_CALL,
 )
 from evaluation.exp0001.provenance import (
     RUN_START_SCHEMA,
@@ -368,11 +369,13 @@ class Exp0001Run:
             if not self.ledger.admit_calls(key, MINER_CALLS_PER_PAIR_MAX * len(batch.pairs)):
                 # charged only after the set was frozen: the set was removed by hand
                 raise RunError(f"{key} was charged but its frozen candidate set is missing")
+            # K caps the batch; each call's prompt asks for at most
+            # TEACHER_PROPOSALS_PER_CALL (ADR-0011 note N1)
+            settings = MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
+                                      max_tokens=MINER_MAX_TOKENS, max_proposals=CANDIDATE_CAP,
+                                      proposals_per_call=TEACHER_PROPOSALS_PER_CALL)
             miner = TraitMiner(_Heartbeat(self.teacher, self.ledger.heartbeat), self.registry,
-                               settings=MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
-                                                       max_tokens=MINER_MAX_TOKENS,
-                                                       max_proposals=CANDIDATE_CAP),
-                               born_generation=0)
+                               settings=settings, born_generation=0)
             mined = miner.mine(batch)
             frozen = freeze_json(path, {
                 "schema": CANDIDATES_SCHEMA, "mining_seed": seed,

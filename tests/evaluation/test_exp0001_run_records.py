@@ -285,6 +285,11 @@ def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
     assert len(record["miner"]["prompt_sha256"]) == 64 == len(record["miner"]["output_schema_sha256"])
     assert record["candidate_set"] == {"cap": 10, "ranking": ["miner-estimated-generality",
                                                              "discovery-order"]}
+    # ADR-0011 note N1 (owner, 2026-11-12): each teacher call is asked for at most 5
+    # proposals, K = 10 stays the batch cap; both blocks carry the request
+    assert record["miner"]["proposals_per_call"] == 5
+    assert record["protocol"]["teacher_proposals_per_call"] == 5
+    assert record["protocol"]["candidate_cap"] == 10
     assert record["gate"]["threshold_version"] == "EXP-0001-CIG-M0-v2"  # ADR-0012 D10
     bank = load("EXP-0001-benefit-bank.json")
     assert record["benefit_bank"] == {
@@ -347,6 +352,24 @@ def test_the_protocol_constants_are_the_manifests():
     assert load("EXP-0001-splits.json")["manifest_sha256"] == LOCKED_SPLIT_MANIFEST_SHA256
     assert load("EXP-0001-pilot.json")["pilot_sha256"] == LOCKED_PILOT_SHA256
     assert load("EXP-0001-benefit-bank.json")["bank_sha256"] == LOCKED_BENEFIT_BANK_SHA256
+
+
+def test_the_teachers_per_call_request_is_the_one_adr_0011_records():
+    """ADR-0011 note N1 (owner, 2026-11-12) is the locked text that carries
+    the per-call request; the manifest has no line for it (as for the miner's
+    2,048 tokens). Wherever the ADR states the number, it is the constant the
+    run executes, and K stays the manifest's."""
+    import re
+    from evaluation.exp0001.protocol import CANDIDATE_CAP, PROTOCOL, TEACHER_PROPOSALS_PER_CALL
+    from tests.evaluation.test_exp0001_artifacts import ROOT
+    adr = (ROOT / "research" / "decisions" / "ADR-0011-exp0001-qwen3.8-27b.md").read_text(
+        encoding="utf-8")
+    stated = re.findall(r"at most (\d+) proposals per call", adr)
+    assert stated, "ADR-0011 note N1 no longer states the per-call request"
+    assert {int(number) for number in stated} == {TEACHER_PROPOSALS_PER_CALL}
+    assert f'"Return at most {TEACHER_PROPOSALS_PER_CALL} proposals."' in adr
+    assert PROTOCOL["teacher_proposals_per_call"] == TEACHER_PROPOSALS_PER_CALL == 5
+    assert PROTOCOL["candidate_cap"] == CANDIDATE_CAP == 10
 
 
 def test_an_aborted_attempt_is_charged_its_reservation(tmp_path):

@@ -1467,8 +1467,8 @@ def _require_free(needs: Mapping[str, int], what: str) -> None:
     for where, need in needs.items():
         free = shutil.disk_usage(where).free
         if free < need:
-            raise CliError(f"{what} needs about {need / 2 ** 30:.0f} GB of free disk under "
-                           f"{where}; {free / 2 ** 30:.0f} GB are free (GB here: 2**30 bytes, "
+            raise CliError(f"{what} needs about {need / 2 ** 30:.1f} GB of free disk under "
+                           f"{where}; {free / 2 ** 30:.1f} GB are free (GB here: 2**30 bytes, "
                            f"GiB). Free space there (delete files you no longer need under it) "
                            f"or use a runtime with a larger disk, then run the command again")
 

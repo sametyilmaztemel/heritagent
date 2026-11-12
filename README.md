@@ -111,4 +111,4 @@ The run notebook's first cell lists four preconditions. Their status (R, the tak
 3. the compute cap decided: done (ADR-0012 D9);
 4. the Critic's clearance: **open** (builder-2's duty, on the commit the run will use, posted on #13).
 
-Open owner decisions, two of which should be settled before the run (the G0 prompt's history and the teacher's output budget), are listed in `research/third-agent/TAKEOVER-2026-10-13.md` §5. A change to either moves the commit, and the run rehearsal must be of the run's commit. Next: those decisions, the Critic's clearance and the run rehearsal, then the EXP-0001 run.
+The two owner decisions to settle before the run were made on 2026-11-12: the G0 prompt's history stays as it is (ADR-0003 note N1), and the teacher is asked for at most 5 proposals per call (ADR-0011 note N1). The second changes the run protocol's hash, and the run rehearsal must be of the run's commit. The other open owner decisions are listed in `research/third-agent/TAKEOVER-2026-10-13.md` §5. Next: the Critic's clearance and the run rehearsal, then the EXP-0001 run.

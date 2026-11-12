@@ -32,6 +32,7 @@ from evaluation.exp0001.protocol import (
     MINING_SEEDS,
     PROTOCOL,
     T_REG_SIZE,
+    TEACHER_PROPOSALS_PER_CALL,
     attempt_sampling_seed,
 )
 from evaluation.metrics.final_statistics import MIN_CONSISTENT_SEEDS
@@ -272,8 +273,11 @@ def test_the_stand_in_reads_the_evidence_a_teacher_prompt_carries():
     document = {"failed_trajectory": {"steps": []}, "form": "without-admissible-commands",
                 "kind": "heritagent-differential-evidence", "task": "solve g1."}
     prompt = render_teacher_prompt(evidence_text=canonical_json(document),
-                                   family_universe=("a", "b"), max_proposals=10)
+                                   family_universe=("a", "b"),
+                                   max_proposals=TEACHER_PROPOSALS_PER_CALL)
     assert rr.evidence_of(prompt) == document
+    assert rr.teacher_asks(prompt) == TEACHER_PROPOSALS_PER_CALL == 5
+    assert rr.teacher_asks("no request here") is None
     assert rr.evidence_of("no evidence here") is None
 
 
@@ -305,7 +309,8 @@ def teacher_payload(seed, evidence, **overrides):
     from trajectory.storage.canonical import canonical_json
     from runtime.model_adapters.openai_server import VLLMServerAdapter, server_constraint
     prompt = render_teacher_prompt(evidence_text=canonical_json(evidence),
-                                   family_universe=("a",), max_proposals=10)
+                                   family_universe=("a",),
+                                   max_proposals=TEACHER_PROPOSALS_PER_CALL)
     return {"model": MODEL, "n": 1, "temperature": 0.7, "seed": seed, "max_tokens": 2048,
             **NEUTRAL_SAMPLING, "messages": [{"role": "user", "content": prompt}],
             "response_format": VLLMServerAdapter._json_schema_format(
@@ -416,6 +421,7 @@ def test_the_rehearsal_runs_the_whole_run_and_holds_it_to_the_oracle(rehearsed, 
                  "the server's death stopped the first pass", "the third pass finished",
                  "both restores are on record", "the run-start record is a rehearsal's",
                  T_REG_CHECK, E1_CHECK, "the server refused only the scripted overflow",
+                 ASKS_CHECK,
                  "the figures are drawn, stamped as a rehearsal's", cli.XGRAMMAR_CHECK):
         assert passed["checks"][name] is True, name
     assert passed["checks"][STATISTICS_CHECK] is True
@@ -455,6 +461,7 @@ CENSUS_CHECK = ("every game a run may play opens through the run's factory, and 
 T_REG_CHECK = ("T_reg: the 40 solved tasks of the keyed draw, each with its earliest success "
                "(E3)")
 E1_CHECK = "each seed's mining pairs: first success, first failure (E1)"
+ASKS_CHECK = "every pair's teacher prompt asks for at most 5 proposals (ADR-0011 note N1)"
 STATISTICS_CHECK = "the final statistics' counts and per-seed C-B (ADR-0006)"
 
 
@@ -581,6 +588,55 @@ def test_the_ledger_checks_fail_when_the_ledger_differs(rehearsed, expected):
         expected, lambda e: e["final_per_genome"].update(t_eval=135)),
         interrupted=interrupted)) == [
         "every round's and every final genome's episodes (D2, ADR-0009 D2)"]
+
+
+class StandInTeacher:
+    """The miner's teacher calls sent to the stand-in as the server would
+    receive them (one user message, the schema as response_format)."""
+
+    def __init__(self, policy):
+        self.policy = policy
+
+    def structured_generate(self, messages, settings, schema):
+        from runtime.model_adapters.base import GenerationResult
+        status, text = self.policy.respond({
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "response_format": {"type": "json_schema", "json_schema": {"schema": schema}},
+            "temperature": settings.temperature, "seed": settings.seed,
+            "max_tokens": settings.max_tokens})
+        assert status == 200, text
+        return GenerationResult(text=text, finish_reason="stop")
+
+    @staticmethod
+    def metadata():
+        from runtime.model_adapters import ScriptedAdapter
+        return ScriptedAdapter([]).metadata()
+
+
+@pytest.mark.parametrize("asks, holds", [(TEACHER_PROPOSALS_PER_CALL, True), (10, False),
+                                         (1, False)])
+def test_the_request_check_fails_when_the_miner_asks_for_another_number(
+        script, expected, splits, tmp_path, registry, asks, holds):  # noqa: F811
+    """ADR-0011 note N1: the miner is made to render another number in a
+    pair's teacher prompt, and the check fails; the preflight's own teacher
+    call (it asks for one) is not a pair's and never counts."""
+    from tests.miner.conftest import make_batch
+    from traits.miner.miner import MiningSettings, TraitMiner, render_teacher_prompt
+    policy = rr.RunPolicy(script, splits)
+    batch, _ = make_batch(tmp_path, registry)
+    TraitMiner(StandInTeacher(policy), registry, born_generation=1,
+               settings=MiningSettings(seed=11, proposals_per_call=asks)).mine(batch)
+    preflight = render_teacher_prompt(  # as cli's preflight renders it
+        evidence_text="(a preflight call: no trajectories; propose at most one short skill)",
+        family_universe=("a",), max_proposals=1)
+    assert policy.respond(teacher_payload(11, {}, messages=[
+        {"role": "user", "content": preflight}]))[0] == 200
+    assert [e.get("asks") for e in policy.log] == [asks, None]
+    assert [e["kind"] for e in policy.log] == ["teacher", "preflight"]
+    assert rr.policy_checks(policy, expected, [])[ASKS_CHECK] is holds
+    # a log without a pair's teacher call holds nothing
+    empty = SimpleNamespace(log=[], overflows=0, script=script, kinds=dict(policy.kinds))
+    assert rr.policy_checks(empty, expected, [])[ASKS_CHECK] is False
 
 
 def test_the_request_checks_count_each_stages_requests(script, expected):
@@ -970,7 +1026,7 @@ def test_the_rehearsal_needs_disk_for_what_its_processes_keep(monkeypatch):
     usage = shutil.disk_usage("/")
     monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=20 * 2 ** 30))
     cli._require_rehearsal_disk(4)  # 4 x 50 games x 33 MB + 2 GB
-    with pytest.raises(cli.CliError, match="needs about 28 GB of free disk"):
+    with pytest.raises(cli.CliError, match=r"needs about 27\.8 GB of free disk"):
         cli._require_rehearsal_disk(16)
 
 
@@ -989,11 +1045,11 @@ def test_the_rehearsal_measures_the_out_dir_where_it_is_another_disk(tmp_path, m
     usage = shutil.disk_usage("/")
     free = {str(temp): 26 * 2 ** 30, str(out): 1 * 2 ** 30}
     monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=free[str(path)]))
-    with pytest.raises(cli.CliError, match=f"needs about 2 GB of free disk under {out}"):
+    with pytest.raises(cli.CliError, match=f"needs about 2.0 GB of free disk under {out}"):
         cli._require_rehearsal_disk(16, out_dir=out)
     free[str(out)] = 3 * 2 ** 30
     cli._require_rehearsal_disk(16, out_dir=out)  # 16 x 50 games x 33 MB under the temp dir
-    with pytest.raises(cli.CliError, match=f"needs about 28 GB of free disk under {temp}"):
+    with pytest.raises(cli.CliError, match=f"needs about 27.8 GB of free disk under {temp}"):
         cli._require_rehearsal_disk(16, out_dir=temp / "out")  # one disk: both, 28 GB
 
 

@@ -41,6 +41,7 @@ from evaluation.exp0001.protocol import (
     MINING_SEEDS,
     MINING_TEMPERATURE,
     T_REG_SIZE,
+    TEACHER_PROPOSALS_PER_CALL,
     attempt_sampling_seed,
     max_model_calls_per_episode,
 )
@@ -169,9 +170,11 @@ def miner_prompt_tokens(t07: Sequence[EpisodeResult],
         tokens = {}
         for form in EVIDENCE_FORMS:
             evidence, _ = render_pair_evidence(pair, form)
-            tokens[form] = count_prompt_tokens(render_teacher_prompt(  # as the run's miner:
+            # as the run's miner renders it: the per-call request (ADR-0011 note N1), not K;
+            # MiningBatch sorts the universe
+            tokens[form] = count_prompt_tokens(render_teacher_prompt(
                 evidence_text=evidence, family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)),
-                max_proposals=CANDIDATE_CAP))  # MiningBatch sorts the universe
+                max_proposals=TEACHER_PROPOSALS_PER_CALL))
             counts[form].append(tokens[form])
         fit = {form: n <= limit for form, n in tokens.items()}
         fits["full" if fit[FULL] else "only_without_admissible_commands"

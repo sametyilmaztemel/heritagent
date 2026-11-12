@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from fractions import Fraction
@@ -81,6 +82,8 @@ TAU_C_GRID = (Fraction(3, 100), Fraction(1, 20), Fraction(2, 25))  # the manifes
 TAU_R_GRID = (Fraction(1, 50), Fraction(3, 100), Fraction(1, 20))  # sensitivity_secondary
 TEACHER_FORM_KEY = "form"       # the reduced evidence form names itself (ADR-0009 D8)
 EVIDENCE_START = '{"failed_trajectory":'
+# the line of the teacher prompt that names the per-call request (traits/miner prompt template)
+TEACHER_ASKS = re.compile(r"^Return at most (\d+) proposals\.", re.MULTILINE)
 OVERFLOW = "overflow (scripted)"
 
 
@@ -718,6 +721,13 @@ def evidence_of(prompt: str) -> dict | None:
     return document if isinstance(document, dict) else None
 
 
+def teacher_asks(prompt: str) -> int | None:
+    """The number of proposals a teacher prompt asks for ("Return at most N
+    proposals."), or None when the prompt has no such line."""
+    found = TEACHER_ASKS.findall(prompt)
+    return int(found[0]) if len(found) == 1 else None
+
+
 class RunPolicy:
     """The stand-in's replies in the scripted world. ``respond(payload)``
     returns (200, text) or (400, why); every request is logged with its
@@ -832,14 +842,16 @@ class RunPolicy:
 
     def _teacher(self, payload: Mapping) -> tuple[int, str]:
         seed = payload.get("seed")
-        evidence = evidence_of(payload["messages"][-1]["content"])
+        prompt = payload["messages"][-1]["content"]
+        evidence = evidence_of(prompt)
         if evidence is None:  # the preflight's teacher call carries no trajectories
             self._note({"kind": "preflight", "seed": seed, "status": 200})
             return 200, json.dumps({"proposals": []})
         known = self._game_of.get(text_sha256(evidence.get("task", "")))
         game = None if known is None else known[1]
+        # what the pair's prompt asks for (ADR-0011 note N1), noted for the checks
         entry = {"kind": "teacher", "seed": seed, "game": game,
-                 "form": evidence.get(TEACHER_FORM_KEY, "full")}
+                 "form": evidence.get(TEACHER_FORM_KEY, "full"), "asks": teacher_asks(prompt)}
         plan = self.script["teacher"].get(str(seed), {})
         if game is not None and game == plan.get("overflow_task") and \
                 TEACHER_FORM_KEY not in evidence:
@@ -1033,7 +1045,11 @@ def policy_checks(policy: RunPolicy, expected: Mapping, lines: Sequence[Mapping]
     the ledger's episodes of that stage made: the lifetimes' at 0.7 with
     an attempt seed, the final evaluation's at 0 without a seed (ADR-0007
     E8; a seeded final request would count as a gate's), the gate's at 0
-    with the mining seed (aborted attempts' requests add to these)."""
+    with the mining seed (aborted attempts' requests add to these). Every
+    pair's teacher prompt, the overflow's included, asks for exactly
+    TEACHER_PROPOSALS_PER_CALL proposals (ADR-0011 note N1); the
+    preflight's own teacher call is not a pair's."""
+    from evaluation.exp0001.protocol import TEACHER_PROPOSALS_PER_CALL
     calls = {"lifetime": 0, "gate": 0, "final": 0}
     for r in lines:
         if r.get("type") == "episode":
@@ -1053,6 +1069,10 @@ def policy_checks(policy: RunPolicy, expected: Mapping, lines: Sequence[Mapping]
             "one teacher call per lifetime pair, and the overflow's retry":
                 sum(e["form"] == "full" for e in teacher) == pairs
                 and len(teacher) == pairs + policy.overflows,
+            f"every pair's teacher prompt asks for at most {TEACHER_PROPOSALS_PER_CALL} "
+            f"proposals (ADR-0011 note N1)":
+                bool(teacher)
+                and all(e.get("asks") == TEACHER_PROPOSALS_PER_CALL for e in teacher),
             "the scripted proposals reached the miner":
                 sum(e.get("proposals", 0) for e in teacher) == sum(
                     len(s["candidates"]) for s in expected["seeds"].values()),

@@ -369,6 +369,35 @@ def test_the_generation_settings_are_the_protocols(clean):
                                                                  for seed in MINING_SEEDS}
 
 
+def test_the_runs_miner_asks_each_call_for_five_and_caps_the_batch_at_ten(tmp_path, splits,
+                                                                          monkeypatch):
+    """ADR-0011 note N1 (owner, 2026-11-12): the run's MiningSettings carry
+    the per-call request (5) and K (10), and the prompt the teacher receives
+    asks for 5. The run stops at its first teacher call."""
+    from evaluation.exp0001 import pipeline
+    from evaluation.exp0001.protocol import CANDIDATE_CAP, TEACHER_PROPOSALS_PER_CALL
+    settings, prompts = [], []
+    real = pipeline.TraitMiner
+
+    def recording(*args, **kwargs):
+        settings.append(kwargs["settings"])
+        return real(*args, **kwargs)
+
+    class OneCall(Teacher):
+        def structured_generate(self, messages, generation, schema):
+            prompts.append(messages[-1].content)
+            raise RuntimeError("the first teacher call")
+
+    monkeypatch.setattr(pipeline, "TraitMiner", recording)
+    with pytest.raises(RuntimeError, match="the first teacher call"):
+        make_run(tmp_path / "run", splits, teacher=OneCall()).run()
+    assert TEACHER_PROPOSALS_PER_CALL == 5 and CANDIDATE_CAP == 10
+    assert [(s.proposals_per_call, s.max_proposals) for s in settings] == [(5, 10)]
+    [prompt] = prompts
+    assert [line for line in prompt.splitlines() if line.startswith("Return at most ")] == [
+        "Return at most 5 proposals. Return ZERO proposals when the"]
+
+
 def report_g0(run_dir):
     return json.loads((run_dir / "run-start.json").read_text())["g0"]["genome_id"]
 

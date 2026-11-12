@@ -91,7 +91,9 @@ def teacher_messages(rendered_prompt: str) -> list[ModelMessage]:
 
 def render_teacher_prompt(*, evidence_text: str, family_universe, max_proposals: int) -> str:
     """The teacher prompt for one pair, sent as one user message (``teacher_messages``;
-    ADR-0011 D4)."""
+    ADR-0011 D4). ``max_proposals`` is only the number rendered in the line "Return at
+    most N proposals."; the miner passes ``MiningSettings.proposals_per_call`` here, never
+    the batch cap K (ADR-0011 note N1, owner, 2026-11-12)."""
     return (prompt_template_text()
             .replace("<<MAX_PROPOSALS>>", str(max_proposals))
             .replace("<<FAMILIES>>", ", ".join(family_universe))
@@ -113,12 +115,22 @@ def _malformed_detail(exc: ModelResponseError) -> str:
 @dataclass(frozen=True)
 class MiningSettings:
     """EXP-0001 mining defaults: temperature 0.7, explicit seed, explicit
-    max tokens; K = 10 candidate cap."""
+    max tokens; K = 10 candidate cap.
+
+    Two numbers, never one: ``proposals_per_call`` is what each teacher
+    call's prompt asks for ("Return at most N proposals."), and
+    ``max_proposals`` is the batch's candidate cap K that phase 2 applies
+    after ranking every pair's proposals (ADR-0011 note N1, owner,
+    2026-11-12: at most 5 proposals per call, K = 10 stays)."""
 
     temperature: float = 0.7
     seed: int = 0
     max_tokens: int = 2048
-    max_proposals: int = 10  # K (EXP-0001 frozen cap)
+    # K: the batch's candidate cap after ranking (EXP-0001 frozen cap); not the
+    # number a teacher call is asked for
+    max_proposals: int = 10
+    # the number each teacher call's prompt asks for; not enforced on the reply
+    proposals_per_call: int = 5
 
 
 @dataclass(frozen=True)
@@ -163,6 +175,10 @@ class TraitMiner:
         if born_generation < 0:
             raise ValueError("born_generation must be >= 0 (early defense: the "
                              "somatic schema rejects negative generations)")
+        for field in ("max_proposals", "proposals_per_call"):
+            value = getattr(settings, field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"MiningSettings.{field} must be an int >= 1, got {value!r}")
         self._model = model
         self._registry = registry
         self._settings = settings
@@ -196,10 +212,16 @@ class TraitMiner:
                        family_universe: tuple[str, ...]) -> tuple[str, str]:
         """Render the final teacher message; returns (rendered_prompt,
         rendered_prompt_sha256) — available even before the model call so
-        malformed calls are audited with the exact prompt identity."""
+        malformed calls are audited with the exact prompt identity.
+
+        The prompt asks for at most ``proposals_per_call`` proposals, not
+        for K. The request is not enforced (ADR-0011 note N1, owner,
+        2026-11-12): a reply with more proposals is processed as any other,
+        every valid proposal counts, and only the batch ranking and the cap
+        K (``max_proposals``) select among them."""
         rendered_prompt = render_teacher_prompt(evidence_text=evidence_text,
                                                 family_universe=family_universe,
-                                                max_proposals=self._settings.max_proposals)
+                                                max_proposals=self._settings.proposals_per_call)
         return rendered_prompt, sha256_hex(rendered_prompt.encode("utf-8"))
 
     def _ask_teacher(self, rendered_prompt: str) -> tuple[dict, str]:
@@ -371,7 +393,7 @@ class TraitMiner:
                          (-d["estimated_generality"], d["discovery_order"]))
         selected: list[dict] = []
         for descriptor in ranked:
-            if len(selected) < self._settings.max_proposals:
+            if len(selected) < self._settings.max_proposals:  # K, the batch cap
                 selected.append(descriptor)
             else:
                 entry = {"reason": "outside_cap",
