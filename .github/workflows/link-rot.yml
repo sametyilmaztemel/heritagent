@@ -13,9 +13,11 @@ permissions:
 jobs:
   external-links:
     runs-on: ubuntu-latest
+    # each link may wait 20 s for HEAD and 20 s for GET when its host hangs
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r scripts/ci/requirements-ci.txt

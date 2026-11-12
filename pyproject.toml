@@ -7,10 +7,12 @@ name = "heritagent"
 version = "0.1.0"
 description = "Causally-gated assimilation of acquired skills into functional genomes for evolvable LLM agents"
 requires-python = ">=3.10"
+readme = "README.md"
 dependencies = ["jsonschema>=4.18"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "matplotlib>=3.8"]
+# pyyaml: tests/ci reads the locked manifests (no notebook installs the dev extra)
+dev = ["pytest>=8", "matplotlib>=3.8", "pyyaml>=6"]
 # paper figures from a run's records (evaluation/exp0001/figures.py)
 figures = ["matplotlib>=3.8"]
 # ADR-0003 D8: pinned versions the adapter was checked against
@@ -30,3 +32,5 @@ namespaces = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# a test still running after 5 minutes prints every thread's stack (it is not stopped)
+faulthandler_timeout = 300
