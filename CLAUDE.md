@@ -1,6 +1,6 @@
 # CLAUDE.md — rules for Claude sessions in HeritAgent
 
-Proposed on branch `claude/epic-pascal-wi53nj`. It takes effect for sessions started from `main` only after the owner merges it.
+In force on `main` since PR #30 (merged 2026-10-13).
 
 Full context, state snapshot, workflow and session log: `research/third-agent/TAKEOVER-2026-10-13.md`. Update its §7 session log at the end of every session.
 
