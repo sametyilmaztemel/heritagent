@@ -510,7 +510,7 @@ def test_the_v2_disclosure_follows_the_threshold_version(clean, tmp_path):
                    "in ADR-0012's model (M), rarely binds",
                    "true effects below 0.05 can be promoted",
                    "the seeds' gates read the same benefit-bank games",
-                   "H2 can hold only if arm B carries candidates that harm"):
+                   "H2's power rests on arm B carrying candidates that harm"):
         assert clause in figures.V2_DISCLOSURE, clause
     run_dir = copy_run(clean, tmp_path)
 

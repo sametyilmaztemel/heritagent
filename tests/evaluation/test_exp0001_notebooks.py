@@ -850,3 +850,110 @@ def test_the_run_rehearsal_notebook_says_which_gate_failures_decide_nothing_ther
     assert "kapsam dışı ve 4A'da kalan, 4B'de kalan aday" in intro
     assert "Kapsam dışı, 4A ve 4B kalışları yalnızca 2. aşamada da kalan adaylarda görülür" \
         in intro and "birim testlerinde" in intro
+
+
+def run_settings(name, **values):
+    """The settings cell's own code with some of its values replaced, as the
+    owner would type them."""
+    tree = ast.parse(code_cells(name)[0])
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and node.targets[0].id in values:
+            node.value = ast.copy_location(ast.Constant(values[node.targets[0].id]), node.value)
+    namespace = {}
+    exec(compile(tree, "<settings cell>", "exec"), namespace)
+    return namespace
+
+
+def run_cell_argv(hours):
+    cells = code_cells(NAMES[1])
+    return argv(cli_calls(cells[first(cells, 'cli("run"')])[0], {"STOP_AFTER_HOURS": hours})
+
+
+@pytest.mark.parametrize("value", [0, 0.0, -1, -0.5, float("inf"), float("-inf"), float("nan"),
+                                   True, "6"])
+def test_the_run_notebook_refuses_a_wrong_time_limit_in_its_settings_cell(value):
+    """`run --stop-after-hours` refuses these only in the run cell, after the
+    install, the data, the model and the server (30-50 minutes on the A100)."""
+    with pytest.raises(ValueError, match="STOP_AFTER_HOURS ya None"):
+        run_settings(NAMES[1], STOP_AFTER_HOURS=value)
+    if not isinstance(value, str):  # what the run cell would have sent
+        with pytest.raises(SystemExit):
+            cli.parser().parse_args(run_cell_argv(value))
+
+
+@pytest.mark.parametrize("name", [NAMES[1], RUN_REHEARSAL])
+@pytest.mark.parametrize("value", [1, 0, -2, 2.0, 16.0, True, "16", None])
+def test_the_run_notebooks_refuse_fewer_than_two_workers_in_their_settings_cell(name, value):
+    """`run` and `rehearse-run` refuse fewer than two workers (each opened
+    game keeps memory until its worker is replaced) only after the install
+    and the data; a value argparse cannot read as a whole number fails there
+    too."""
+    with pytest.raises(ValueError, match="WORKERS en az 2 olan bir tam sayı"):
+        run_settings(name, WORKERS=value)
+
+
+def test_the_run_notebooks_settings_cells_pass_the_values_run_takes():
+    for hours in (None, 6.0, 0.25, 1, 96):
+        assert run_settings(NAMES[1], STOP_AFTER_HOURS=hours)["STOP_AFTER_HOURS"] == hours
+        args = cli.parser().parse_args(run_cell_argv(hours))
+        assert args.stop_after_hours == (None if hours is None else float(hours))
+    for name in (NAMES[1], RUN_REHEARSAL):
+        for workers in (2, 4, 16):
+            assert run_settings(name, WORKERS=workers)["WORKERS"] == workers
+        run_settings(name)  # the committed values
+
+
+def test_the_run_guard_names_older_rehearsed_commits_only_with_the_critics_clearance(tmp_path):
+    """An older commit can carry an older protocol (the one before ADR-0011
+    note N1 asked the teacher for 10 proposals): the guard keeps listing the
+    rehearsed commits but sends the owner to the Critic's clearance on issue
+    #13 or to a run rehearsal of the new commit."""
+    from evaluation.exp0001.serving import DEFAULT_MODEL
+    cells = code_cells(NAMES[1])
+    cell = cells[first(cells, "if not os.path.exists(PASSED):")]
+    rehearsal = tmp_path / "rehearsal"
+    rehearsal.mkdir()
+    model = DEFAULT_MODEL.replace("/", "--")
+
+    def guard():
+        exec(compile(cell, "<guard cell>", "exec"),
+             {"os": os, "DRIVE_ROOT": str(tmp_path), "COMMIT": "a" * 40, "MODEL": DEFAULT_MODEL,
+              "run_commit": ""})
+
+    with pytest.raises(RuntimeError) as none:
+        guard()
+    assert "koşu provası geçmiş kodlar" not in str(none.value)
+    for older in ("b" * 40, "c" * 40):
+        (rehearsal / f"run-passed-{older}-{model}.json").write_text("{}")
+    with pytest.raises(RuntimeError) as older:
+        guard()
+    message = str(older.value)
+    assert f"koşu provası geçmiş kodlar: {'b' * 40}, {'c' * 40}." in message
+    assert "issue #13'teki Critic onayı o commit'i adıyla anıyorsa" in message
+    assert "yoksa bu commit için koşu provasını çalıştırın" in message
+    assert "çalıştırmak için CODE_REF'e birini yazın" not in message
+    (rehearsal / f"run-passed-{'a' * 40}-{model}.json").write_text("{}")
+    guard()  # this commit's record: the guard passes
+
+
+def test_the_run_notebook_says_how_mining_and_a_failing_mirror_meet_a_stop():
+    """The time limit admits no new episode, and the miner's teacher calls are
+    not episodes: the limit waits for that seed's mining, and a Stop there
+    repeats it next session (a crash before the frozen set re-mines). A mirror
+    that keeps failing pauses the run with its newest records only on the
+    runtime."""
+    intro = markdown_cells(NAMES[1])[0]
+    bullets = {line.split(":", 1)[0]: line for line in intro.splitlines() if line.startswith("- ")}
+    assert "süre dolarsa koşu, o tohumun miner adımı bitene dek sürer" in \
+        bullets["- `STOP_AFTER_HOURS`"]
+    assert "Miner adımında basılan Durdur, o tohumun miner adımını sonraki oturumda baştan " \
+        "yineletir" in next(line for key, line in bullets.items() if "**Durdur**" in key)
+    # the pause's threshold is the mirror's own constant (job m builds it)
+    failures = cli.MIRROR_FAILURES_BEFORE_PAUSE
+    assert f"Drive'a kopya üst üste {failures} kez alınamazsa koşu yeni bölüm başlatmaz" in intro
+    for needed in ("en yeni kayıtlar o zaman yalnızca bu makinededir",
+                   "çalışma zamanını bırakmayın", "force_remount=True",
+                   "koşu hücresini (11) yeniden çalıştırın"):
+        assert needed in intro, needed
+    cells = code_cells(NAMES[1])
+    assert cells[first(cells, 'cli("run"')].startswith("# 11)")

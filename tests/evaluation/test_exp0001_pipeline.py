@@ -43,6 +43,7 @@ from evaluation.exp0001.provenance import (
     ProvenanceError,
     build_run_start_record,
     canonical_sha256,
+    verify_run_start_record,
 )
 from genome.validation.registry import TraitRegistry
 from inheritance.runner import RunnerContractError
@@ -1070,6 +1071,8 @@ def test_a_pair_sent_in_both_evidence_forms_is_charged_two_calls():
     (lambda r: r["splits"].update({"manifest_sha256": "0" * 64}), "another split manifest"),
     # ADR-0012 D1, D10: a record of another schema or threshold version is another run
     (lambda r: r.update({"schema": "heritagent/exp0001-run-start/0.1"}), "not a heritagent"),
+    # ADR-0011 note N1: a 0.2 record carries no per-call request
+    (lambda r: r.update({"schema": "heritagent/exp0001-run-start/0.2"}), "not a heritagent"),
     (lambda r: r["gate"].update({"threshold_version": "EXP-0001-CIG-M0-v1"}), "not a heritagent"),
     (lambda r: r.pop("benefit_bank"), "with a benefit bank"),
     (lambda r: r["benefit_bank"].update({"bank_sha256": "0" * 64}), "another benefit bank"),
@@ -1086,6 +1089,37 @@ def test_the_run_binds_the_records_identity(tmp_path, splits, change, message):
     # directory is free: the constructor released its lock itself
     make_run(tmp_path / "run", splits).close()
     del failed
+
+
+@pytest.mark.parametrize("change,named", [
+    # ADR-0011 note N1: the record names the per-call request the run sends
+    (lambda r: (r["protocol"].update({"teacher_proposals_per_call": 7}),
+                r["miner"].update({"proposals_per_call": 7})),
+     "protocol.teacher_proposals_per_call, miner.proposals_per_call"),
+    (lambda r: r["miner"].update({"proposals_per_call": 7}), "in miner.proposals_per_call$"),
+    (lambda r: r["protocol"].update({"candidate_cap": 7}), "in protocol.candidate_cap$"),
+    (lambda r: r["protocol"].pop("mining_seeds"), "in protocol.mining_seeds$"),
+    (lambda r: r["protocol"].update({"extra": 1}), "in protocol.extra$"),
+])
+def test_the_run_refuses_a_record_of_another_protocol(tmp_path, splits, change, named):
+    """The run reads only the caps from the record's protocol; a record that
+    names any other value than this code's, re-hashed like a real one, is
+    refused before anything is written."""
+    record = run_start(tmp_path, splits)
+    change(record)
+    record["record_sha256"] = canonical_sha256(
+        {k: v for k, v in record.items() if k != "record_sha256"})
+    verify_run_start_record(record)  # the record itself is consistent
+    with pytest.raises(ProvenanceError, match=named):
+        make_run(tmp_path / "run", splits, record=record)
+    assert not (tmp_path / "run").exists()
+
+
+def test_a_record_with_other_caps_only_is_a_record_of_this_protocol(tmp_path, splits):
+    caps = {**CAPS, "episodes_max": 1}
+    record = run_start(tmp_path, splits, caps)
+    assert record["protocol"]["caps"] != CAPS
+    assert make_run(tmp_path / "run", splits, record=record).run()["episodes"] == 1
 
 
 @pytest.mark.parametrize("name,field", [("model", "revision"), ("model", "backend"),

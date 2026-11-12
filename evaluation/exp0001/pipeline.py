@@ -89,12 +89,14 @@ from evaluation.exp0001.protocol import (
     MINER_MAX_TOKENS,
     MINING_SEEDS,
     MINING_TEMPERATURE,
+    PROTOCOL,
     TEACHER_PROPOSALS_PER_CALL,
 )
 from evaluation.exp0001.provenance import (
     RUN_START_SCHEMA,
     ProvenanceError,
     freeze_json,
+    plain,
     verify_pre_run_artifacts,
     verify_run_start_record,
 )
@@ -278,6 +280,21 @@ class Exp0001Run:
             raise ProvenanceError(f"the run-start record is not a {RUN_START_SCHEMA} record of "
                                   f"thresholds {THRESHOLD_VERSION} with a benefit bank "
                                   f"(ADR-0012 D1, D10)")
+        # the record's protocol is this code's: the run reads only the caps from
+        # it (tests run with small caps), so a record naming another value, the
+        # teacher's per-call request among them (ADR-0011 note N1), would be
+        # recorded while the code runs its own
+        recorded = run_start.get("protocol")
+        recorded = recorded if isinstance(recorded, Mapping) else {}
+        protocol = plain(PROTOCOL)
+        differing = [f"protocol.{key}" for key in sorted(set(recorded) | set(protocol))
+                     if key != "caps" and recorded.get(key, ...) != protocol.get(key, ...)]
+        if (run_start.get("miner") or {}).get("proposals_per_call") \
+                != TEACHER_PROPOSALS_PER_CALL:
+            differing.append("miner.proposals_per_call")
+        if differing:
+            raise ProvenanceError(f"the run-start record differs from this code's protocol in "
+                                  f"{', '.join(differing)}")
         # the split, pilot and bank manifests must verify, be the pre-registered
         # ones, and be the ones the record names (ADR-0012 D1)
         verify_pre_run_artifacts(split_manifest, pilot_manifest, benefit_bank,

@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evaluation.exp0001 import cli, pipeline, provenance, rehearsal, serving
+from evaluation.exp0001 import cli, pipeline, protocol, provenance, rehearsal, serving
 from evaluation.exp0001 import run_rehearsal as rr
 from evaluation.exp0001.allocations import interleave
 from evaluation.exp0001.lifetime import t_reg_rank
@@ -274,10 +274,11 @@ def test_the_stand_in_reads_the_evidence_a_teacher_prompt_carries():
                 "kind": "heritagent-differential-evidence", "task": "solve g1."}
     prompt = render_teacher_prompt(evidence_text=canonical_json(document),
                                    family_universe=("a", "b"),
-                                   max_proposals=TEACHER_PROPOSALS_PER_CALL)
+                                   proposals_per_call=TEACHER_PROPOSALS_PER_CALL)
     assert rr.evidence_of(prompt) == document
     assert rr.teacher_asks(prompt) == TEACHER_PROPOSALS_PER_CALL == 5
     assert rr.teacher_asks("no request here") is None
+    assert rr.teacher_asks(prompt + "\nReturn at most 5 proposals.") is None  # asked twice
     assert rr.evidence_of("no evidence here") is None
 
 
@@ -310,7 +311,7 @@ def teacher_payload(seed, evidence, **overrides):
     from runtime.model_adapters.openai_server import VLLMServerAdapter, server_constraint
     prompt = render_teacher_prompt(evidence_text=canonical_json(evidence),
                                    family_universe=("a",),
-                                   max_proposals=TEACHER_PROPOSALS_PER_CALL)
+                                   proposals_per_call=TEACHER_PROPOSALS_PER_CALL)
     return {"model": MODEL, "n": 1, "temperature": 0.7, "seed": seed, "max_tokens": 2048,
             **NEUTRAL_SAMPLING, "messages": [{"role": "user", "content": prompt}],
             "response_format": VLLMServerAdapter._json_schema_format(
@@ -613,6 +614,40 @@ class StandInTeacher:
         return ScriptedAdapter([]).metadata()
 
 
+class RecordingAdapter:
+    """Records what ``cli._preflight`` sends and answers each call as a
+    server would, with exact token counts."""
+
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, messages, settings):
+        self.calls.append(("generate", list(messages)))
+        return SimpleNamespace(text='Thought: t\nAction: act\nAction Input: {"command": "look"}',
+                               prompt_tokens=10, completion_tokens=5)
+
+    def structured_generate(self, messages, settings, schema):
+        self.calls.append(("structured_generate", list(messages)))
+        return SimpleNamespace(text='{"proposals": []}', finish_reason="stop")
+
+
+def preflight_teacher_prompt():
+    """The teacher prompt the real ``cli._preflight`` sends."""
+    adapter = RecordingAdapter()
+    cli._preflight(adapter)
+    teacher = [messages for kind, messages in adapter.calls if kind == "structured_generate"]
+    assert len(teacher) == 1 and [m.role for m in teacher[0]] == ["user"], adapter.calls
+    return teacher[0][0].content
+
+
+def test_the_preflight_asks_the_teacher_for_one_proposal():
+    """ADR-0011 note N1 states that the preflight asks for one proposal."""
+    prompt = preflight_teacher_prompt()
+    requests = [line for line in prompt.splitlines() if "Return at most" in line]
+    assert len(requests) == 1 and requests[0].startswith("Return at most 1 proposals."), requests
+    assert rr.teacher_asks(prompt) == 1
+
+
 @pytest.mark.parametrize("asks, holds", [(TEACHER_PROPOSALS_PER_CALL, True), (10, False),
                                          (1, False)])
 def test_the_request_check_fails_when_the_miner_asks_for_another_number(
@@ -621,14 +656,12 @@ def test_the_request_check_fails_when_the_miner_asks_for_another_number(
     pair's teacher prompt, and the check fails; the preflight's own teacher
     call (it asks for one) is not a pair's and never counts."""
     from tests.miner.conftest import make_batch
-    from traits.miner.miner import MiningSettings, TraitMiner, render_teacher_prompt
+    from traits.miner.miner import MiningSettings, TraitMiner
     policy = rr.RunPolicy(script, splits)
     batch, _ = make_batch(tmp_path, registry)
     TraitMiner(StandInTeacher(policy), registry, born_generation=1,
                settings=MiningSettings(seed=11, proposals_per_call=asks)).mine(batch)
-    preflight = render_teacher_prompt(  # as cli's preflight renders it
-        evidence_text="(a preflight call: no trajectories; propose at most one short skill)",
-        family_universe=("a",), max_proposals=1)
+    preflight = preflight_teacher_prompt()
     assert policy.respond(teacher_payload(11, {}, messages=[
         {"role": "user", "content": preflight}]))[0] == 200
     assert [e.get("asks") for e in policy.log] == [asks, None]
@@ -952,6 +985,13 @@ def test_a_passed_rehearsal_covers_only_its_own_machine(rehearsed, script):
     assert list(check(pilot, passed)) == ["record"]
 
 
+def another_protocol(monkeypatch):
+    """This checkout's protocol with one value changed: the teacher asked
+    for K proposals per call again (ADR-0011 note N1)."""
+    monkeypatch.setattr(protocol, "PROTOCOL",
+                        {**protocol.PROTOCOL, "teacher_proposals_per_call": 10})
+
+
 def run_argv(tmp_path, *extra):
     return ["run", "--prepared", "p", "--data-root", "d", "--local-dir", str(tmp_path / "work"),
             "--run-id", "EXP-0001-main", *extra]
@@ -997,6 +1037,20 @@ def test_run_refuses_a_rehearsal_that_does_not_cover_it_before_any_write(
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(tmp_path / "list.json"),
                              "--workers", "2")) == 2
     assert '"record"' in capsys.readouterr().err
+    # a rehearsal of another commit, or of another protocol, covers nothing
+    covered = run_argv(tmp_path, "--rehearsal-passed", str(record), "--workers", "2")
+    monkeypatch.setattr(cli, "git_state", lambda repo: ("c" * 40, False))
+    assert cli.main(covered) == 2
+    err = capsys.readouterr().err
+    assert "no passed run rehearsal covers this run" in err
+    assert '"commit"' in err and '"protocol_sha256"' not in err, err
+    monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))
+    with monkeypatch.context() as patched:
+        another_protocol(patched)
+        assert cli.main(covered) == 2
+        err = capsys.readouterr().err
+        assert '"protocol_sha256"' in err and '"commit"' not in err, err
+    assert not (tmp_path / "work").exists()
     # a rehearsal of another script than the committed one covers nothing
     monkeypatch.setattr(rr, "SCRIPT_PATH", tmp_path / "torn.json")
     assert cli.main(run_argv(tmp_path, "--rehearsal-passed", str(record), "--workers", "2")) == 2
@@ -1120,6 +1174,47 @@ def test_run_refuses_a_stand_in_server(tmp_path, monkeypatch, capsys):
     assert "a rehearsal's stand-in server, not vLLM" in capsys.readouterr().err
 
 
+def test_run_refuses_a_server_whose_version_cannot_be_read_before_any_write(
+        tmp_path, monkeypatch, capsys):
+    """ADR-0008 D4: the run-start record names the server's version and a
+    resume on another fails closed. A version recorded as unknown would make
+    the write-once record refuse every later session whose /version answers."""
+    from evaluation.exp0001.protocol import CONTEXT_WINDOW
+    real_run = cli._run
+    stub_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "_run", real_run)  # the run's own order up to the adapter
+    monkeypatch.setattr(cli, "_require_run_rehearsal", lambda args, prepared: None)
+    monkeypatch.setattr(cli, "_require_recycled_workers", lambda workers: None)  # Python 3.10
+    monkeypatch.setattr(cli, "_manifests", lambda repo: ({}, {}, {}))
+    monkeypatch.setattr(cli, "verify_data", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cli, "_require_run_disk", lambda workers, local: None)
+
+    class Served:  # a vLLM server that serves the model; only /version does not answer
+        def __init__(self, url, model_id, revision, *, backend_version, **options):
+            self.backend_version = backend_version
+
+        def require_served(self):
+            pass
+
+        def served_context_window(self):
+            return CONTEXT_WINDOW
+
+        def metadata(self):
+            return SimpleNamespace(backend_version=self.backend_version)
+
+    def no_counter(*args, **kwargs):
+        raise AssertionError("the token counter was loaded")
+
+    monkeypatch.setattr(cli, "VLLMServerAdapter", Served)
+    monkeypatch.setattr(cli, "hf_token_counter", no_counter)
+    assert cli._server_version("http://127.0.0.1:9") is None  # nothing listens there
+    argv = run_argv(tmp_path, "--rehearsal-passed", "x", "--server-url", "http://127.0.0.1:9")
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "the server's version cannot be read" in err and "run the cell again" in err, err
+    assert not (tmp_path / "work").exists()
+
+
 def test_rehearsal_check_reads_a_run_record_as_run_does(committed, tmp_path, monkeypatch,
                                                          capsys):
     monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))
@@ -1130,6 +1225,20 @@ def test_rehearsal_check_reads_a_run_record_as_run_does(committed, tmp_path, mon
     assert cli.main(argv + ["--revision", "b" * 40, "--workers", "16"]) == 2
     assert cli.main(argv + ["--revision", "d" * 40, "--workers", "2"]) == 2
     capsys.readouterr()
+    # the checkout's commit and protocol, not the record's own
+    covered = argv + ["--revision", "b" * 40, "--workers", "2"]
+    monkeypatch.setattr(cli, "git_state", lambda repo: ("c" * 40, False))
+    assert cli.main(covered) == 2
+    err = capsys.readouterr().err
+    assert "does not cover this machine" in err
+    assert '"commit"' in err and '"protocol_sha256"' not in err, err
+    monkeypatch.setattr(cli, "git_state", lambda repo: ("a" * 40, False))
+    with monkeypatch.context() as patched:
+        another_protocol(patched)
+        assert cli.main(covered) == 2
+        err = capsys.readouterr().err
+        assert '"protocol_sha256"' in err and '"commit"' not in err, err
+    assert cli.main(covered) == 0
     # what run checks, it needs
     assert cli.main(argv + ["--workers", "2"]) == 2
     assert cli.main(argv + ["--revision", "b" * 40]) == 2

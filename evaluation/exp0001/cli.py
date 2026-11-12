@@ -435,7 +435,7 @@ def _preflight(adapter: VLLMServerAdapter, *, gate_shape: bool = False) -> dict:
                                stop=STOP_SEQUENCES))
     prompt = render_teacher_prompt(
         evidence_text="(a preflight call: no trajectories; propose at most one short skill)",
-        family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)), max_proposals=1)
+        family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)), proposals_per_call=1)
     teacher = adapter.structured_generate(  # validated against the schema by the adapter
         teacher_messages(prompt), GenerationSettings(temperature=0.7, max_tokens=2048, seed=11),
         output_schema())
@@ -1422,7 +1422,13 @@ def cmd_run(args) -> int:
 
     def adapter():
         served = _adapter(args, prepared)
-        if served.metadata().backend_version == rehearsal.STAND_IN_VERSION:
+        version = served.metadata().backend_version
+        if version is None:  # the record is write-once and a resume on another version fails
+            raise CliError(f"the server's version cannot be read ({args.server_url}/version did "
+                           f"not answer; the server is still starting, or /version failed): "
+                           f"wait and run the cell again. A run records the version it starts "
+                           f"with and resumes only on it (ADR-0008 D4)")
+        if version == rehearsal.STAND_IN_VERSION:
             raise CliError(f"{args.server_url} is a rehearsal's stand-in server, not vLLM")
         return served
 

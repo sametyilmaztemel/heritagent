@@ -216,22 +216,100 @@ def test_order_is_enforced():
 
 # one unmodified ALFWorld game (see tests/fixtures/alfworld/README.md)
 FIXTURE_GAME = Path(__file__).resolve().parents[1] / "fixtures" / "alfworld" / "game.tw-pddl"
+# sha256 of the fixture's rendered task text (D7, A1) under D8's wrappers. A shuffling
+# demangler numbers the two cabinets from Python's random state: 867a492422c6... after
+# random.seed(0) or (2), this text after (1) or (3) and in a fresh process
+FIXTURE_TASK_SHA256 = "28caadb7f295abd10b8a92596f202280c655a6b5488dead51be3c511951836ea"
 
 
 def test_real_game_opens_and_steps():
     """D8: a real game opens and steps (on Python 3.13 only through the
     TextWorld eval fix). ALFWORLD_GAMEFILE picks the game, else the committed
-    fixture; skipped only without the alfworld extra."""
+    fixture, whose task text is pinned (the demangler's names and their
+    order); skipped only without the alfworld extra."""
+    import hashlib
     gamefile = os.environ.get("ALFWORLD_GAMEFILE")
     if not gamefile:
         pytest.importorskip("alfworld.agents.environment.alfred_tw_env",
                             reason="needs the alfworld extra (pip install -e .[alfworld])")
         gamefile = str(FIXTURE_GAME)
+    import random
+
     from runtime.tool_adapters.alfworld import open_game
+    if gamefile == str(FIXTURE_GAME):  # the same text whatever the random state
+        state = random.getstate()
+        try:
+            for seed in range(4):
+                random.seed(seed)
+                session = open_game(gamefile, max_episode_steps=50)
+                task = AlfworldEnvironment(session, game_id="real").start()
+                session.close()
+                assert hashlib.sha256(task.encode("utf-8")).hexdigest() == FIXTURE_TASK_SHA256, seed
+        finally:
+            random.setstate(state)
     env = AlfworldEnvironment(open_game(gamefile, max_episode_steps=50), game_id="real")
     assert "Your task is to:" in env.start()
     observation = env.call("act", {"command": "look"})
     assert ADMISSIBLE_HEADER in observation.content
+
+
+def test_open_game_asks_for_d8s_wrappers_and_the_step_limit(monkeypatch):
+    """D8 without the alfworld package: the demangler without shuffling (a
+    shuffled one renames and reorders what the model reads), ALFWorld's infos,
+    no expert, and the step limit the caller passes reaches the game."""
+    import sys
+    import types
+
+    from runtime.tool_adapters.alfworld import TEXTWORLD_VERSION, open_game
+    seen = {}
+
+    class AlfredDemangler:
+        def __init__(self, *args, **kwargs):
+            seen["demangler"] = (args, kwargs)
+
+    class AlfredInfos:
+        pass
+
+    def register_game(gamefile, request_infos, **kwargs):
+        seen["register"] = (gamefile, request_infos, kwargs)
+        return "env-id"
+
+    textworld = types.ModuleType("textworld")
+    textworld.__version__ = TEXTWORLD_VERSION
+    textworld.EnvInfos = lambda **kwargs: ("infos", kwargs)
+    gym = types.ModuleType("textworld.gym")
+    gym.register_game = register_game
+    gym.make = lambda env_id: ("session", env_id)
+    textworld.gym = gym
+    envs = types.ModuleType("textworld.envs")
+    pddl = types.ModuleType("textworld.envs.pddl")
+    pddl.textgen = _textgen()
+    envs.pddl = pddl
+    textworld.envs = envs
+    tw_env = types.ModuleType("alfworld.agents.environment.alfred_tw_env")
+    tw_env.AlfredDemangler, tw_env.AlfredInfos = AlfredDemangler, AlfredInfos
+    for name, module in (("textworld", textworld), ("textworld.gym", gym),
+                         ("textworld.envs", envs), ("textworld.envs.pddl", pddl),
+                         ("textworld.envs.pddl.textgen", pddl.textgen),
+                         ("alfworld", types.ModuleType("alfworld")),
+                         ("alfworld.agents", types.ModuleType("alfworld.agents")),
+                         ("alfworld.agents.environment",
+                          types.ModuleType("alfworld.agents.environment")),
+                         ("alfworld.agents.environment.alfred_tw_env", tw_env)):
+        monkeypatch.setitem(sys.modules, name, module)
+    for steps in (50, 7):
+        seen.clear()
+        assert open_game("/data/game.tw-pddl", max_episode_steps=steps) == ("session", "env-id")
+        assert seen["demangler"] == ((), {"shuffle": False})
+        gamefile, infos, kwargs = seen["register"]
+        assert gamefile == "/data/game.tw-pddl"
+        assert infos == ("infos", {"won": True, "admissible_commands": True,
+                                   "extras": ["gamefile"]})
+        assert set(kwargs) == {"max_episode_steps", "wrappers"}
+        assert kwargs["max_episode_steps"] == steps
+        demangler, infos_wrapper = kwargs["wrappers"]  # these two and nothing else (no expert)
+        assert isinstance(demangler, AlfredDemangler) and infos_wrapper is AlfredInfos
+    assert getattr(pddl.textgen.EvalSymbol.derive, "heritagent_eval_fix", False)
 
 
 def test_a_game_that_ends_without_winning_is_a_failure(g0_config):

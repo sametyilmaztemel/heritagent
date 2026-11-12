@@ -71,12 +71,12 @@ def test_the_sent_prompt_differs_from_the_k_rendering_only_in_the_request_line(t
     evidence_text, _ = render_pair_evidence(batch.pairs[0], FULL)
     assert evidence_text in sent
     with_k = render_teacher_prompt(evidence_text=evidence_text,
-                                   family_universe=batch.family_universe, max_proposals=10)
+                                   family_universe=batch.family_universe, proposals_per_call=10)
     assert with_k.count("\n") == sent.count("\n")
     differing = [(a, b) for a, b in zip(with_k.splitlines(), sent.splitlines()) if a != b]
     assert differing == [(ASKS_TEN, ASKS_FIVE)]
     assert sent == render_teacher_prompt(evidence_text=evidence_text,
-                                         family_universe=batch.family_universe, max_proposals=5)
+                                         family_universe=batch.family_universe, proposals_per_call=5)
 
 
 def test_k_is_still_the_batch_cap_over_three_calls_of_five(tmp_path, registry):

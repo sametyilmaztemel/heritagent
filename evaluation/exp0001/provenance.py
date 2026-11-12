@@ -28,7 +28,9 @@ from evaluation.exp0001.protocol import (
 )
 from evaluation.metrics.final_statistics import FINAL_RULE
 
-RUN_START_SCHEMA = "heritagent/exp0001-run-start/0.2"  # 0.2 binds the benefit bank (ADR-0012)
+# 0.3 carries the teacher's per-call request (ADR-0011 note N1) and the neutral sampling
+# values; 0.2 bound the benefit bank (ADR-0012)
+RUN_START_SCHEMA = "heritagent/exp0001-run-start/0.3"
 REQUIRED_AT_RUN_TIME = ("model-weights-hash", "code-commit", "split-hashes", "benefit-bank-hash",
                         "miner-prompt-hash", "frozen-candidate-set-artifact", "gate-thresholds",
                         "run-log")
@@ -145,6 +147,7 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
     from inheritance.ablation import BOOTSTRAP_CLUSTER_ORDER, BOOTSTRAP_N_RESAMPLES, BOOTSTRAP_SEED
     from inheritance.gate import PRIMARY_THRESHOLDS, THRESHOLD_VERSION
     from inheritance.overlay import evaluation_settings
+    from runtime.model_adapters.openai_server import NEUTRAL_SAMPLING
     from runtime.policies.planner_react import STOP_SEQUENCES
     from runtime.seed_g0 import EPISODE_MAX_STEPS
     from traits.miner.miner import output_schema_sha256, prompt_template_sha256
@@ -201,7 +204,10 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
                            max_tokens=PROTOCOL["budgets"]["max_tokens_per_request"], seed=None)),
                        "mining_temperature": PROTOCOL["mining_temperature"],
                        "stop": list(STOP_SEQUENCES),
-                       "episode_max_steps": EPISODE_MAX_STEPS},
+                       "episode_max_steps": EPISODE_MAX_STEPS,
+                       # what every request sends besides temperature (ADR-0008 D4,
+                       # ADR-0011 D5)
+                       "sampling": dict(NEUTRAL_SAMPLING)},
         "protocol": plain(PROTOCOL),
         "required_at_run_time": list(REQUIRED_AT_RUN_TIME),
         "environment": None if environment is None else plain(environment),

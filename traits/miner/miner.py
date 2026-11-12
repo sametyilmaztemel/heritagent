@@ -89,13 +89,14 @@ def teacher_messages(rendered_prompt: str) -> list[ModelMessage]:
     return [ModelMessage(role=TEACHER_ROLE, content=rendered_prompt)]
 
 
-def render_teacher_prompt(*, evidence_text: str, family_universe, max_proposals: int) -> str:
+def render_teacher_prompt(*, evidence_text: str, family_universe, proposals_per_call: int) -> str:
     """The teacher prompt for one pair, sent as one user message (``teacher_messages``;
-    ADR-0011 D4). ``max_proposals`` is only the number rendered in the line "Return at
-    most N proposals."; the miner passes ``MiningSettings.proposals_per_call`` here, never
-    the batch cap K (ADR-0011 note N1, owner, 2026-11-12)."""
+    ADR-0011 D4). ``proposals_per_call`` is only the number rendered in the line "Return
+    at most N proposals."; the miner passes ``MiningSettings.proposals_per_call`` here,
+    never the batch cap K (ADR-0011 note N1, owner, 2026-11-12). The template's
+    placeholder keeps its pinned name ``<<MAX_PROPOSALS>>``."""
     return (prompt_template_text()
-            .replace("<<MAX_PROPOSALS>>", str(max_proposals))
+            .replace("<<MAX_PROPOSALS>>", str(proposals_per_call))
             .replace("<<FAMILIES>>", ", ".join(family_universe))
             .replace("<<EVIDENCE>>", evidence_text))
 
@@ -221,7 +222,7 @@ class TraitMiner:
         K (``max_proposals``) select among them."""
         rendered_prompt = render_teacher_prompt(evidence_text=evidence_text,
                                                 family_universe=family_universe,
-                                                max_proposals=self._settings.proposals_per_call)
+                                                proposals_per_call=self._settings.proposals_per_call)
         return rendered_prompt, sha256_hex(rendered_prompt.encode("utf-8"))
 
     def _ask_teacher(self, rendered_prompt: str) -> tuple[dict, str]:

@@ -723,7 +723,8 @@ def evidence_of(prompt: str) -> dict | None:
 
 def teacher_asks(prompt: str) -> int | None:
     """The number of proposals a teacher prompt asks for ("Return at most N
-    proposals."), or None when the prompt has no such line."""
+    proposals."), or None when the prompt has no such line or has it more
+    than once: a prompt that asks twice asks for no one number."""
     found = TEACHER_ASKS.findall(prompt)
     return int(found[0]) if len(found) == 1 else None
 

@@ -174,7 +174,7 @@ def miner_prompt_tokens(t07: Sequence[EpisodeResult],
             # MiningBatch sorts the universe
             tokens[form] = count_prompt_tokens(render_teacher_prompt(
                 evidence_text=evidence, family_universe=tuple(sorted(ALFWORLD_TASK_TYPES)),
-                max_proposals=TEACHER_PROPOSALS_PER_CALL))
+                proposals_per_call=TEACHER_PROPOSALS_PER_CALL))
             counts[form].append(tokens[form])
         fit = {form: n <= limit for form, n in tokens.items()}
         fits["full" if fit[FULL] else "only_without_admissible_commands"
