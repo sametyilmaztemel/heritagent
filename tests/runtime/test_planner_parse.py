@@ -104,3 +104,18 @@ def test_a_mixed_reply_is_reprompted_and_the_action_is_sent(g0_config):
         "reply contains both an Action and a Final Answer; exactly one step is allowed"]
     assert env.calls == [("act", json.loads(ACTION.split("Action Input: ", 1)[1]))]
     assert result.status == "finished" and result.answer == "done"
+
+
+def test_an_integer_past_pythons_digit_limit_is_a_parse_failure_that_is_retried(g0_config):
+    """json.loads raises a plain ValueError for an integer of more than 4,300
+    digits; the loop retries it as any other malformed Action Input."""
+    from runtime.model_adapters import ScriptedAdapter
+    huge = "Thought: t\nAction: act\nAction Input: {\"command\": " + "1" * 5000 + "}"
+    with pytest.raises(PlanParseError, match="Action Input is not valid JSON"):
+        ReActPlanner.parse(huge)
+    adapter = ScriptedAdapter([huge, react_final("done")])
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({"act": []}), task="t",
+                       budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64),
+                       sleep=lambda _delay: None)
+    assert len(result.events.of_kind("plan_parse_failed")) == 1
+    assert result.status == "finished"

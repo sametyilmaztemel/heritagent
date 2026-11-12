@@ -160,11 +160,14 @@ def hf_token_counter(model_id: str, revision: str, path: Path | None = None) -> 
 
 
 def pinned_vllm_model(model_id: str, revision: str, **kwargs) -> VLLMAdapter:
-    from evaluation.exp0001.protocol import CONTEXT_WINDOW
+    """The offline adapter at a pinned revision with the protocol's window
+    (ADR-0009 D4) and chat-template arguments (thinking off, ADR-0011 D3)."""
+    from evaluation.exp0001.protocol import CHAT_TEMPLATE_KWARGS, CONTEXT_WINDOW
     if not isinstance(revision, str) or not revision.strip():
         raise BackendError("the model revision must be pinned (manifest: pin-at-run-time)")
     return VLLMAdapter(model=model_id, revision=revision,
-                       **{"max_model_len": CONTEXT_WINDOW, **kwargs})
+                       **{"max_model_len": CONTEXT_WINDOW,
+                          "chat_template_kwargs": CHAT_TEMPLATE_KWARGS, **kwargs})
 
 
 # -- the accelerator (ADR-0008: an A100 80 GB only) ------------------------------

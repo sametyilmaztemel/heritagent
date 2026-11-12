@@ -98,6 +98,18 @@ def render_teacher_prompt(*, evidence_text: str, family_universe, max_proposals:
             .replace("<<EVIDENCE>>", evidence_text))
 
 
+def _malformed_detail(exc: ModelResponseError) -> str:
+    """The rejection detail of a malformed teacher reply, with the backend's
+    finish_reason; a reply cut at max_tokens is named as a truncation, so it
+    is never read as a format failure (ADR-0011 D5 keeps the budget)."""
+    if exc.finish_reason == "length":
+        return (f"{exc} (finish_reason 'length': the reply was truncated at the "
+                f"max_tokens budget)")
+    if exc.finish_reason is not None:
+        return f"{exc} (finish_reason {exc.finish_reason!r})"
+    return str(exc)
+
+
 @dataclass(frozen=True)
 class MiningSettings:
     """EXP-0001 mining defaults: temperature 0.7, explicit seed, explicit
@@ -254,7 +266,7 @@ class TraitMiner:
                     entry = {"reason": "malformed_output",
                               "proposal_name": None, "proposal_index": None,
                               "gene_id": None, "discovery_order": None,
-                              "detail": str(exc)}
+                              "detail": _malformed_detail(exc)}
                     rejected.append(entry)  # an all-malformed run is not a clean zero
                     pair_rejected.append(entry)
                     proposals = []

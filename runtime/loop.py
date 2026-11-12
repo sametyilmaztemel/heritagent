@@ -231,7 +231,7 @@ def run_agent(*, config: RuntimeConfig, model: ModelAdapter, env: ToolEnvironmen
             total_tokens = cumulative_prompt_tokens + cumulative_completion_tokens
             log.emit("model_called", step=step, call_kind="generate",
                      messages=[{"role": m.role, "content": m.content} for m in messages],
-                     raw_response=result.text,
+                     raw_response=result.text, finish_reason=result.finish_reason,
                      prompt_tokens=per_prompt, completion_tokens=per_completion,
                      prompt_tokens_exact=prompt_exact, completion_tokens_exact=completion_exact,
                      cumulative_prompt_tokens=cumulative_prompt_tokens,

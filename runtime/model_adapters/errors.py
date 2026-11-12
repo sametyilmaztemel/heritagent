@@ -24,10 +24,15 @@ class ContextWindowExceeded(AdapterError):
 class ModelResponseError(AdapterError):
     """The model's response violated the requested contract (invalid JSON,
     schema mismatch, malformed tool call). `raw_text` preserves the exact
-    teacher output for audit when available; never regex-recovered."""
+    teacher output for audit when available; never regex-recovered.
+    `finish_reason` is the backend's reason the reply ended when known
+    ("length": cut at max_tokens), so a truncated reply can be told from a
+    format failure."""
 
-    def __init__(self, message, raw_text: str | None = None):
+    def __init__(self, message, raw_text: str | None = None,
+                 finish_reason: str | None = None):
         self.raw_text = raw_text
+        self.finish_reason = finish_reason
         super().__init__(message)
 
 

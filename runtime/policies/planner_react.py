@@ -104,7 +104,7 @@ class ReActPlanner:
             raise PlanParseError("reply does not match the ReAct format (Thought/Action/Action Input or Final Answer)")
         try:
             arguments = json.loads(input_match.group(1))
-        except json.JSONDecodeError as exc:
+        except ValueError as exc:  # also an integer past Python's digit limit
             raise PlanParseError(f"Action Input is not valid JSON: {exc}") from None
         if not isinstance(arguments, dict):
             raise PlanParseError("Action Input must be a JSON object")

@@ -111,7 +111,7 @@ class ScriptedAdapter(ModelAdapter):
             text = json.dumps(response.structured, sort_keys=True)
         else:
             text = response.text
-        payload = self._validate_structured(text, schema)
+        payload = self._validate_structured(text, schema, response.finish_reason)
         return GenerationResult(text=text, finish_reason=response.finish_reason)
 
     def tool_call(self, messages: list[ModelMessage], settings: GenerationSettings,

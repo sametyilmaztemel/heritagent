@@ -3,12 +3,13 @@ no live model/GPU."""
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
 from runtime.model_adapters import ScriptedAdapter
 from traits.miner.inputs import MiningBatch
-from trajectory.storage.canonical import sha256_hex
+from trajectory.storage.canonical import canonical_json, sha256_hex
 from trajectory.recorder.errors import RecorderError
 from traits.miner.miner import (
     MiningSettings,
@@ -18,6 +19,8 @@ from traits.miner.miner import (
     prompt_template_sha256,
 )
 from tests.miner.conftest import FAMILIES, TASK, make_batch, make_pair, run_episode
+
+REPO = Path(__file__).resolve().parents[2]
 
 GOLDEN_PROPOSALS = [{
     "name": "check_heater_before_use",
@@ -60,16 +63,14 @@ def scripted_miner(miner, responses):
 
 def test_prompt_template_hash_is_stable():
     from hashlib import sha256
-    from pathlib import Path
-    template = Path("traits/miner/prompts/differential-skill-v0.txt").read_bytes()
+    template = (REPO / "traits/miner/prompts/differential-skill-v0.txt").read_bytes()
     assert prompt_template_sha256() == sha256(template).hexdigest()
     assert prompt_template_sha256() == prompt_template_sha256()
 
 
 def test_output_schema_hash_is_stable():
     from hashlib import sha256
-    from pathlib import Path
-    schema_bytes = Path("traits/schemas/mined-skill-proposal-0.1.schema.json").read_bytes()
+    schema_bytes = (REPO / "traits/schemas/mined-skill-proposal-0.1.schema.json").read_bytes()
     assert output_schema_sha256() == sha256(schema_bytes).hexdigest()
 
 
@@ -130,6 +131,37 @@ def test_malformed_output_fails_closed_but_auditable(tmp_path, registry, context
     # exact raw teacher output retained for audit (no regex recovery)
     assert record["raw_teacher_text"] == json.dumps(
         {"proposals": [], "confidence": 0.9}, sort_keys=True)
+
+
+def test_a_teacher_reply_cut_at_max_tokens_is_named_a_truncation(tmp_path, registry, context,
+                                                                 miner):
+    batch, _ = make_batch(tmp_path, registry)
+    cut = json.dumps({"proposals": GOLDEN_PROPOSALS})[:120]
+    miner._model = ScriptedAdapter([])
+    miner._model.enqueue_text(cut, finish_reason="length")
+    frozen = miner.mine(batch)
+    assert frozen.candidates == ()
+    [entry] = frozen.mining_records[0]["rejected"]
+    assert entry["reason"] == "malformed_output"
+    assert entry["detail"].startswith("structured output is not valid JSON")
+    assert entry["detail"].endswith("(finish_reason 'length': the reply was truncated at "
+                                    "the max_tokens budget)")
+    assert frozen.mining_records[0]["raw_teacher_text"] == cut
+
+
+def test_a_teacher_reply_with_nan_is_malformed_and_nothing_is_frozen(tmp_path, registry,
+                                                                      context, miner):
+    batch, _ = make_batch(tmp_path, registry)
+    reply = json.dumps({"proposals": [dict(GOLDEN_PROPOSALS[0],
+                                           estimated_generality=float("nan"))]})
+    assert "NaN" in reply
+    miner._model = ScriptedAdapter([reply])
+    frozen = miner.mine(batch)
+    assert frozen.candidates == ()
+    [entry] = frozen.mining_records[0]["rejected"]
+    assert entry["reason"] == "malformed_output"
+    assert "NaN" in entry["detail"]
+    canonical_json(frozen.mining_records[0])  # the record is still strict JSON
 
 
 def test_applicability_outside_family_universe_rejected(tmp_path, registry, context, miner):

@@ -18,6 +18,8 @@ from runtime.model_adapters import (
 )
 from runtime.model_adapters.vllm_backend import VLLMAdapter
 
+MODEL = "Qwen/Qwen3.8-27B"
+
 
 class FakeSamplingParams:
     def __init__(self, **kwargs):
@@ -84,13 +86,13 @@ def fake_vllm(monkeypatch):
 
 def test_missing_vllm_fails_clearly(monkeypatch):
     monkeypatch.setitem(sys.modules, "vllm", None)  # force ImportError deterministically
-    adapter = VLLMAdapter()
+    adapter = VLLMAdapter(MODEL)
     with pytest.raises(BackendUnavailableError, match="vLLM is not installed"):
         adapter.generate([ModelMessage("user", "hi")], GenerationSettings())
 
 
 def test_metadata_without_engine(fake_vllm):
-    metadata = VLLMAdapter(revision="rev-123").metadata()
+    metadata = VLLMAdapter(MODEL, revision="rev-123").metadata()
     assert metadata.backend == "vllm"
     assert metadata.revision == "rev-123"
     assert metadata.backend_version == "0.0-fake"
@@ -99,14 +101,14 @@ def test_metadata_without_engine(fake_vllm):
 
 
 def test_generate_translates_settings_and_records_revision(fake_vllm):
-    adapter = VLLMAdapter(revision="rev-123")
+    adapter = VLLMAdapter(MODEL, revision="rev-123")
     result = adapter.generate([ModelMessage("system", "s"), ModelMessage("user", "u")],
                               GenerationSettings(temperature=0.4, max_tokens=77, seed=5))
     assert result.text == "fake-output"
     # exact offline accounting: primary = token_ids lengths, NOT usage.*
     assert result.prompt_tokens == 11   # len(result.prompt_token_ids); FakeUsage says 99
     assert result.completion_tokens == 7  # len(outputs[0].token_ids); FakeUsage says 98
-    assert FakeLLM.last_kwargs["model"] == "Qwen/Qwen2.5-7B-Instruct"
+    assert FakeLLM.last_kwargs["model"] == MODEL
     assert FakeLLM.last_kwargs["revision"] == "rev-123"
     params = FakeLLM.last_call[1]
     assert (params.temperature, params.max_tokens, params.seed) == (0.4, 77, 5)
@@ -129,7 +131,7 @@ def test_usage_fields_are_fallback_only(fake_vllm, monkeypatch):
         return [LegacyResult()]
 
     monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
-    adapter = VLLMAdapter()
+    adapter = VLLMAdapter(MODEL)
     result = adapter.generate([ModelMessage("user", "hi")], GenerationSettings())
     assert result.prompt_tokens == 99 and result.completion_tokens == 98
 
@@ -149,7 +151,7 @@ def test_structured_generate_uses_structured_outputs_params(fake_vllm, monkeypat
         return [FakeResult(FakeOutput(text='{"x": 1}'))]
 
     monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
-    adapter = VLLMAdapter()
+    adapter = VLLMAdapter(MODEL)
     schema = {"type": "object", "properties": {"x": {"type": "integer"}}}
     result = adapter.structured_generate([ModelMessage("user", "hi")], GenerationSettings(), schema)
     assert json.loads(result.text) == {"x": 1}
@@ -162,7 +164,7 @@ def test_structured_generate_fails_closed_on_older_vllm(fake_vllm, monkeypatch):
     sampling_params = types.ModuleType("vllm.sampling_params")
     sampling_params.GuidedDecodingParams = type("GuidedDecodingParams", (), {})
     monkeypatch.setitem(sys.modules, "vllm.sampling_params", sampling_params)
-    adapter = VLLMAdapter()
+    adapter = VLLMAdapter(MODEL)
     with pytest.raises(UnsupportedFeatureError, match="lacks StructuredOutputsParams"):
         adapter.structured_generate([ModelMessage("user", "hi")], GenerationSettings(),
                                     {"type": "object"})
@@ -184,7 +186,7 @@ def test_tool_call_uses_constrained_schema_without_tool_choice(fake_vllm, monkey
             {"name": "heat_object", "arguments": {"object": "plate"}})))]
 
     monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
-    adapter = VLLMAdapter()
+    adapter = VLLMAdapter(MODEL)
     request = adapter.tool_call([ModelMessage("user", "hi")], GenerationSettings(),
                                 [ToolSpec(name="heat_object", description="heat things",
                                           parameters_schema={"type": "object",
@@ -217,7 +219,7 @@ def test_tool_call_rejects_invalid_output_via_full_constrained_schema(fake_vllm,
         return [FakeResult(FakeOutput(text=queue.pop(0)))]
 
     monkeypatch.setattr(FakeLLM, "chat", chat)  # never leaks into later tests
-    adapter = VLLMAdapter()
+    adapter = VLLMAdapter(MODEL)
     tools = [ToolSpec(name="heat_object", description="",
                       parameters_schema={"type": "object", "required": ["object"],
                                           "properties": {"object": {"type": "string"}}})]
@@ -230,7 +232,7 @@ def test_tool_call_rejects_invalid_output_via_full_constrained_schema(fake_vllm,
 def test_metadata_never_fails_without_vllm(monkeypatch):
     """Absent optional dependency: metadata must not raise; defaults stand."""
     monkeypatch.setitem(sys.modules, "vllm", None)
-    metadata = VLLMAdapter(revision="rev-9").metadata()
+    metadata = VLLMAdapter(MODEL, revision="rev-9").metadata()
     assert metadata.backend == "vllm"
     assert metadata.revision == "rev-9"
     assert metadata.backend_version is None
@@ -241,9 +243,68 @@ def test_metadata_never_fails_without_vllm(monkeypatch):
 def test_the_react_stop_reaches_sampling_params(fake_vllm):
     """ADR-0003 A2: the offline backend forwards the planner's stop."""
     from runtime.policies.planner_react import STOP_SEQUENCES
-    adapter = VLLMAdapter(revision="rev-123")
+    adapter = VLLMAdapter(MODEL, revision="rev-123")
     adapter.generate([ModelMessage("user", "u")],
                      GenerationSettings(temperature=0.0, max_tokens=64, stop=STOP_SEQUENCES))
     assert FakeLLM.last_call[1].stop == ["\nObservation:"]
     adapter.generate([ModelMessage("user", "u")], GenerationSettings(temperature=0.0, max_tokens=64))
     assert not hasattr(FakeLLM.last_call[1], "stop")
+
+
+def test_the_model_is_named_explicitly():
+    with pytest.raises(TypeError):
+        VLLMAdapter()  # no default model to go stale
+
+
+def test_the_chat_template_arguments_reach_every_chat_call(fake_vllm, monkeypatch):
+    """ADR-0011 D3: thinking off on every request, generate and structured."""
+    sampling_params = types.ModuleType("vllm.sampling_params")
+    sampling_params.StructuredOutputsParams = FakeSamplingParams
+    monkeypatch.setitem(sys.modules, "vllm.sampling_params", sampling_params)
+    calls = []
+
+    def chat(self, messages, params, **kwargs):
+        calls.append(kwargs)
+        return [FakeResult(FakeOutput(text='{"x": 1}'))]
+
+    monkeypatch.setattr(FakeLLM, "chat", chat)
+    adapter = VLLMAdapter(MODEL, chat_template_kwargs={"enable_thinking": False})
+    adapter.generate([ModelMessage("user", "u")], GenerationSettings())
+    adapter.structured_generate([ModelMessage("user", "u")], GenerationSettings(),
+                                {"type": "object"})
+    assert calls == [{"chat_template_kwargs": {"enable_thinking": False}}] * 2
+
+
+def test_a_prompt_longer_than_the_window_is_a_context_overflow(fake_vllm, monkeypatch):
+    """ADR-0009 D4: vLLM's ValueError for an overlong prompt ends the episode
+    as context_window; any other ValueError is not hidden."""
+    from runtime.model_adapters.errors import ContextWindowExceeded
+    errors = [ValueError("The decoder prompt (length 40000) is longer than the maximum "
+                         "model length of 32768. Make sure that `max_model_len` is no "
+                         "smaller than the number of text tokens."),
+              ValueError("something else")]
+
+    def chat(self, messages, params, **kwargs):
+        raise errors.pop(0)
+
+    monkeypatch.setattr(FakeLLM, "chat", chat)
+    adapter = VLLMAdapter(MODEL)
+    with pytest.raises(ContextWindowExceeded, match="longer than the maximum model length"):
+        adapter.generate([ModelMessage("user", "u")], GenerationSettings())
+    with pytest.raises(ValueError, match="something else"):
+        adapter.generate([ModelMessage("user", "u")], GenerationSettings())
+
+
+def test_a_structured_reply_cut_at_max_tokens_carries_its_finish_reason(fake_vllm, monkeypatch):
+    sampling_params = types.ModuleType("vllm.sampling_params")
+    sampling_params.StructuredOutputsParams = FakeSamplingParams
+    monkeypatch.setitem(sys.modules, "vllm.sampling_params", sampling_params)
+
+    def chat(self, messages, params, **kwargs):
+        return [FakeResult(FakeOutput(text='{"x": [1, 2', finish_reason="length"))]
+
+    monkeypatch.setattr(FakeLLM, "chat", chat)
+    with pytest.raises(ModelResponseError, match="not valid JSON") as raised:
+        VLLMAdapter(MODEL).structured_generate([ModelMessage("user", "u")],
+                                               GenerationSettings(), {"type": "object"})
+    assert raised.value.finish_reason == "length"

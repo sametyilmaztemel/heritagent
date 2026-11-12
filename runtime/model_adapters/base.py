@@ -110,18 +110,26 @@ class ModelAdapter(ABC):
 
     # -- shared helper ----------------------------------------------------
     @staticmethod
-    def _validate_structured(text: str, schema: dict) -> dict:
+    def _validate_structured(text: str, schema: dict, finish_reason: str | None = None) -> dict:
+        """The reply as a JSON object that satisfies ``schema``, else a
+        ModelResponseError carrying the reply and its finish_reason. NaN and
+        Infinity are not JSON (RFC 8259) and pass jsonschema's bounds, so
+        they are rejected here."""
+        def reject(message):
+            return ModelResponseError(message, raw_text=text, finish_reason=finish_reason)
+
+        def no_constant(name):
+            raise reject(f"structured output contains {name}, which is not valid JSON")
+
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ModelResponseError(f"structured output is not valid JSON: {exc}",
-                                      raw_text=text) from None
+            payload = json.loads(text, parse_constant=no_constant)
+        except ValueError as exc:  # also an integer past Python's digit limit
+            raise reject(f"structured output is not valid JSON: {exc}") from None
         if not isinstance(payload, dict):
-            raise ModelResponseError("structured output must be a JSON object",
-                                      raw_text=text)
+            raise reject("structured output must be a JSON object")
         errors = [e.message for e in Draft202012Validator(schema).iter_errors(payload)]
         if errors:
-            raise ModelResponseError(sorted(errors), raw_text=text)
+            raise reject(sorted(errors))
         return payload
 
 

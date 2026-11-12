@@ -1,4 +1,9 @@
-"""Optional vLLM backend (Qwen2.5-7B-Instruct) behind the ModelAdapter contract.
+"""Optional offline vLLM backend behind the ModelAdapter contract. The
+EXP-0001 run uses the server adapter (``openai_server.py``, ADR-0008); this
+one takes the model id explicitly, sends the caller's chat-template
+arguments with every request (EXP-0001: thinking off, ADR-0011 D3) and
+turns a prompt that does not fit the window into ContextWindowExceeded
+(ADR-0009 D4).
 
 Dependency strategy (issue #7 criterion 2; API surface per critic review):
 vLLM is imported lazily inside `_engine()` so the core test suite never
@@ -25,6 +30,7 @@ reproducibility is pinned and recorded at run time (#13).
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -40,11 +46,11 @@ from runtime.model_adapters.base import (
 )
 from runtime.model_adapters.errors import (
     BackendUnavailableError,
+    ContextWindowExceeded,
     ModelResponseError,
     UnsupportedFeatureError,
 )
-
-DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+from runtime.model_adapters.openai_server import CONTEXT_OVERFLOW_MARKERS
 
 
 def _import_vllm() -> Any:
@@ -62,10 +68,13 @@ def _import_vllm() -> Any:
 class VLLMAdapter(ModelAdapter):
     """vLLM-backed adapter; the engine is created lazily on first use."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, revision: str | None = None,
-                 gpu_memory_utilization: float = 0.9, max_model_len: int = 8192):
+    def __init__(self, model: str, revision: str | None = None,
+                 gpu_memory_utilization: float = 0.9,
+                 max_model_len: int = 32768,  # ADR-0009 D4's window
+                 chat_template_kwargs: Mapping | None = None):
         self._model = model
         self._revision = revision
+        self._template_kwargs = dict(chat_template_kwargs or {})
         self._gpu_memory_utilization = gpu_memory_utilization
         self._max_model_len = max_model_len
         self._llm: Any | None = None
@@ -101,6 +110,20 @@ class VLLMAdapter(ModelAdapter):
                 "installed vLLM lacks StructuredOutputsParams (current structured-outputs "
                 "interface); update vLLM to use structured_generate/tool_call")
         return params_cls
+
+    def _chat(self, engine: Any, messages: list[ModelMessage], sampling: Any) -> GenerationResult:
+        """One ``LLM.chat`` call with the chat-template arguments; vLLM's
+        ValueError for a prompt longer than the window is ContextWindowExceeded
+        (ADR-0009 D4), never truncated or retried."""
+        kwargs = {"chat_template_kwargs": dict(self._template_kwargs)} \
+            if self._template_kwargs else {}
+        try:
+            result = engine.chat(self._prompts(messages), sampling, **kwargs)
+        except ValueError as exc:
+            if any(marker in str(exc) for marker in CONTEXT_OVERFLOW_MARKERS):
+                raise ContextWindowExceeded(str(exc)) from None
+            raise
+        return self._extract(result[0] if isinstance(result, list) else result)
 
     # -- request translation -------------------------------------------------
     @staticmethod
@@ -144,8 +167,7 @@ class VLLMAdapter(ModelAdapter):
     def generate(self, messages: list[ModelMessage], settings: GenerationSettings) -> GenerationResult:
         vllm_module = _import_vllm()
         engine = self._engine()  # raises BackendUnavailableError when vLLM is missing
-        result = engine.chat(self._prompts(messages), self._sampling(settings, vllm_module))
-        return self._extract(result[0] if isinstance(result, list) else result)
+        return self._chat(engine, messages, self._sampling(settings, vllm_module))
 
     def structured_generate(self, messages: list[ModelMessage], settings: GenerationSettings,
                             schema: dict) -> GenerationResult:
@@ -153,10 +175,9 @@ class VLLMAdapter(ModelAdapter):
         params_cls = self._structured_outputs_params_cls()
         engine = self._engine()
         structured_outputs = params_cls(json=schema)
-        result = engine.chat(self._prompts(messages),
-                             self._sampling(settings, vllm_module, structured_outputs))
-        extracted = self._extract(result[0] if isinstance(result, list) else result)
-        self._validate_structured(extracted.text, schema)
+        extracted = self._chat(engine, messages,
+                               self._sampling(settings, vllm_module, structured_outputs))
+        self._validate_structured(extracted.text, schema, extracted.finish_reason)
         return extracted
 
     def tool_call(self, messages: list[ModelMessage], settings: GenerationSettings,
@@ -181,10 +202,10 @@ class VLLMAdapter(ModelAdapter):
             for tool in tools
         ]}
         structured_outputs = params_cls(json=schema)
-        result = engine.chat(self._prompts(messages),
-                             self._sampling(settings, vllm_module, structured_outputs))
-        extracted = self._extract(result[0] if isinstance(result, list) else result)
-        payload = self._validate_structured(extracted.text, schema)  # full constrained schema
+        extracted = self._chat(engine, messages,
+                               self._sampling(settings, vllm_module, structured_outputs))
+        payload = self._validate_structured(extracted.text, schema,  # full constrained schema
+                                            extracted.finish_reason)
         name = payload.get("name")
         selected = next((t for t in tools if t.name == name), None)
         if selected is None:
