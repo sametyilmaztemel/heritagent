@@ -290,8 +290,21 @@ def cmd_env_check(args) -> int:
     return 0
 
 
+# The Drive a run may need with compressed snapshots, kept files and the
+# Trash's 30 days together (M, from the pilot's sizes and throughput): about
+# 8.7 GB if the 14,500-episode cap took all 96 active hours, 3.9 GB if it
+# ends at the pilot's throughput, about 1 GB for the expected run.
+RUN_DRIVE_GB = 10.0
+
+
 def cmd_mirror_check(args) -> int:
-    print(json.dumps(check_mirror_dir(args.mirror_dir)))
+    if not 0 <= args.need_gb < float("inf"):
+        raise CliError(f"--need-gb must be a number of 0 or more, not {args.need_gb}")
+    report = check_mirror_dir(args.mirror_dir, need_bytes=round(args.need_gb * 1e9))
+    print(json.dumps(report))
+    if report["free_bytes"] is None:
+        _say(f"the free space of {args.mirror_dir} is unknown (its filesystem does not report "
+             f"it); check at drive.google.com/settings/storage that {args.need_gb:g} GB are free")
     return 0
 
 
@@ -1606,6 +1619,8 @@ def parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("mirror-check")
     p.add_argument("--mirror-dir", type=Path, required=True)
+    p.add_argument("--need-gb", type=float, default=RUN_DRIVE_GB,
+                   help="free space the mirror's filesystem must have, when it reports it")
     p.set_defaults(func=cmd_mirror_check)
 
     p = sub.add_parser("run-commit")

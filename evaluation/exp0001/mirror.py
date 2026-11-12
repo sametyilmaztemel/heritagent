@@ -15,6 +15,16 @@ crash during a snapshot leaves the previous one whole. A restore takes the
 newest snapshot whose blobs all exist and match their hashes, and records
 itself as a ``restore`` note in the ledger.
 
+A blob holds its file gzip-compressed (layout 0.2), still named by the hash
+of the uncompressed file, which every reader checks after decompressing:
+the ledger, rewritten into a new blob at every snapshot, and the
+trajectories, which repeat the prompt at every step, take a small part of
+their size on Drive, where deleted files stay in the Trash and count
+against storage for 30 days. The manifest names its layout; the readers
+also read the uncompressed layout 0.1 (the calibration pilot's mirror). A
+manifest of a layout this code does not know fails every reader, and a
+writer never continues a mirror of another layout.
+
 A mirror belongs to one run directory: its id (``mirror-id.json``) is
 written once, when the mirror is made, and the run directory keeps it
 (``.mirror-id.json``, never snapshotted). A snapshot goes only into the
@@ -28,6 +38,7 @@ not counted. The restore notes keep every such gap on record (ADR-0008)."""
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -36,18 +47,26 @@ import secrets
 import shutil
 import sys
 import time
+import zlib
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 
 from evaluation.exp0001.ledger import TERMINAL, append_note
 
-MIRROR_SCHEMA = "heritagent/exp0001-mirror/0.1"
+MIRROR_SCHEMA = "heritagent/exp0001-mirror/0.2"  # the layout this code writes: gzip blobs
+UNCOMPRESSED_SCHEMA = "heritagent/exp0001-mirror/0.1"  # read only: raw blobs
+GZIP_LEVEL = 6  # with mtime 0: the same file always makes the same blob
 MIRROR_ID_SCHEMA = "heritagent/exp0001-mirror-id/0.1"
 MIRROR_ID_FILE = "mirror-id.json"  # in the mirror: written once, when the mirror is made
 BINDING_FILE = ".mirror-id.json"  # in the run directory: the id of the mirror it belongs to
 SKIPPED_NAMES = (".lock", "UNMIRRORED.json", BINDING_FILE)  # these describe this machine only
 START_RECORDS = ("run-start.json", "pilot-start.json")
-KEEP_SNAPSHOTS = 2
+# Drive uploads the mount's writes in the background, perhaps not in the
+# order they were made (U), and each kept manifest names its own ledger
+# blob: a margin of kept snapshots leaves a whole one on Drive even when
+# the newest few never arrived. Compressed, a kept snapshot costs a few MB
+# at the end of a run.
+KEEP_SNAPSHOTS = 5
 GC_EVERY = 20  # snapshots between blob collections (listing blobs is the slow part)
 OWNER_FILE = "owner.json"
 RESTORING = ".restoring"  # a restore's staging directory, beside its target
@@ -113,19 +132,35 @@ def _snapshot_paths(mirror: Path) -> list[tuple[int, Path]]:
 
 
 def _read_snapshot(seq: int, path: Path) -> dict | None:
-    """A manifest, or None when it is not one of this schema or is gone. A
-    read that fails (OSError) is raised: an unreadable manifest is never
-    taken for an absent one."""
+    """A manifest, or None when it is not a manifest or is gone. A read
+    that fails (OSError) is raised: an unreadable manifest is never taken
+    for an absent one. Nor is one of a layout this code does not know
+    (MirrorError)."""
     try:
         doc = json.loads(path.read_bytes().decode("utf-8"))
     except FileNotFoundError:
         return None  # collected since the listing
     except ValueError:
         return None
-    if not isinstance(doc, dict) or doc.get("schema") != MIRROR_SCHEMA or doc.get("seq") != seq \
-            or not isinstance(doc.get("files"), dict):
+    if not isinstance(doc, dict) or doc.get("seq") != seq or not isinstance(doc.get("files"), dict):
         return None
+    if doc.get("schema") not in (MIRROR_SCHEMA, UNCOMPRESSED_SCHEMA):
+        raise MirrorError(f"{path} is a snapshot of the layout {doc.get('schema')!r}, which this "
+                          f"code cannot read: the mirror was written by a newer version of the "
+                          f"code. Read it with the code of the commit the run started with")
     return doc
+
+
+def _unpack(snapshot: Mapping, rel: str, data: bytes) -> bytes:
+    """The file a blob of ``snapshot`` holds: gzip-compressed in layout 0.2,
+    as it is in 0.1. A blob that does not decompress is not whole."""
+    if snapshot["schema"] == UNCOMPRESSED_SCHEMA:
+        return data
+    try:
+        return gzip.decompress(data)
+    except (OSError, EOFError, zlib.error) as exc:
+        raise _NotWhole(f"{rel}: the mirrored content does not match its hash (its compressed "
+                        f"blob cannot be read: {exc})") from None
 
 
 def _blob_names(mirror: Path) -> set[str]:
@@ -199,16 +234,29 @@ def read_snapshot_file(mirror_dir: Path, snapshot: Mapping, relpath: str) -> byt
     except FileNotFoundError:  # collected since the listing: a run is writing the mirror
         raise MirrorError(f"{relpath}: its blob is gone from the mirror; a run may be "
                           "writing it. Read again when no run is active") from None
+    data = _unpack(snapshot, relpath, data)
     if _sha256(data) != entry["sha256"]:
         raise MirrorError(f"{relpath}: the mirrored content does not match its hash")
     return data
 
 
-def check_mirror_dir(mirror_dir: Path, *, files: int = 20,
+def _space(path: Path) -> tuple[int | None, int | None]:
+    """The total and free bytes of the filesystem holding ``path``; None for
+    both when it does not say (what Drive's mount reports is unverified)."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None, None
+    return (None, None) if usage.total <= 0 else (usage.total, usage.free)
+
+
+def check_mirror_dir(mirror_dir: Path, *, files: int = 20, need_bytes: int = 0,
                      clock: Callable[[], float] = time.monotonic) -> dict:
     """What the mirror needs from its filesystem (on Colab, Drive): a write
     with fsync, a replace over an existing file, a read back, a delete; and
-    the time per small file. Run before the model download and any episode."""
+    the time per small file (ADR-0008 D5). Run before the model download and
+    any episode. Its free space, when the filesystem reports it, must reach
+    ``need_bytes``; an unknown one is reported as unknown (None)."""
     probe = Path(mirror_dir) / ".mirror-check"
     probe.mkdir(parents=True, exist_ok=True)
     target = probe / "replace-me.json"
@@ -223,7 +271,17 @@ def check_mirror_dir(mirror_dir: Path, *, files: int = 20,
     for path in probe.iterdir():
         path.unlink()
     probe.rmdir()
-    return {"mirror_dir": str(mirror_dir), "seconds_per_small_file": round(seconds, 4)}
+    total, free = _space(Path(mirror_dir))
+    if free is not None and free < need_bytes:
+        raise MirrorError(
+            f"the mirror's filesystem ({mirror_dir}) has {free / 1e9:.1f} GB free of "
+            f"{total / 1e9:.1f} GB, below the {need_bytes / 1e9:.1f} GB a run may need there. "
+            f"Free space on Google Drive: delete files you do not need, then empty the Drive "
+            f"Trash (deleted snapshots stay there for 30 days and count against storage), allow "
+            f"time for the storage figure to update (up to a few days after many deletions), "
+            f"mount Drive again (force_remount=True) and run mirror-check again")
+    return {"mirror_dir": str(mirror_dir), "seconds_per_small_file": round(seconds, 4),
+            "total_bytes": total, "free_bytes": free, "need_bytes": need_bytes}
 
 
 def _relative(rel: str) -> PurePosixPath:
@@ -272,6 +330,7 @@ def _restore_into(mirror: Path, doc: Mapping, staging: Path,
                             f"it)") from None
         except OSError as exc:
             raise _unreadable(mirror, exc) from None
+        data = _unpack(doc, rel, data)
         if _sha256(data) != entry["sha256"]:
             raise _NotWhole(f"{rel}: the mirrored content does not match its hash")
         target = staging / Path(*_relative(rel).parts)
@@ -402,6 +461,7 @@ class RunMirror:
                               f"run's own mirror")
         if bound is None:
             self.mirror.mkdir(exist_ok=True)  # no parents: an unmounted Drive fails here
+        self._require_own_layout()
         mine = _read_id(self.mirror / MIRROR_ID_FILE)
         if bound is not None and mine != bound:
             raise MirrorError(f"{self.mirror} is not the mirror {self.local} was mirrored to "
@@ -424,6 +484,19 @@ class RunMirror:
             self.local.mkdir(parents=True, exist_ok=True)
             _write_atomic(self.local / BINDING_FILE, _id_document(mine))
         self._require_not_behind()
+
+    def _require_own_layout(self) -> None:
+        """A run continues at the commit it started with, so its mirror
+        holds one layout: a mirror with snapshots of another layout is never
+        written into, before anything is written."""
+        for seq, path in _snapshot_paths(self.mirror):
+            doc = _read_snapshot(seq, path)
+            if doc is not None and doc["schema"] != MIRROR_SCHEMA:
+                raise MirrorError(
+                    f"{self.mirror} holds snapshots of the layout {doc['schema']!r}, written by "
+                    f"older code; this code writes {MIRROR_SCHEMA!r} and never mixes the two. "
+                    f"Continue this run (or pilot) with the code of the commit it started with "
+                    f"(CODE_REF), or start a new run under a new RUN_ID")
 
     def _local_start(self) -> str | None:
         for name in START_RECORDS:
@@ -510,7 +583,7 @@ class RunMirror:
                 if digest not in self._known and not blob.exists():
                     for directory in (self.mirror / "blobs", blob.parent):
                         directory.mkdir(exist_ok=True)  # never a parent above the mirror
-                    _write_atomic(blob, data)
+                    _write_atomic(blob, gzip.compress(data, compresslevel=GZIP_LEVEL, mtime=0))
                 self._known.add(digest)
                 cached = self._cache[rel] = (key, digest, len(data))
             files[rel] = {"sha256": cached[1], "size": cached[2]}

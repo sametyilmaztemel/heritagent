@@ -3,6 +3,7 @@ the run mirror, the vLLM server adapter (against a local HTTP server), the
 A100 80 GB check, the calibration pilot and the command line. No GPU, no
 vLLM, no ALFWorld."""
 
+import gzip
 import json
 import pickle
 import subprocess
@@ -137,11 +138,12 @@ def test_snapshots_are_throttled_and_old_blobs_collected(tmp_path, monkeypatch):
     mirror.on_append({"type": "complete"})  # a terminal record always snapshots
     assert mirror.seq == 3
     monkeypatch.setattr(mirror_module, "GC_EVERY", 1)
+    monkeypatch.setattr(mirror_module, "KEEP_SNAPSHOTS", 2)
     for content in ("2", "3", "4"):
         (local / "a.json").write_text(content)
         mirror.snapshot()
     assert len(list(drive.glob("snapshot-*.json"))) == 2
-    blobs = {b.read_text() for b in (drive / "blobs").glob("*/*")}
+    blobs = {gzip.decompress(b.read_bytes()).decode() for b in (drive / "blobs").glob("*/*")}
     assert blobs == {"3", "4"}  # only what the two kept snapshots reference
 
 

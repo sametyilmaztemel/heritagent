@@ -5,6 +5,7 @@ directory's own mirror, and only while it is there; a run directory behind
 its mirror is not resumed; and the run's own failures end with an
 explained error. No GPU, no vLLM, no ALFWorld."""
 
+import gzip
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ from evaluation.exp0001.mirror import (
     RunMirror,
     latest_snapshot,
     mirror_state,
+    read_snapshot_file,
     restore,
 )
 from tests.evaluation.test_exp0001_colab import command_argv, files, stub_command
@@ -54,8 +56,7 @@ def mirrored(tmp_path: Path, episodes: int = 3):
 
 def snapshot_files(drive: Path) -> dict:
     doc = latest_snapshot(drive)
-    return {rel: mirror_module._blob(drive, entry["sha256"]).read_bytes()
-            for rel, entry in doc["files"].items()}
+    return {rel: read_snapshot_file(drive, doc, rel) for rel in doc["files"]}
 
 
 def restore_notes(local: Path) -> list:
@@ -271,7 +272,7 @@ def test_after_a_failed_snapshot_the_next_one_lists_the_mirror_again(tmp_path, m
     assert mirror.snapshot() is None
     monkeypatch.setattr(mirror_module, "_write_atomic", real)
     for blob in (drive / "blobs").glob("*/*"):
-        if blob.read_bytes() == b"new\n":
+        if gzip.decompress(blob.read_bytes()) == b"new\n":
             blob.unlink()  # the upload was lost
     seq = mirror.snapshot()
     assert seq is not None and latest_snapshot(drive)["seq"] == seq
