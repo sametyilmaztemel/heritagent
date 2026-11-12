@@ -104,6 +104,9 @@ class ReActPlanner:
             raise PlanParseError("reply does not match the ReAct format (Thought/Action/Action Input or Final Answer)")
         try:
             arguments = json.loads(input_match.group(1))
+            # NaN, an overflowing literal and a lone surrogate escape load here
+            # but cannot be recorded as strict UTF-8 JSON: retry them instead
+            json.dumps(arguments, ensure_ascii=False, allow_nan=False).encode("utf-8")
         except ValueError as exc:  # also an integer past Python's digit limit
             raise PlanParseError(f"Action Input is not valid JSON: {exc}") from None
         if not isinstance(arguments, dict):

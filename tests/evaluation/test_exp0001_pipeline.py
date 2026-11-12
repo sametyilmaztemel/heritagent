@@ -1118,6 +1118,28 @@ def test_a_restore_between_the_report_and_the_complete_record_is_finished(tmp_pa
             make_run(broken, splits).run()
 
 
+def test_a_report_frozen_with_a_note_keeps_it_when_a_later_note_follows(tmp_path, clean,
+                                                                         splits):
+    """The notes a report was frozen with must be the ledger's first notes;
+    a later note stays in the ledger only."""
+    first, later = {"type": "restore", "snapshot_seq": 3}, {"type": "restore", "snapshot_seq": 7}
+    run_dir = reopened_copy(clean, tmp_path)
+    append_note(run_dir / "ledger.jsonl", first)
+    frozen = {**clean[1], "ledger_notes": [first]}
+    (run_dir / "report.json").write_text(json.dumps(frozen))
+    append_note(run_dir / "ledger.jsonl", later)
+    agent = Agent()
+    assert make_run(run_dir, splits, agent=agent).run() == frozen and agent.calls == 0
+    ledger = RunLedger(run_dir / "ledger.jsonl", run_id=RUN_ID, clock=Clock())
+    assert ledger.state == "complete" and [n["snapshot_seq"] for n in ledger.notes] == [3, 7]
+    broken = reopened_copy(clean, tmp_path / "not-first")
+    append_note(broken / "ledger.jsonl", first)
+    (broken / "report.json").write_text(json.dumps({**clean[1], "ledger_notes": [later]}))
+    append_note(broken / "ledger.jsonl", later)
+    with pytest.raises(ProvenanceError, match="frozen with other content"):
+        make_run(broken, splits).run()
+
+
 def test_a_crash_between_the_frozen_set_and_its_charge_is_charged_once(tmp_path, splits,
                                                                         monkeypatch):
     run_dir, caps = tmp_path / "run", {**CAPS, "episodes_max": 540 + 10}

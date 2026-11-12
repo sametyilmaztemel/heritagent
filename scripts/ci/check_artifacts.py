@@ -51,6 +51,7 @@ PREREGISTERED_STATUS = "preregistered-locked"
 EXP0001_LIFECYCLE_STATUSES = {PREREGISTERED_STATUS, "running", "completed",
                                "incomplete", "aborted"}
 EXP0001_ID = "EXP-0001"
+EXP0001_MANIFEST = "experiments/manifests/EXP-0001-minimal-cig.yaml"
 PREREG_GATE_STAGES = ("replay", "ablation", "generalization_combined",
                       "interaction_regression_overhead", "final_promoted")
 PREREG_CAP_FIELDS = ("accelerator_nodes_max", "episodes_max",
@@ -201,7 +202,10 @@ def _enforce_exp0001_locked_values(manifest: dict, prereg: dict, err) -> None:
 
     # the PRIMARY support criteria are locked decision rules — expectations
     # never replace them, at any lifecycle status
-    statistics = (manifest.get("evaluation") or {}).get("statistics") or {}
+    evaluation = manifest.get("evaluation")
+    statistics = evaluation.get("statistics") if isinstance(evaluation, dict) else None
+    if not isinstance(statistics, dict):
+        statistics = {}
     for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
                           ("h1_supported_if", LOCKED_H1_CRITERION),
                           ("seed_consistency", LOCKED_SEED_CRITERION)):
@@ -453,6 +457,8 @@ def check_manifests() -> list[str]:
     paths = tracked("experiments/manifests/*.yaml") + tracked("experiments/manifests/*.yml")
     if not paths:
         return ["no experiment manifests found"]
+    if EXP0001_MANIFEST not in {rel(path) for path in paths}:
+        errors.append(f"{EXP0001_MANIFEST} is missing")
     for path in paths:
         try:
             data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -464,7 +470,12 @@ def check_manifests() -> list[str]:
             continue
         errors.extend(check_preregistration(data, rel(path)))
         experiment = data.get("experiment")
-        if isinstance(experiment, dict) and experiment.get("id") == EXP0001_ID:
+        experiment_id = experiment.get("id") if isinstance(experiment, dict) else None
+        # bound by its path: editing its own id must not lift the binding
+        if rel(path) == EXP0001_MANIFEST and experiment_id != EXP0001_ID:
+            errors.append(f"{rel(path)}: is the EXP-0001 manifest, but its experiment.id is "
+                          f"{experiment_id!r}; restore {EXP0001_ID!r}")
+        if rel(path) == EXP0001_MANIFEST or experiment_id == EXP0001_ID:
             errors.extend(check_exp0001_code_binding(data, rel(path)))
     print(f"manifests: {len(paths)} checked")
     return errors

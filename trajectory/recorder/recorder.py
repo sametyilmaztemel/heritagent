@@ -84,7 +84,7 @@ class TrajectoryRecorder:
                   "trajectory_id": self.trajectory_id,
                   "context": self._context_snapshot}
         try:
-            canonical_json(header)  # refuse before the file exists, not after
+            canonical_json(header).encode("utf-8")  # refuse before the file exists, not after
         except (TypeError, ValueError) as exc:
             raise RecorderError(
                 f"trajectory header is not strict JSON ({exc}); nothing was written to "
@@ -128,8 +128,8 @@ class TrajectoryRecorder:
             "data": copy.deepcopy(event.data),
         }
         try:
-            serialized = canonical_json(record)
-        except ValueError as exc:  # non-finite floats etc. — strict JSON
+            serialized = canonical_json(record).encode("utf-8")
+        except ValueError as exc:  # non-finite floats, lone surrogates — strict UTF-8 JSON
             raise RecorderError(f"event payload is not strict JSON: {exc}") from None
         incremental_issues = validate_event_stream(self._events + [record],
                                                     require_terminal=False)

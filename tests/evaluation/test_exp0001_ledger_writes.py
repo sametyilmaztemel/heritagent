@@ -70,7 +70,7 @@ def test_a_failed_write_is_cut_off_and_nothing_more_is_written(tmp_path, monkeyp
     ledger.admit("b")
     before = path.read_bytes()
     fail_once(monkeypatch, path, '"key":"a"')
-    with pytest.raises(OSError, match="No space left"):
+    with pytest.raises(LedgerError, match="No space left"):
         ledger.record("a", model_calls=1, outcome={})
     assert path.read_bytes() == before
     with pytest.raises(LedgerError, match="earlier write in this process failed"):
@@ -91,7 +91,7 @@ def test_a_failed_write_that_cannot_be_cut_off_leaves_a_repairable_tail(tmp_path
         raise OSError(errno.EIO, "Input/output error")
 
     monkeypatch.setattr(os, "truncate", no_truncate)
-    with pytest.raises(OSError, match="No space left"):
+    with pytest.raises(LedgerError, match="No space left"):
         ledger.record("a", model_calls=1, outcome={})
     with pytest.raises(LedgerError, match="earlier write in this process failed"):
         ledger.record("b", model_calls=1, outcome={})
@@ -100,6 +100,135 @@ def test_a_failed_write_that_cannot_be_cut_off_leaves_a_repairable_tail(tmp_path
     assert repair_torn_tail(path)["type"] == "repair"
     reloaded = RunLedger(path, run_id=RUN_ID, clock=Clock())
     assert (reloaded.episodes, reloaded.aborted_attempts) == (0, 2)
+
+
+class FaultyWrite(TornWrite):
+    """The first write of a line holding ``marker`` raises ``error`` before
+    any byte reaches the file, after half the line, or after the whole line."""
+
+    def __init__(self, handle, marker, armed, point, error):
+        super().__init__(handle, marker, armed)
+        self.point, self.error = point, error
+
+    def write(self, text):
+        if self.marker not in text:
+            return self.handle.write(text)
+        self.armed[0] = False
+        cut = {"before": 0, "half": len(text) // 2, "after": len(text)}[self.point]
+        self.handle.write(text[:cut])
+        self.handle.flush()
+        raise self.error
+
+
+def fault_once(monkeypatch, path, marker, point, error):
+    real_open, armed = Path.open, [True]
+
+    def open_(self, mode="r", *args, **kwargs):
+        handle = real_open(self, mode, *args, **kwargs)
+        if armed[0] and mode == "a" and self == path:
+            return FaultyWrite(handle, marker, armed, point, error)
+        return handle
+
+    monkeypatch.setattr(Path, "open", open_)
+
+
+def test_the_first_failed_write_names_the_ledger_the_error_and_how_to_resume(tmp_path,
+                                                                             monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    fail_once(monkeypatch, path, '"key":"a"')
+    with pytest.raises(LedgerError) as raised:
+        ledger.record("a", model_calls=1, outcome={})
+    message = str(raised.value)
+    assert str(path) in message and "No space left on device" in message
+    assert "resume the run in a new process" in message and "repair-ledger" not in message
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+@pytest.mark.parametrize("point", ["before", "half", "after"])
+def test_any_error_inside_a_write_cuts_the_line_and_stops_the_writes(tmp_path, monkeypatch,
+                                                                     point):
+    """Not only a disk error: whatever reached the file is cut back off, so
+    file and memory agree, and nothing more is written."""
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    ledger.admit("b")
+    before = path.read_bytes()
+    fault_once(monkeypatch, path, '"key":"a"', point, RuntimeError("encoder broke"))
+    with pytest.raises(LedgerError, match="encoder broke"):
+        ledger.record("a", model_calls=1, outcome={})
+    assert path.read_bytes() == before
+    with pytest.raises(LedgerError, match="earlier write in this process failed"):
+        ledger.record("b", model_calls=1, outcome={})
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("point", ["before", "after"])
+def test_a_stop_that_leaves_no_part_written_line_keeps_the_ledger_writable(tmp_path,
+                                                                           monkeypatch, point):
+    """A Stop is not a disk error: a line it left whole is kept and counted
+    on reload, and the episodes still in flight are still recorded."""
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    ledger.admit("b")
+    before = path.read_bytes()
+    fault_once(monkeypatch, path, '"key":"a"', point, KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        ledger.record("a", model_calls=1, outcome={})
+    kept = path.read_bytes()
+    assert (kept == before) == (point == "before") and kept.endswith(b"\n")
+    ledger.record("b", model_calls=1, outcome={})
+    assert path.read_bytes().startswith(kept)
+    reloaded = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    assert reloaded.episodes == (2 if point == "after" else 1)
+    assert reloaded.aborted_attempts == (0 if point == "after" else 1)
+
+
+def test_a_stop_in_the_middle_of_a_line_cuts_it_and_stops_the_writes(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    ledger.admit("b")
+    before = path.read_bytes()
+    fault_once(monkeypatch, path, '"key":"a"', "half", KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        ledger.record("a", model_calls=1, outcome={})
+    assert path.read_bytes() == before
+    with pytest.raises(LedgerError, match="a Stop interrupted it part-way"):
+        ledger.record("b", model_calls=1, outcome={})
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("point, error", [("half", OSError(errno.ENOSPC, "No space left")),
+                                          ("half", KeyboardInterrupt()),
+                                          ("before", KeyboardInterrupt()),
+                                          ("after", OSError(errno.ENOSPC, "No space left"))])
+def test_a_failed_header_write_leaves_no_file_and_a_fresh_start_works(tmp_path, monkeypatch,
+                                                                      point, error):
+    """An empty or half-written ledger would be refused at the next start as
+    having no header; the file is removed instead."""
+    path = tmp_path / "ledger.jsonl"
+    fault_once(monkeypatch, path, '"type":"header"', point, error)
+    with pytest.raises((LedgerError, KeyboardInterrupt)):
+        RunLedger(path, run_id=RUN_ID, clock=Clock())
+    assert not path.exists()
+    monkeypatch.undo()
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    assert RunLedger(path, run_id=RUN_ID, clock=Clock()).aborted_attempts == 1
+
+
+def test_a_stop_after_the_whole_header_keeps_it(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    fault_once(monkeypatch, path, '"type":"header"', "after", KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        RunLedger(path, run_id=RUN_ID, clock=Clock())
+    monkeypatch.undo()
+    assert path.read_bytes().count(b"\n") == 1
+    RunLedger(path, run_id=RUN_ID, clock=Clock()).admit("a")
 
 
 def executor(tmp_path, workers):
@@ -120,7 +249,7 @@ def test_a_failed_episode_record_leaves_a_ledger_that_reloads(tmp_path, registry
     run, ledger = executor(tmp_path, workers)
     fail_once(monkeypatch, path, '"type":"episode"')
     try:
-        with pytest.raises(OSError, match="No space left"):
+        with pytest.raises(LedgerError, match="No space left"):
             run.run_many(specs)
         with pytest.raises(LedgerError, match="earlier write in this process failed"):
             run.run(specs[-1])

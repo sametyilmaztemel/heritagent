@@ -243,4 +243,5 @@ class VLLMAdapter(ModelAdapter):
                              capabilities={"generate": True,
                                            "structured": structured_supported,
                                            "offline_constrained_tool_call": structured_supported,
-                                           "engine_created": self._llm is not None})
+                                           "engine_created": self._llm is not None,
+                                           "chat_template_kwargs": dict(self._template_kwargs)})

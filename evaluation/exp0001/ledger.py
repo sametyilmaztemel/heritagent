@@ -216,11 +216,15 @@ class RunLedger:
                 self._model_calls += attempt["reserved"]
 
     def _write(self, record: dict) -> None:
-        """Append one line. A write that fails (a full disk, say) is cut back
-        off, and this process writes nothing more: a later line glued onto a
-        part-written one would leave a corrupt line inside the ledger, which
-        no repair can cut off (ADR-0008 D5). If the cut fails too, the torn
-        line is the last one, and repair_torn_tail cuts it off."""
+        """Append one line. A write that fails with an error (a full disk,
+        say) is cut back off, and this process writes nothing more: a later
+        line glued onto a part-written one would leave a corrupt line inside
+        the ledger, which no repair can cut off (ADR-0008 D5). If the cut
+        fails too, the torn line is the last one, and repair_torn_tail cuts
+        it off. A Stop (KeyboardInterrupt) is not a disk error: a line it
+        left whole, or a file it left untouched, is kept and later writes go
+        on, so the episodes still in flight are recorded; only a part-written
+        line is cut and stops the writes."""
         if self._readonly:
             raise LedgerError(f"{self._path} is open read-only")
         if self._write_failed is not None:
@@ -228,24 +232,48 @@ class RunLedger:
                               f"({self._write_failed}); nothing more is written. Resume in a new "
                               f"process (run repair-ledger first if the ledger ends with a torn "
                               f"line)")
-        line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        size = self._path.stat().st_size if self._path.exists() else None
+        line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
+        size = self._size()
         try:
             with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+                handle.write(line)
                 handle.flush()
-        except BaseException as exc:
+        except Exception as exc:
             self._write_failed = repr(exc)
+            cut_error = self._cut_back(size)
+            torn = ("" if cut_error is None else
+                    f"; the part-written line could not be cut off ({cut_error!r}), so run "
+                    f"repair-ledger first")
+            raise LedgerError(f"{self._path}: writing a {record.get('type')} record failed "
+                              f"({exc!r}); nothing more is written in this process{torn}. Fix "
+                              f"the cause (free disk space, say), then resume the run in a new "
+                              f"process") from exc
+        except BaseException:
             try:
-                if size is None:
-                    self._path.unlink(missing_ok=True)
-                else:
-                    os.truncate(self._path, size)
+                after = self._size()
             except OSError:
-                pass  # the torn line stays last: repair_torn_tail cuts it off
+                after = -1  # unknown: treated as a part-written line
+            if after != size and after != (size or 0) + len(line.encode("utf-8")):
+                self._write_failed = "a Stop interrupted it part-way"
+                self._cut_back(size)
             raise
         if self._on_append is not None:
             self._on_append(record)
+
+    def _size(self) -> int | None:
+        return self._path.stat().st_size if self._path.exists() else None
+
+    def _cut_back(self, size: int | None) -> OSError | None:
+        """Restore the file to ``size`` bytes (None: it did not exist); the
+        error if that fails, when the torn line stays last."""
+        try:
+            if size is None:
+                self._path.unlink(missing_ok=True)
+            else:
+                os.truncate(self._path, size)
+        except OSError as exc:
+            return exc
+        return None
 
     def _append(self, record: dict) -> None:
         """A run record of this process's session, stamped with its clock."""

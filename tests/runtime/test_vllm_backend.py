@@ -308,3 +308,25 @@ def test_a_structured_reply_cut_at_max_tokens_carries_its_finish_reason(fake_vll
         VLLMAdapter(MODEL).structured_generate([ModelMessage("user", "u")],
                                                GenerationSettings(), {"type": "object"})
     assert raised.value.finish_reason == "length"
+
+
+def test_a_tool_call_cut_at_max_tokens_carries_its_finish_reason(fake_vllm, monkeypatch):
+    sampling_params = types.ModuleType("vllm.sampling_params")
+    sampling_params.StructuredOutputsParams = FakeSamplingParams
+    monkeypatch.setitem(sys.modules, "vllm.sampling_params", sampling_params)
+
+    def chat(self, messages, params, **kwargs):
+        return [FakeResult(FakeOutput(text='{"name": "heat_obj', finish_reason="length"))]
+
+    monkeypatch.setattr(FakeLLM, "chat", chat)
+    with pytest.raises(ModelResponseError, match="not valid JSON") as raised:
+        VLLMAdapter(MODEL).tool_call([ModelMessage("user", "u")], GenerationSettings(),
+                                     [ToolSpec(name="heat_object", description="")])
+    assert raised.value.finish_reason == "length"
+
+
+def test_the_metadata_reports_the_chat_template_arguments(fake_vllm):
+    """As the server adapter does, so a report records thinking off (ADR-0011 D3)."""
+    adapter = VLLMAdapter(MODEL, chat_template_kwargs={"enable_thinking": False})
+    assert adapter.metadata().capabilities["chat_template_kwargs"] == {"enable_thinking": False}
+    assert VLLMAdapter(MODEL).metadata().capabilities["chat_template_kwargs"] == {}

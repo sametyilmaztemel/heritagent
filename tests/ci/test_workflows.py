@@ -39,6 +39,14 @@ def test_a_newer_push_cancels_the_older_ci_run_of_a_pull_request_but_not_of_main
     assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
 
 
+def test_every_run_outside_a_pull_request_has_a_concurrency_group_of_its_own():
+    """A shared group would hold a main run as pending behind the running
+    one, and a third push would cancel it (GitHub cancels a pending run of
+    the group); the run id keeps every main commit's run."""
+    group = _load("ci.yml")["concurrency"]["group"]
+    assert group == "ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}"
+
+
 def test_every_pytest_step_reports_why_it_skipped():
     commands = [run for job in _load("ci.yml")["jobs"].values() for run in _runs(job)
                 if "pytest" in run]

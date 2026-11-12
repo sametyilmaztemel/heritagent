@@ -114,7 +114,8 @@ class ModelAdapter(ABC):
         """The reply as a JSON object that satisfies ``schema``, else a
         ModelResponseError carrying the reply and its finish_reason. NaN and
         Infinity are not JSON (RFC 8259) and pass jsonschema's bounds, so
-        they are rejected here."""
+        they are rejected here, as is a payload that cannot be stored as
+        strict UTF-8 JSON."""
         def reject(message):
             return ModelResponseError(message, raw_text=text, finish_reason=finish_reason)
 
@@ -125,6 +126,10 @@ class ModelAdapter(ABC):
             payload = json.loads(text, parse_constant=no_constant)
         except ValueError as exc:  # also an integer past Python's digit limit
             raise reject(f"structured output is not valid JSON: {exc}") from None
+        try:  # an overflowing literal (inf) or a lone surrogate escape
+            json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except ValueError as exc:
+            raise reject(f"structured output cannot be stored as strict JSON: {exc}") from None
         if not isinstance(payload, dict):
             raise reject("structured output must be a JSON object")
         errors = [e.message for e in Draft202012Validator(schema).iter_errors(payload)]

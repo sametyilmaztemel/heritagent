@@ -378,3 +378,25 @@ def test_a_header_that_is_not_strict_json_creates_no_file(tmp_path):
     with pytest.raises(RecorderError, match="header is not strict JSON"):
         TrajectoryRecorder(context, path)
     assert not path.exists()  # refused before the exclusive create
+
+
+@pytest.mark.parametrize("fields", [{"seed": object()}, {"run_id": "run-\ud800"},
+                                    {"tags": {"phase": "\ud800"}}])
+def test_a_header_that_cannot_be_written_as_utf8_json_creates_no_file(tmp_path, fields):
+    """An object json cannot serialize, or a lone surrogate UTF-8 cannot
+    encode, is refused before the exclusive create, as a non-finite seed is."""
+    path = tmp_path / "header.jsonl"
+    with pytest.raises(RecorderError, match="header is not strict JSON"):
+        TrajectoryRecorder(TrajectoryContext(genome_id="G-0f1e2d3c", **fields), path)
+    assert not path.exists()
+
+
+def test_an_event_with_a_lone_surrogate_is_refused_before_it_is_kept(context, tmp_path):
+    recorder = TrajectoryRecorder(context, tmp_path / "t.jsonl")
+    with pytest.raises(RecorderError, match="event payload is not strict JSON"):
+        recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.0,
+                              data={"task": "\ud800"}))
+    recorder(RuntimeEvent(seq=1, kind="run_started", step=None, monotonic_s=0.0,
+                          data={"task": "t"}))  # the refused event left no trace
+    recorder.finalize_incomplete("unit test")
+    assert [e["data"] for e in load_trajectory(tmp_path / "t.jsonl").events] == [{"task": "t"}]

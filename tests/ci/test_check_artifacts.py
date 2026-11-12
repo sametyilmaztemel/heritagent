@@ -503,3 +503,46 @@ def test_only_the_exp0001_manifest_is_bound_to_the_code(ca, monkeypatch, tmp_pat
     assert len(errors) == 2 and all(
         e.startswith("experiments/manifests/EXP-0001-minimal-cig.yaml: evaluation.mining_seeds")
         for e in errors)
+
+
+def _check_manifest_file(ca, monkeypatch, tmp_path, manifest, name="EXP-0001-minimal-cig.yaml"):
+    yaml = pytest.importorskip("yaml")
+    folder = tmp_path / "experiments" / "manifests"
+    folder.mkdir(parents=True)
+    (folder / name).write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(ca, "REPO_ROOT", tmp_path)
+    return ca.check_manifests()
+
+
+@pytest.mark.parametrize("edit", ["id changed", "experiment removed", "experiment a list"])
+def test_the_exp0001_manifest_is_bound_by_its_path_not_by_its_own_id(ca, monkeypatch,
+                                                                      tmp_path, edit):
+    """Changing the manifest's own id must not lift the binding of its values."""
+    manifest = _load_manifest()
+    manifest["evaluation"]["mining_seeds"] = [11, 23, 42]
+    if edit == "id changed":
+        manifest["experiment"]["id"] = "EXP-0001-R1"
+    elif edit == "experiment removed":
+        del manifest["experiment"]
+    else:
+        manifest["experiment"] = [1]
+    errors = _check_manifest_file(ca, monkeypatch, tmp_path, manifest)
+    prefix = "experiments/manifests/EXP-0001-minimal-cig.yaml: "
+    assert any(e.startswith(prefix + "is the EXP-0001 manifest, but its experiment.id is")
+               for e in errors), errors
+    assert any(e.startswith(prefix + "evaluation.mining_seeds is [11, 23, 42]") for e in errors)
+
+
+def test_a_missing_exp0001_manifest_fails(ca, monkeypatch, tmp_path):
+    errors = _check_manifest_file(ca, monkeypatch, tmp_path, {"experiment": {"id": "EXP-0002"}},
+                                  name="EXP-0002.yaml")
+    assert errors == ["experiments/manifests/EXP-0001-minimal-cig.yaml is missing"]
+
+
+@pytest.mark.parametrize("value", [5, [1], {"statistics": 5}])
+def test_an_evaluation_block_that_is_not_a_mapping_is_a_fail_line(ca, value):
+    manifest = _load_manifest()
+    manifest["evaluation"] = value
+    issues = ca.check_preregistration(manifest, "m")
+    assert any(i.startswith("m: locked primary support criterion h2_supported_if changed: None")
+               for i in issues), issues

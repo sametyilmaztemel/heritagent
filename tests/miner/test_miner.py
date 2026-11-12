@@ -164,6 +164,33 @@ def test_a_teacher_reply_with_nan_is_malformed_and_nothing_is_frozen(tmp_path, r
     canonical_json(frozen.mining_records[0])  # the record is still strict JSON
 
 
+def test_a_teacher_reply_with_a_lone_surrogate_is_malformed_and_nothing_is_frozen(
+        tmp_path, registry, context, miner):
+    """The escape loads as a string UTF-8 cannot encode, so the reply could
+    not be stored or hashed; it is malformed output, not a crash of the miner."""
+    batch, _ = make_batch(tmp_path, registry)
+    reply = json.dumps({"proposals": [dict(GOLDEN_PROPOSALS[0])]}).replace(
+        "check_heater_before_use", "check\\ud800")
+    assert "\\ud800" in reply
+    miner._model = ScriptedAdapter([reply])
+    frozen = miner.mine(batch)
+    assert frozen.candidates == ()
+    [entry] = frozen.mining_records[0]["rejected"]
+    assert entry["reason"] == "malformed_output"
+    assert entry["detail"].startswith("structured output cannot be stored as strict JSON")
+    canonical_json(frozen.mining_records[0]).encode("utf-8")
+
+
+def test_a_malformed_teacher_reply_names_its_finish_reason(tmp_path, registry, context, miner):
+    batch, _ = make_batch(tmp_path, registry)
+    miner._model = ScriptedAdapter([])
+    miner._model.enqueue_text("not json", finish_reason="stop")
+    frozen = miner.mine(batch)
+    [entry] = frozen.mining_records[0]["rejected"]
+    assert entry["reason"] == "malformed_output"
+    assert entry["detail"].endswith(" (finish_reason 'stop')")
+
+
 def test_applicability_outside_family_universe_rejected(tmp_path, registry, context, miner):
     batch, _ = make_batch(tmp_path, registry, families=("heat_and_place",))
     proposal = dict(GOLDEN_PROPOSALS[0])

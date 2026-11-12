@@ -1,6 +1,7 @@
 """ModelAdapter contract tests (issue #7 criteria 1, 3) — scripted, no GPU."""
 
 import json
+import sys
 
 import pytest
 
@@ -89,12 +90,26 @@ def test_structured_output_with_a_non_json_number_is_rejected(constant):
     assert raised.value.raw_text == f'{{"x": {constant}}}'
 
 
+@pytest.mark.skipif(not getattr(sys, "get_int_max_str_digits", lambda: 0)(),
+                    reason="this interpreter has no integer digit limit")
 def test_structured_output_with_an_integer_past_pythons_digit_limit_is_rejected():
     from runtime.model_adapters import ModelResponseError
     adapter = ScriptedAdapter(['{"x": ' + "1" * 5000 + "}"])
     with pytest.raises(ModelResponseError, match="not valid JSON"):
         adapter.structured_generate([ModelMessage("user", "hi")], GenerationSettings(),
                                     {"type": "object"})
+
+
+@pytest.mark.parametrize("value", ["1e999", '"\\ud800"'])
+def test_structured_output_that_parses_but_cannot_be_stored_is_rejected(value):
+    """An overflowing literal loads as inf and a lone surrogate escape as a
+    string that UTF-8 cannot encode; neither can be stored as strict JSON."""
+    from runtime.model_adapters import ModelResponseError
+    adapter = ScriptedAdapter([f'{{"x": {value}}}'])
+    with pytest.raises(ModelResponseError, match="cannot be stored as strict JSON") as raised:
+        adapter.structured_generate([ModelMessage("user", "hi")], GenerationSettings(),
+                                    {"type": "object"})
+    assert raised.value.raw_text == f'{{"x": {value}}}'
 
 
 def test_a_structured_reply_cut_at_max_tokens_carries_its_finish_reason():
@@ -186,3 +201,14 @@ def test_an_error_body_that_cannot_be_read_is_a_transport_failure(monkeypatch, c
                                                    _http_error(code, reset)])
     with pytest.raises(BackendUnavailableError, match="after 2 attempts.*connection reset"):
         adapter.generate([ModelMessage("user", "u")], GenerationSettings())
+
+
+def test_an_error_body_cut_short_is_a_transport_failure(monkeypatch):
+    """http.client.IncompleteRead is not an OSError, so it is named apart."""
+    import http.client
+    cut = http.client.IncompleteRead(b"The decoder prompt", 40)
+    adapter, calls = _server_adapter(monkeypatch, [_http_error(400, cut),
+                                                   _chat("Final Answer: x", "stop")])
+    assert adapter.generate([ModelMessage("user", "u")], GenerationSettings()).text == \
+        "Final Answer: x"
+    assert len(calls) == 2
