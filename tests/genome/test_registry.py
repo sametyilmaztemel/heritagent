@@ -35,6 +35,14 @@ def test_canonical_bytes_spec():
     assert canonical_bytes(raw) is raw
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_payload_is_refused_and_nothing_is_stored(registry, value):
+    with pytest.raises(GenomeValidationError, match="not strict JSON"):
+        registry.put("skill", "s_v1", 1, {"name": "s", "weight": value})
+    assert not (registry.root / "skills").exists()
+    assert not (registry.root / "index.json").exists()
+
+
 def test_put_is_idempotent_for_identical_content(registry):
     uri1 = registry.put("skill", "s_v1", 1, {"name": "s"})
     uri2 = registry.put("skill", "s_v1", 1, {"name": "s"})

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from trajectory.recorder.context import TrajectoryContext
+from trajectory.recorder.errors import StreamInvariantError
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,12 @@ def normalize_trajectory(*, trajectory_id: str, context: TrajectoryContext | Non
                                      latency_ms=data.get("latency_ms"))
                 bucket["tools"][pending] = resolved
             else:
+                if not bucket["tools"]:
+                    # verify_document does not order tool events; the runtime
+                    # always emits tool_called first
+                    raise StreamInvariantError(
+                        f"{trajectory_id}: event {event.get('seq')}: tool_result at step "
+                        f"{step} follows no tool call in its step")
                 # a retry re-executes an already-resolved call: record it as a
                 # separate attempt carrying the same tool/arguments
                 last_call = bucket["tools"][-1]

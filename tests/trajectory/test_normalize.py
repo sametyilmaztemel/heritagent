@@ -227,3 +227,34 @@ def test_normalizer_is_deterministic(tmp_path, registry, context):
         normalized_runs.append(load_normalized(path))
     from dataclasses import asdict
     assert asdict(normalized_runs[0]) == asdict(normalized_runs[1])
+
+
+def test_a_skill_expressed_in_two_steps_is_listed_once():
+    events = [
+        {"seq": 1, "kind": "run_started", "step": None, "monotonic_s": 0.0,
+         "data": {"task": "t"}},
+        {"seq": 2, "kind": "skills_expressed", "step": 1, "monotonic_s": 0.1,
+         "data": {"skills": [SKILL_GENE_ID]}},
+        {"seq": 3, "kind": "skills_expressed", "step": 2, "monotonic_s": 0.2,
+         "data": {"skills": [SKILL_GENE_ID]}},
+    ]
+    normalized = normalize_trajectory(trajectory_id="T-aaaaaaaaaaaa", context=None,
+                                      events=events, status="incomplete")
+    assert normalized.expressed_skill_ids == (SKILL_GENE_ID,)
+    assert normalized.metrics["unique_expressed_skills"] == 1
+    assert normalized.metrics["expressed_skill_events"] == 2
+    assert [step.expressed_skills for step in normalized.steps] == [
+        (SKILL_GENE_ID,), (SKILL_GENE_ID,)]
+
+
+def test_a_tool_result_without_a_tool_call_in_its_step_is_refused():
+    from trajectory.recorder.errors import StreamInvariantError
+    events = [
+        {"seq": 1, "kind": "run_started", "step": None, "monotonic_s": 0.0,
+         "data": {"task": "t"}},
+        {"seq": 2, "kind": "tool_result", "step": 1, "monotonic_s": 0.1,
+         "data": {"ok": True, "content": "heated"}},
+    ]
+    with pytest.raises(StreamInvariantError, match="event 2: tool_result at step 1"):
+        normalize_trajectory(trajectory_id="T-aaaaaaaaaaaa", context=None,
+                             events=events, status="incomplete")

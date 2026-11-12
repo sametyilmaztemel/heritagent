@@ -17,7 +17,8 @@ from runtime.model_adapters import ModelMetadata
 
 def _require_json_safe(name: str, value) -> None:
     try:
-        round_trip = json.loads(json.dumps(value))
+        # allow_nan=False: inf round-trips equal to itself but is not strict JSON
+        round_trip = json.loads(json.dumps(value, allow_nan=False))
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{name} must be JSON-safe: {exc}") from None
     if round_trip != value:
@@ -108,6 +109,7 @@ class OutcomeAnnotation:
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        _require_json_safe("outcome.reward", self.reward)
         _require_json_safe("outcome.metadata", self.metadata)
 
     def to_dict(self) -> dict:

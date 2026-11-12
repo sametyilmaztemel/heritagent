@@ -306,3 +306,52 @@ def test_finalized_file_with_appended_junk_rejected(tmp_path, registry, context)
     with pytest.raises(MalformedTrajectoryError,
                         match="appended after a finalized trajectory"):
         load_trajectory(junk, allow_incomplete=True)
+
+
+def resigned(document):
+    """``document`` with its content digest recomputed, so only the rule
+    under test can refuse it."""
+    from trajectory.storage.canonical import content_digest
+    finalization = {k: v for k, v in document["finalization"].items()
+                    if k != "content_sha256"}
+    document["finalization"]["content_sha256"] = content_digest(
+        document["trajectory_id"], document["context"], document["events"], finalization)
+    return document
+
+
+def test_a_finished_trajectory_without_an_answer_is_refused(tmp_path, registry, context):
+    from trajectory.verification import verify_document
+    document = load_trajectory(golden_capture(tmp_path, registry, context)).document
+    assert document["events"][-1]["kind"] == "finished"
+    document["events"][-1]["data"]["answer"] = ""
+    with pytest.raises(TrajectoryIntegrityError, match="carries no answer") as exc_info:
+        verify_document(resigned(document))
+    assert "digest mismatch" not in str(exc_info.value)
+
+
+def test_an_incomplete_trajectory_without_a_reason_is_refused(tmp_path, registry, context):
+    from trajectory.verification import verify_document
+    document = load_trajectory(golden_capture(tmp_path, registry, context)).document
+    document["events"] = document["events"][:-1]  # the prefix before the terminal event
+    document["status"] = "incomplete"
+    document["complete"] = False
+    document["finalization"].update(status="incomplete", incomplete_reason=None)
+    with pytest.raises(TrajectoryIntegrityError,
+                       match="must carry an incomplete_reason") as exc_info:
+        verify_document(resigned(document))
+    assert "digest mismatch" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("field", ["model", "budget"])
+def test_a_header_context_the_loader_cannot_represent_is_refused(
+        tmp_path, registry, context, field):
+    path = golden_capture(tmp_path, registry, context)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records[0]["context"][field]["unknown_key"] = "x"  # the schema leaves these objects open
+    document = load_trajectory(path).document
+    document["context"] = records[0]["context"]
+    records[-1]["content_sha256"] = resigned(document)["finalization"]["content_sha256"]
+    path.write_text("".join(canonical_json(record) + "\n" for record in records))
+    with pytest.raises(MalformedTrajectoryError,
+                       match=f"header context {field} does not fit"):
+        load_trajectory(path)

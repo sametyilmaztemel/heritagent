@@ -357,3 +357,24 @@ def test_abort_blocks_recorder(tmp_path, registry, context):
     loaded = load_trajectory(tmp_path / "aborted.jsonl", allow_incomplete=True)
     assert loaded.status == "incomplete"
     assert loaded.trajectory_id == "T-dddddddddddd"
+
+
+@pytest.mark.parametrize("field", ["tags", "metadata"])
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_tag_or_metadata_value_is_refused(field, value):
+    with pytest.raises(TypeError, match=f"{field} must be JSON-safe"):
+        TrajectoryContext(genome_id="G-0f1e2d3c", **{field: {"score": value}})
+
+
+@pytest.mark.parametrize("reward", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_reward_is_refused(reward):
+    with pytest.raises(TypeError, match="outcome.reward must be JSON-safe"):
+        OutcomeAnnotation(success=True, reward=reward)
+
+
+def test_a_header_that_is_not_strict_json_creates_no_file(tmp_path):
+    context = TrajectoryContext(genome_id="G-0f1e2d3c", seed=float("inf"))
+    path = tmp_path / "header.jsonl"
+    with pytest.raises(RecorderError, match="header is not strict JSON"):
+        TrajectoryRecorder(context, path)
+    assert not path.exists()  # refused before the exclusive create

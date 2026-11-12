@@ -1,6 +1,6 @@
 # EAG v0 — Executable Agent Genome, schema proposal
 
-**Status: REVISED after critic round 1 (2026-10-02) — re-review requested.** Originally proposed 2026-10-02 (builder role); revised same day per Research/Critic review on PR #1 / issue #3 — see §7 "Review resolution". Decision recorded in `research/decisions/ADR-0001-eag-v0-schema.md`.
+**Status: implemented, with ADR-0001 Amendments A1 (somatic-only `origin="acquired"`) and A2 (canonical `genome_id`, `genome/validation/identity.py`) and ADR-0010 (M0 bundles name the artifact and the base genome).** Originally proposed 2026-10-02 (builder role); revised same day per Research/Critic review on PR #1 / issue #3 — see §7 "Review resolution". Decision recorded in `research/decisions/ADR-0001-eag-v0-schema.md`.
 
 ## 1. Scope and goals
 
