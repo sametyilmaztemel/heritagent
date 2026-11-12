@@ -19,8 +19,8 @@ Implementation follows the SPEC §28 sequence. Merged (each row's review is on i
 | somatic trait store | #10 | `somatic/` |
 | replay + ablation evaluators | #11 | `inheritance/` |
 | basic CIG (4-stage gate) | #12 | `inheritance/gate.py` |
-| canonical `genome_id` hashing | #22 | `genome/validation/identity.py` (PR #29, `719f2f5`) |
-| EXP-0001 pre-registration fields | #6 | `experiments/manifests/EXP-0001-design.md` §8, locked 2026-10-14 (`7e937ab`) |
+| canonical `genome_id` hashing | #22 | `genome/validation/identity.py` (PR #29, `6c1e096`) |
+| EXP-0001 pre-registration fields | #6 | `experiments/manifests/EXP-0001-design.md` §8, locked 2026-10-14 (`18f9bec`) |
 | EXP-0001 orchestration, pre-run artifacts, run protocol (#13 Phase A) | #13 | `evaluation/exp0001/`, `evaluation/metrics/` (PR #68; ADR-0006, ADR-0007) |
 | EXP-0001 on one Colab A100: CLI, ledger, mirror, pilot, rehearsals, notebooks (#13 Phase B) | #13 | `evaluation/exp0001/cli.py`, `notebooks/`, `environments/exp0001-colab/` (PRs #69 to #82; ADR-0008 to ADR-0012) |
 
