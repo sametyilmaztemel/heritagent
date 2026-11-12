@@ -181,6 +181,21 @@ def test_a_teacher_reply_with_a_lone_surrogate_is_malformed_and_nothing_is_froze
     canonical_json(frozen.mining_records[0]).encode("utf-8")
 
 
+@pytest.mark.parametrize("depth", [1000, 100000])
+def test_a_teacher_reply_nested_too_deep_is_malformed_and_nothing_is_frozen(
+        tmp_path, registry, context, miner, depth):
+    """At 100,000 levels json.loads itself raises RecursionError."""
+    batch, _ = make_batch(tmp_path, registry)
+    reply = '{"proposals": ' + "[" * depth + "]" * depth + "}"
+    miner._model = ScriptedAdapter([reply])
+    frozen = miner.mine(batch)
+    assert frozen.candidates == ()
+    [entry] = frozen.mining_records[0]["rejected"]
+    assert entry["reason"] == "malformed_output"
+    assert entry["detail"].startswith("structured output nests deeper than")
+    assert frozen.mining_records[0]["raw_teacher_text"] == reply
+
+
 def test_a_malformed_teacher_reply_names_its_finish_reason(tmp_path, registry, context, miner):
     batch, _ = make_batch(tmp_path, registry)
     miner._model = ScriptedAdapter([])

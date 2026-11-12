@@ -233,7 +233,12 @@ class RunLedger:
                               f"process (run repair-ledger first if the ledger ends with a torn "
                               f"line)")
         line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
-        size = self._size()
+        try:
+            size = self._size()
+        except OSError as exc:
+            raise LedgerError(f"{self._path}: its size could not be read before writing a "
+                              f"{record.get('type')} record ({exc!r}); nothing was written. Fix "
+                              f"the cause, then resume the run in a new process") from exc
         try:
             with self._path.open("a", encoding="utf-8") as handle:
                 handle.write(line)

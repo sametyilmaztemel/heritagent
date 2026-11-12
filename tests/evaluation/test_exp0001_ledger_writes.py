@@ -146,6 +146,32 @@ def test_the_first_failed_write_names_the_ledger_the_error_and_how_to_resume(tmp
     assert isinstance(raised.value.__cause__, OSError)
 
 
+def test_a_ledger_that_cannot_be_measured_before_a_write_gives_an_explained_error(tmp_path,
+                                                                                 monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    before = path.read_bytes()
+    real_stat = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self == path:
+            raise OSError(errno.EIO, "Input/output error")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    with pytest.raises(LedgerError) as raised:
+        ledger.record("a", model_calls=1, outcome={})
+    monkeypatch.undo()
+    message = str(raised.value)
+    assert str(path) in message and "Input/output error" in message
+    assert "nothing was written" in message
+    assert isinstance(raised.value.__cause__, OSError)
+    assert path.read_bytes() == before
+    ledger.record("a", model_calls=1, outcome={})
+    assert RunLedger(path, run_id=RUN_ID, clock=Clock()).episodes == 1
+
+
 @pytest.mark.parametrize("point", ["before", "half", "after"])
 def test_any_error_inside_a_write_cuts_the_line_and_stops_the_writes(tmp_path, monkeypatch,
                                                                      point):

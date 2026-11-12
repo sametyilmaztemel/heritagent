@@ -190,30 +190,55 @@ def test_a_second_session_takes_the_mirror_over_and_stops_the_first(command, tmp
         first.snapshot()
 
 
-def test_a_restored_ledger_with_a_torn_line_waits_for_repair_ledger(command, tmp_path, capsys):
+def mirror_a_torn_ledger(command, tmp_path) -> None:
     vm1 = tmp_path / "vm1" / "work"
     assert command(vm1) == 0
     path = vm1 / "ledger.jsonl"
     path.write_bytes(path.read_bytes() + b'{"type":"epi')  # a write a kill interrupted
     assert command(vm1, "snapshot") == 0  # snapshots the torn line as it is
+
+
+def test_a_restored_ledger_with_a_torn_line_waits_for_repair_ledger(command, tmp_path, capsys):
+    """The refusal leaves the marker, so the notebook keeps the runtime for
+    repair-ledger; the next snapshot of the same command removes it."""
+    mirror_a_torn_ledger(command, tmp_path)
     vm2 = tmp_path / "vm2" / "work"
     capsys.readouterr()
     assert command(vm2) == 2
     err = capsys.readouterr().err
-    assert f"repair-ledger --run-dir {vm2}" in err
+    assert f"python -m evaluation.exp0001.cli repair-ledger --run-dir {vm2}" in err
+    assert f'cli("repair-ledger", "--run-dir", "{vm2}")' in err
+    assert "then the same command again" in err
+    assert f"UNMIRRORED: {vm2} waits for repair-ledger" in err
+    assert (vm2 / cli.UNMIRRORED).exists()
     assert (vm2 / "ledger.jsonl").read_bytes().endswith(b'{"type":"epi')  # restored, not cut
     for what in ("run", "snapshot"):  # nothing goes on while its restore note waits
         assert command(vm2, what) == 2
         assert "repair-ledger" in capsys.readouterr().err
-        assert not (vm2 / cli.UNMIRRORED).exists()
+        assert (vm2 / cli.UNMIRRORED).exists()
     assert cli.main(["repair-ledger", "--run-dir", str(vm2)]) == 0
+    assert (vm2 / cli.UNMIRRORED).exists()  # until a snapshot holds the repaired ledger
     assert command(vm2) == 0
+    assert not (vm2 / cli.UNMIRRORED).exists()
     notes = [r["type"] for r in records(vm2) if r.get("type") in ("repair", "restore")]
     assert notes == ["repair", "restore"]
     assert cli.main(["repair-ledger", "--run-dir", str(vm2)]) == 0  # nothing pending: no note
     assert len(records(vm2, "restore")) == 1
     vm3 = tmp_path / "vm3" / "work"
     assert command(vm3) == 0 and len(records(vm3, "restore")) == 2
+
+
+def test_a_rehearsal_waiting_for_repair_ledger_leaves_no_marker(command, tmp_path, monkeypatch,
+                                                                capsys):
+    """A rehearsal's records are disposable: it is started again, never resumed."""
+    import functools
+    mirror_a_torn_ledger(command, tmp_path)
+    monkeypatch.setattr(cli, "_run", functools.partial(cli._run, disposable=True))
+    vm2 = tmp_path / "vm2" / "work"
+    capsys.readouterr()
+    assert command(vm2) == 2
+    assert f"repair-ledger --run-dir {vm2}" in capsys.readouterr().err
+    assert not (vm2 / cli.UNMIRRORED).exists()
 
 
 def test_a_pending_restore_note_is_appended_once(tmp_path):

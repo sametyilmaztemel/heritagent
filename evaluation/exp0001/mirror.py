@@ -87,8 +87,14 @@ class MirrorError(RuntimeError):
 
 class NothingUnmirrored(MirrorError):
     """A refusal that leaves no record only on this machine: the mirror
-    holds all the run directory holds (a directory behind its mirror, or a
-    restored one whose restore note waits for ``repair-ledger``)."""
+    holds all the run directory holds (a directory behind its mirror)."""
+
+
+class RestoreNotePending(MirrorError):
+    """A restored run directory whose restore note waits for
+    ``repair-ledger``. The refusal leaves the unmirrored marker, so the
+    notebook keeps the runtime in which ``repair-ledger`` is run (ADR-0008
+    D5)."""
 
 
 class _NotWhole(MirrorError):
@@ -510,14 +516,16 @@ def require_no_pending_note(local_dir: Path) -> None:
     ``repair-ledger`` is not resumed, snapshotted or taken over."""
     record = restore_record(local_dir)
     if record is not None and record.get("pending_note") is not None:
-        raise NothingUnmirrored(_pending_note_text(Path(local_dir)))
+        raise RestoreNotePending(_pending_note_text(Path(local_dir)))
 
 
 def _pending_note_text(local: Path) -> str:
     return (f"{local} was restored from its mirror, and its ledger ends with a torn line (a "
             f"write a crash interrupted), so its restore note is still to be appended. Run "
-            f"repair-ledger --run-dir {local} (it cuts the line on purpose, keeps the cut bytes "
-            f"and appends both notes), then the command again")
+            f"`python -m evaluation.exp0001.cli repair-ledger --run-dir {local}` (in a "
+            f"notebook: a new cell `cli(\"repair-ledger\", \"--run-dir\", \"{local}\")`; it cuts "
+            f"the line on purpose, keeps the cut bytes and appends both notes), then the same "
+            f"command again")
 
 
 def append_pending_restore_note(local_dir: Path) -> dict | None:

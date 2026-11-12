@@ -65,14 +65,15 @@ refusal to attach a directory that holds a ledger to its mirror (the mirror
 missing, unreadable or not its own: exit 2 with the marker). The marker is
 made first, empty, and then filled: a full disk still leaves it. For
 ``run``, ``pilot`` and ``snapshot`` the exceptions are another machine
-taking over the mirror (it holds the run now), a directory behind its
-mirror, and a restored one whose restore note waits for ``repair-ledger``:
-the mirror holds every record, and the command stops with exit 2 and no
-marker. ``rehearse`` and ``rehearse-run`` never leave the
-marker: a rehearsal is started again, never resumed. The last snapshot is
-not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
-directory's one-writer lock from before they touch the mirror until after
-their last snapshot.
+taking over the mirror (it holds the run now) and a directory behind its
+mirror: the mirror holds every record, and the command stops with exit 2
+and no marker. A restored directory whose restore note waits for
+``repair-ledger`` gets the marker (exit 2), so the runtime is kept for
+``repair-ledger``; the next snapshot of the same command removes it.
+``rehearse`` and ``rehearse-run`` never leave the marker: a rehearsal is
+started again, never resumed. The last snapshot is not cut short by a stop.
+``run``, ``pilot`` and ``snapshot`` hold the run directory's one-writer lock
+from before they touch the mirror until after their last snapshot.
 
 ``run`` and ``pilot`` take ``--workers`` for parallel episodes against the
 one server (ADR-0008). Every run directory lives outside the repository
@@ -104,6 +105,7 @@ from evaluation.exp0001.ledger import LedgerError, RunLedger, repair_torn_tail
 from evaluation.exp0001.mirror import (
     MirrorError,
     NothingUnmirrored,
+    RestoreNotePending,
     RunMirror,
     append_pending_restore_note,
     broken_mirror_text,
@@ -522,12 +524,22 @@ def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True)
     mirror. A refusal while ``local`` holds a ledger leaves the unmirrored
     marker first, since its newest records may exist only here (the mirror
     missing, unreadable or another's); not when the mirror holds every
-    record (``NothingUnmirrored``), nor for a rehearsal (``marker=False``)."""
+    record (``NothingUnmirrored``), nor for a rehearsal (``marker=False``).
+    A restore note waiting for ``repair-ledger`` leaves it too, so the
+    runtime that must run ``repair-ledger`` is kept (ADR-0008 D5)."""
     if mirror_dir is None:
         return None
     try:
         return RunMirror(local, mirror_dir)
     except NothingUnmirrored:
+        raise
+    except RestoreNotePending as exc:
+        if marker:
+            _leave_marker(local, {"failures": None, "at": _now(),
+                                  "last_error": f"waits for repair-ledger: {exc}"})
+            _say(f"UNMIRRORED: {local} waits for repair-ledger; this marker keeps the runtime "
+                 f"so that it can run here. Do what the error below says; the first snapshot "
+                 f"after that removes this marker.")
         raise
     except MirrorError as exc:
         if marker and (local / "ledger.jsonl").exists():

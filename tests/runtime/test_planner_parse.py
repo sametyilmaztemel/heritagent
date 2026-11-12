@@ -151,6 +151,43 @@ def test_a_recorded_run_retries_an_action_input_that_cannot_be_stored(g0_config,
     assert recorder.finalize().document["events"]
 
 
+def nested_action(depth):
+    """A reply whose Action Input nests ``depth`` containers deep."""
+    inner = "[" * (depth - 1) + '"x"' + "]" * (depth - 1)
+    return f'Thought: t\nAction: act\nAction Input: {{"command": {inner}}}'
+
+
+def test_an_action_input_nested_up_to_the_bound_parses():
+    from runtime.model_adapters.base import MAX_JSON_DEPTH
+    decision = ReActPlanner.parse(nested_action(MAX_JSON_DEPTH))
+    assert decision.action.name == "act"
+
+
+@pytest.mark.parametrize("extra", [1, 1000, 100000])
+def test_an_action_input_nested_past_the_bound_is_a_parse_failure(extra):
+    """At 100,000 levels json.loads itself raises RecursionError; at about
+    1,000 the recorder's deep copy did. Both are parse failures."""
+    from runtime.model_adapters.base import MAX_JSON_DEPTH
+    with pytest.raises(PlanParseError, match="Action Input nests deeper than"):
+        ReActPlanner.parse(nested_action(MAX_JSON_DEPTH + extra))
+
+
+@pytest.mark.parametrize("depth", [1000, 100000])
+def test_a_recorded_run_retries_an_action_input_nested_too_deep(g0_config, tmp_path, depth):
+    from runtime.model_adapters import ScriptedAdapter
+    from trajectory.recorder.context import TrajectoryContext
+    from trajectory.recorder.recorder import TrajectoryRecorder
+    recorder = TrajectoryRecorder(TrajectoryContext(genome_id=g0_config.genome_id),
+                                  tmp_path / "t.jsonl", trajectory_id="T-0123456789ab")
+    adapter = ScriptedAdapter([nested_action(depth), react_final("done")])
+    result = run_agent(config=g0_config, model=adapter, env=ScriptedEnv({"act": []}), task="t",
+                       budgets=Budgets(max_steps=1, max_total_retries=1, max_tokens_per_request=64),
+                       hooks=(recorder,), sleep=lambda _delay: None)
+    assert len(result.events.of_kind("plan_parse_failed")) == 1
+    assert result.status == "finished"
+    assert recorder.finalize().document["events"]
+
+
 # sha256 of the messages of every model call in the episode below, at the code
 # before unstorable Action Inputs were retried
 MESSAGES_SHA256_OF_A_RETRIED_EPISODE = "4ceff25c247814de2c22b071dd606666129036814fa4f110b0a9d0e5f28bcd9d"

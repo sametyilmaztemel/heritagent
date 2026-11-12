@@ -112,6 +112,27 @@ def test_structured_output_that_parses_but_cannot_be_stored_is_rejected(value):
     assert raised.value.raw_text == f'{{"x": {value}}}'
 
 
+def test_structured_output_nested_up_to_the_bound_is_accepted():
+    from runtime.model_adapters.base import MAX_JSON_DEPTH
+    reply = '{"x": ' + "[" * (MAX_JSON_DEPTH - 1) + "]" * (MAX_JSON_DEPTH - 1) + "}"
+    result = ScriptedAdapter([reply]).structured_generate(
+        [ModelMessage("user", "hi")], GenerationSettings(), {"type": "object"})
+    assert result.text == reply
+
+
+@pytest.mark.parametrize("extra", [1, 1000, 100000])
+def test_structured_output_nested_past_the_bound_is_rejected(extra):
+    """At 100,000 levels json.loads itself raises RecursionError."""
+    from runtime.model_adapters import ModelResponseError
+    from runtime.model_adapters.base import MAX_JSON_DEPTH
+    depth = MAX_JSON_DEPTH + extra
+    reply = '{"x": ' + "[" * (depth - 1) + "]" * (depth - 1) + "}"
+    with pytest.raises(ModelResponseError, match="nests deeper than") as raised:
+        ScriptedAdapter([reply]).structured_generate(
+            [ModelMessage("user", "hi")], GenerationSettings(), {"type": "object"})
+    assert raised.value.raw_text == reply
+
+
 def test_a_structured_reply_cut_at_max_tokens_carries_its_finish_reason():
     from runtime.model_adapters import ModelResponseError
     from runtime.model_adapters.fake import _Scripted
