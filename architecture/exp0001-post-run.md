@@ -71,7 +71,7 @@ One file per run, posted on issue #13. Section A is filled and posted **before t
 
 **D. Unexpected behaviour.** Anything the run did that the design and the ADRs did not foresee: restores and repairs (`ledger_notes`) and the work they replayed, refused requests, context overflows and reduced evidence forms (ADR-0009 D8), malformed teacher replies and their `finish_reason`, episodes that used all 50 steps (status `environment_terminal`, `won` false, 50 steps), the backend-noise measures (`cell_disagreement`, ADR-0012 D8).
 
-**E. Confounders.** The design's §6 threats, each with what the records show; the open owner decisions that were settled by keeping a choice (takeover note §5, items 21 and 22: the G0 prompt's history and the teacher's output budget); differences from the pilot's machine or software (`run-start.json` `environment`).
+**E. Confounders.** The design's §6 threats, each with what the records show; the owner's decisions of 2026-11-12 (takeover note §5, items 21 and 22): the G0 prompt's history was kept as the observations only (ADR-0003 note N1; the design's §6 item 7), and the teacher's per-call request became at most 5 proposals, with K = 10 and the 2,048-token budget kept (ADR-0011 note N1; the mining records show a reply with more than five proposals or a reply cut at the budget); differences from the pilot's machine or software (`run-start.json` `environment`).
 
 **F. Follow-up.** Proposed next steps, each as an issue or an ADR draft for the owner; any locked change it would need is named as such.
 

@@ -87,7 +87,8 @@ The owner decided this in chat on 2026-11-12 ("22 de b olsun"), on the question 
   - The template, the schema and the window stay as pre-registered.
 - *Research implication.*
   - It is decided before any teacher call of EXP-0001, so no data are affected.
-  - A mining seed with a single success/failure pair can now yield at most five candidates if the model follows the request (before: up to ten). With two or more pairs, K = 10 can still be reached [M].
+  - A mining seed with a single success/failure pair can now yield at most five candidates if the model follows the request (before: up to ten). With two or more pairs, K = 10 can still be reached [M]. The pilot's pair yield projects about 16 pairs per seed (ADR-0012, R), so the single-pair case is an edge.
+  - The request may change which proposals, and how many, a pair yields, and so the pool that the ranking and K select from. This is unmeasured: no teacher call exists under either request [U].
   - How often the model exceeds the request, and how often a reply is still cut, is unmeasured [U]. The run's mining records show both: each keeps the teacher's raw reply, and a cut reply's rejection detail names finish_reason 'length'.
   - The pilot's teacher-prompt token counts (ADR-0009 D3) were taken with "10" in that line. The line now differs in that number only [V, for the text]. The token difference is at most the tokens of "10" against those of "5" [M].
   - No novelty or causal claim.

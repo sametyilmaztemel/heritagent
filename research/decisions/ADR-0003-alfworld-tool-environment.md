@@ -96,27 +96,28 @@ Date: 2026-10-13 · Status: **ACCEPTED by the owner** (Samet, 2026-10-13: "accep
 
 **Note N1: the prompt's history is the observations only.** The owner decided this in chat on 2026-11-12 ("21 a kalsın"), on the question builder-2 put as item 21 of the takeover note's §5, before any EXP-0001 episode. builder-2's Critic cross-review of this note is posted on issue #13.
 - *Problem.*
-  - No locked text said what history the model sees at each step. D2, D7, A1 and A2 describe the observation, the task text and the stop, not the history (R, takeover note §5 item 21, searched 2026-11-12).
+  - No locked text said what history the model sees at each step. D2, D7, A1 and A2 describe the observation, the task text and the stop, not the history (R, takeover note §5 item 21, searched 2026-11-12). ADR-0009's "The prompt carries the full history for up to 50 steps" means the list of observations described here.
   - At each step the model receives two messages (V, `runtime/policies/planner_react.py` `ReActPlanner.build_messages` and `runtime/loop.py` `run_agent`, re-read at `1a16a40`):
     - a system message: the format instructions, the tool catalog and the expressed skills;
     - one user message: `Task:` and the task text (D7, A1); then `Observations so far:` with `[0]` and the task text again (ADR-0009 D5) and `[i]` and entry i for every earlier step; then `Step N of at most 50. Provide the next single step.`
   - An entry is the game's observation rendered as D2. When the loop rejected the call before the game saw it, the entry is `rejected tool call '<tool>': <errors>` (V, same files).
-  - The model's own earlier replies (Thought, Action, Action Input) are never part of a later step's messages. After an inadmissible command the entry is "Nothing happens." with the admissible commands (D3); the command the agent sent is not shown (V, same files).
+  - The model's own earlier replies (Thought, Action, Action Input) are not part of a later step's messages; the two exceptions follow. After an inadmissible command the entry is "Nothing happens." with the admissible commands (D3); the command the agent sent is not shown (V, same files).
   - Two places show the model something of its own output (V, same files):
-    - a format retry inside one step appends the rejected reply as an assistant message and the user message "Your previous reply was not valid ReAct format. Reply again using exactly one required format."; the next step's messages do not carry them;
-    - a rejected tool call's entry names the tool and the schema errors, which can quote an argument's name or its value (for example "Additional properties are not allowed ('cmd' was unexpected)", or "3 is not of type 'string'" for a command that is not a string).
+    - a format retry inside one step appends the rejected reply as an assistant message and the user message "Your previous reply was not valid ReAct format. Reply again using exactly one required format." (up to three times in a step); the next step's messages do not carry them;
+    - a rejected tool call's entry stays in the history; it names the tool and the schema errors, which can quote an argument's name or its value (for example "Additional properties are not allowed ('cmd' was unexpected)", or "3 is not of type 'string'" for a command that is not a string).
 - *Decision.*
   - The owner answered "21 a kalsın", that is option (a) as builder-2 put it in chat: "Olduğu gibi kalsın; ADR-0003'e tarihli bir not ve tasarımın tehditler bölümüne bir satır eklensin. Ek GPU gerekmez." The history stays as described above.
   - This history is part of the frozen G0 prompt. It is the same in every arm.
   - Nothing changes in the code.
   - A test pins the messages of a scripted G0 episode: `tests/runtime/test_g0_prompt_pin.py`.
 - *Reason.*
-  - It is the prompt the calibration pilot ran with. A scripted episode gives byte-identical model messages at the pilot's commit `492d06b` and at `1a16a40` (V, main session, 2026-11-12). ADR-0012's recalibration rests on that pilot's measures (R).
+  - The messages are built as at the calibration pilot's commit: a scripted episode gives byte-identical model messages at `492d06b` and at `1a16a40` (V, main session and the cross-review, 2026-11-12; a scripted episode, not the pilot's recorded trajectories). ADR-0012's recalibration rests on that pilot's measures (R).
+  - One class of replies is handled differently since the pilot's commit (PR #83, 2026-11-12): an Action Input that holds NaN, Infinity, an overflowing number, a lone surrogate escape or nesting deeper than 32 levels is now a format failure, retried inside the step. At `492d06b` a reply with NaN, Infinity, an overflowing number or deep nesting became a rejected tool call that used a step, and a command holding a lone surrogate escape was sent to the game (V, re-run on an export of `492d06b` with a scripted game). Whether any pilot episode had such a reply is unchecked (U): the pilot's trajectories are not in the repository.
   - Showing the actions, the option the owner did not choose, would change what every arm's model sees. The pilot would then have to run again (127 episodes) and ADR-0012's calibration be checked against the new measures (takeover note §5 item 21).
 - *Research implication.*
   - Every arm has the same history, so the paired contrasts between arms compare like with like.
   - The size of any effect of a skill text is measured for an agent that does not see its own earlier actions. It may not carry over to an agent that does (S). This is unmeasured here: no comparison run exists.
-  - Like D1, D2, D4, D7, A1 and A2, the history stays frozen through the run. A change after the run starts is a new experiment id.
+  - The history stays frozen through the run. Before the run a change needs the owner's decision and a new pilot (the option he did not choose); after the run starts it is a new experiment id.
   - No novelty or causal claim.
 - *Compatibility.*
   - No code changes.
