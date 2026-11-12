@@ -546,3 +546,42 @@ def test_an_evaluation_block_that_is_not_a_mapping_is_a_fail_line(ca, value):
     issues = ca.check_preregistration(manifest, "m")
     assert any(i.startswith("m: locked primary support criterion h2_supported_if changed: None")
                for i in issues), issues
+
+
+@pytest.mark.parametrize("edit", ["block renamed", "block null", "block renamed, completed"])
+def test_the_exp0001_manifest_without_its_preregistration_block_is_still_checked(
+        ca, monkeypatch, tmp_path, edit):
+    """At its own path the manifest's decision rules and status are checked
+    whatever its preregistration block says."""
+    manifest = _load_manifest()
+    experiment = manifest["experiment"]
+    block = experiment.pop("preregistration")
+    if edit == "block null":
+        experiment["preregistration"] = None
+    else:
+        experiment["prereg"] = block
+    if edit.endswith("completed"):
+        experiment["status"] = "done"
+        manifest["evaluation"]["statistics"]["seed_consistency"] = "any seed"
+        changed = "seed_consistency"
+    else:
+        manifest["evaluation"]["statistics"]["h2_supported_if"] = "always"
+        changed = "h2_supported_if"
+    errors = _check_manifest_file(ca, monkeypatch, tmp_path, manifest)
+    prefix = "experiments/manifests/EXP-0001-minimal-cig.yaml: "
+    assert prefix + "is the EXP-0001 manifest, but has no preregistration block (got " \
+        "NoneType); restore it" in errors, errors
+    assert any(e.startswith(prefix + f"locked primary support criterion {changed} changed")
+               for e in errors), errors
+    if edit.endswith("completed"):
+        assert any(e.startswith(prefix + "invalid EXP-0001 lifecycle status 'done'")
+                   for e in errors), errors
+
+
+@pytest.mark.parametrize("status", [[1], {"a": 1}])
+def test_a_status_that_is_a_list_or_a_mapping_is_a_fail_line(ca, status):
+    manifest = _load_manifest()
+    manifest["experiment"]["status"] = status
+    issues = ca.check_preregistration(manifest, "m")
+    assert any(i.startswith(f"m: invalid EXP-0001 lifecycle status {status!r}")
+               for i in issues), issues

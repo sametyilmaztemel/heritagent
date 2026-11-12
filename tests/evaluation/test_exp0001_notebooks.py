@@ -829,6 +829,20 @@ def test_the_run_notebook_stops_on_code_older_than_the_mirror_identity(tmp_path)
     assert any("run-commit" in argv for argv in calls)
 
 
+def test_the_run_notebook_stops_on_code_without_the_mirror_module(tmp_path):
+    """A CODE_REF older than the mirror module gets the same Turkish
+    message, not a traceback, before anything is installed."""
+    cells = code_cells(NAMES[1])
+    cell = cells[first(cells, '"run-commit"')]
+    calls = []
+    namespace = {"REPO": str(tmp_path), "RUN_DRIVE": str(tmp_path / "drive"), "COMMIT": "c" * 40,
+                 "subprocess": SimpleNamespace(run=lambda argv, **kwargs: calls.append(argv)),
+                 "checkout": lambda ref: ref}
+    with pytest.raises(RuntimeError, match="CODE_REF'e daha yeni bir commit"):
+        exec(compile(cell, "<run-commit cell>", "exec"), namespace)
+    assert calls == []
+
+
 def test_the_run_rehearsal_notebook_says_which_gate_failures_decide_nothing_there():
     """The scripted world reaches the out-of-scope, 4A and 4B failures only on
     candidates that also fail stage 2 (run_rehearsal's docstring)."""

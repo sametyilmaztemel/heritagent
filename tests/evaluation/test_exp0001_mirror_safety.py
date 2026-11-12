@@ -459,3 +459,112 @@ def test_a_failing_mirror_is_tried_again_after_the_interval_or_at_a_terminal_rec
     mirror.on_append({"type": "episode"})
     mirror.on_append({"type": "complete"})  # a terminal record is always snapshotted
     assert attempts == [0.0, 61.0, 61.0]
+
+
+# -- behaviours each pinned by one test ----------------------------------------------------
+
+
+def test_a_restore_record_outlives_a_first_snapshot_that_fails(tmp_path, monkeypatch):
+    a_run(tmp_path / "vm1")
+    assert RunMirror(tmp_path / "vm1", tmp_path / "drive").snapshot() == 1
+    vm2 = tmp_path / "vm2"
+    restore(tmp_path / "drive", vm2)
+    mirror = RunMirror(vm2, tmp_path / "drive", restored=True)
+    real = mirror_module._write_atomic
+
+    def no_manifest(path, data):
+        if path.name.startswith("snapshot-"):
+            raise OSError(5, "Input/output error")
+        real(path, data)
+
+    monkeypatch.setattr(mirror_module, "_write_atomic", no_manifest)
+    assert mirror.snapshot() is None
+    assert (vm2 / mirror_module.RESTORE_RECORD).exists()
+    monkeypatch.undo()
+    assert mirror.snapshot() is not None
+    assert not (vm2 / mirror_module.RESTORE_RECORD).exists()
+
+
+def test_a_torn_mirror_id_is_never_written_from_another_runs_binding(tmp_path):
+    a_run(tmp_path / "vm1")
+    assert RunMirror(tmp_path / "vm1", tmp_path / "drive").snapshot() == 1
+    a_run(tmp_path / "other", start="another run")
+    assert RunMirror(tmp_path / "other", tmp_path / "drive2").snapshot() == 1
+    (tmp_path / "drive" / mirror_module.MIRROR_ID_FILE).write_bytes(b"")
+    with pytest.raises(MirrorError, match="is not a mirror id"):
+        RunMirror(tmp_path / "other", tmp_path / "drive")
+    assert (tmp_path / "drive" / mirror_module.MIRROR_ID_FILE).read_bytes() == b""
+
+
+def test_a_restore_records_the_failing_files_of_every_snapshot_it_skips(tmp_path):
+    local, drive = tmp_path / "vm1", tmp_path / "drive"
+    a_run(local)
+    mirror = RunMirror(local, drive)
+    assert mirror.snapshot() == 1
+    (local / "b.json").write_text("b")
+    assert mirror.snapshot() == 2
+    (local / "c.json").write_text("c")
+    assert mirror.snapshot() == 3
+    files = json.loads((drive / "snapshot-00000003.json").read_text())["files"]
+    for rel in ("b.json", "c.json"):
+        mirror_module._blob(drive, files[rel]["sha256"]).write_bytes(b"bit rot")
+    assert restore(drive, tmp_path / "vm2")["seq"] == 1
+    record = json.loads((tmp_path / "vm2" / mirror_module.RESTORE_RECORD).read_text())
+    assert sorted((s["seq"], s["file"]) for s in record["skipped"]) == [
+        (2, "b.json"), (3, "b.json"), (3, "c.json")]
+
+
+def test_no_blob_is_collected_while_a_kept_manifest_cannot_be_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(mirror_module, "GC_EVERY", 2)
+    local, drive = tmp_path / "vm1", tmp_path / "drive"
+    a_run(local)
+    (local / "x.json").write_text("only in the first snapshot")
+    mirror = RunMirror(local, drive)
+    assert mirror.snapshot() == 1
+    only = mirror_module._blob(drive, json.loads(
+        (drive / "snapshot-00000001.json").read_text())["files"]["x.json"]["sha256"])
+    (local / "x.json").unlink()
+    (drive / "snapshot-00000001.json").write_text("{not a manifest")
+    assert mirror.snapshot() == 2  # collects
+    assert only.exists()
+
+
+def test_a_listing_that_fails_is_never_an_empty_mirror(tmp_path, monkeypatch, capsys):
+    a_run(tmp_path / "vm1")
+    drive = tmp_path / "drive"
+    assert RunMirror(tmp_path / "vm1", drive).snapshot() == 1
+    real, failing = Path.iterdir, [drive]
+
+    def iterdir(self):
+        if self in failing:
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    with pytest.raises(MirrorError, match="cannot be read now"):
+        latest_snapshot(drive)
+    capsys.readouterr()
+    assert cli.main(["run-commit", "--mirror-dir", str(drive)]) == 2
+    assert capsys.readouterr().out == ""
+    for path in drive.glob("snapshot-*.json"):  # blobs only: the listing of blobs fails
+        path.unlink()
+    failing[:] = [drive / "blobs"]
+    with pytest.raises(MirrorError, match="cannot be read now"):
+        mirror_state(drive)
+
+
+def test_a_killed_restores_staging_directory_is_not_restored(tmp_path):
+    a_run(tmp_path / "vm1")
+    assert RunMirror(tmp_path / "vm1", tmp_path / "drive").snapshot() == 1
+    staging = tmp_path / ("vm2" + mirror_module.RESTORING)
+    staging.mkdir()
+    (staging / "left-over.json").write_text("of a killed restore")
+    restore(tmp_path / "drive", tmp_path / "vm2")
+    assert not (tmp_path / "vm2" / "left-over.json").exists()
+
+
+def test_a_leftover_temporary_blob_is_not_a_broken_mirror(tmp_path):
+    drive = tmp_path / "drive"
+    (drive / "blobs" / "ab").mkdir(parents=True)
+    (drive / "blobs" / "ab" / ".ab12.tmp-1").write_bytes(b"part")
+    assert mirror_state(drive) == "empty"

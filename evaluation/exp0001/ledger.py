@@ -121,7 +121,15 @@ class RunLedger:
         self._reserve_checks: list[dict] = []
         self._session_start: float | None = None  # this process's session
         self._write_failed: str | None = None  # set once a write fails: no later write
-        if self._path.exists():
+        try:
+            os.stat(self._path)
+            new = False
+        except FileNotFoundError:
+            new = True
+        except OSError as exc:
+            raise LedgerError(f"{self._path} cannot be read ({exc!r}); nothing was written. Fix "
+                              f"the cause, then run the command again") from exc
+        if not new:
             self._load(run_id)
         elif readonly:
             raise LedgerError(f"{self._path} does not exist")
@@ -129,7 +137,7 @@ class RunLedger:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._write({"type": "header", "schema": LEDGER_SCHEMA, "run_id": run_id,
                          "started_clock": float(clock()), "caps": self._caps,
-                         "wall_clock_basis": WALL_CLOCK_BASIS})
+                         "wall_clock_basis": WALL_CLOCK_BASIS}, header=True)
         if self._state == "running" and not readonly:
             now = float(clock())
             self._session_start = now
@@ -140,7 +148,12 @@ class RunLedger:
 
     def _load(self, run_id: str) -> None:
         data = self._path.read_bytes()
-        if data and not data.endswith(b"\n"):
+        if b"\n" not in data:  # empty, or a crash tore the header: repair_torn_tail cannot help
+            raise LedgerError(f"{self._path} holds no whole record (it is empty, or its header "
+                              f"line is torn), so nothing in it can be kept: start the run again "
+                              f"under a new RUN_ID (a pilot: in a new directory with a new "
+                              f"mirror)")
+        if not data.endswith(b"\n"):
             # a torn last write: appending would glue the next record onto it
             raise LedgerError(f"{self._path} does not end with a newline (torn write); "
                               f"it is never silently salvaged (repair_torn_tail cuts it off "
@@ -215,16 +228,18 @@ class RunLedger:
                 self._aborted.append(attempt)
                 self._model_calls += attempt["reserved"]
 
-    def _write(self, record: dict) -> None:
-        """Append one line. A write that fails with an error (a full disk,
-        say) is cut back off, and this process writes nothing more: a later
-        line glued onto a part-written one would leave a corrupt line inside
-        the ledger, which no repair can cut off (ADR-0008 D5). If the cut
-        fails too, the torn line is the last one, and repair_torn_tail cuts
-        it off. A Stop (KeyboardInterrupt) is not a disk error: a line it
-        left whole, or a file it left untouched, is kept and later writes go
-        on, so the episodes still in flight are recorded; only a part-written
-        line is cut and stops the writes."""
+    def _write(self, record: dict, *, header: bool = False) -> None:
+        """Append one line; ``header`` for the constructor's first line, the
+        only write that makes the file and may remove it again. A write that
+        fails with an error (a full disk, say) is cut back off, and this
+        process writes nothing more: a later line glued onto a part-written
+        one would leave a corrupt line inside the ledger, which no repair can
+        cut off (ADR-0008 D5). If the cut fails too, the torn line is the
+        last one, and repair_torn_tail cuts it off. A Stop (KeyboardInterrupt)
+        is not a disk error: a line it left whole, or a file it left
+        untouched, is kept and later writes go on, so the episodes still in
+        flight are recorded; only a part-written line is cut and stops the
+        writes."""
         if self._readonly:
             raise LedgerError(f"{self._path} is open read-only")
         if self._write_failed is not None:
@@ -234,7 +249,7 @@ class RunLedger:
                               f"line)")
         line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
         try:
-            size = self._size()
+            size = None if header else self._size()
         except OSError as exc:
             raise LedgerError(f"{self._path}: its size could not be read before writing a "
                               f"{record.get('type')} record ({exc!r}); nothing was written. Fix "
@@ -249,13 +264,15 @@ class RunLedger:
             torn = ("" if cut_error is None else
                     f"; the part-written line could not be cut off ({cut_error!r}), so run "
                     f"repair-ledger first")
-            raise LedgerError(f"{self._path}: writing a {record.get('type')} record failed "
+            raise LedgerError(f"{self._path}: writing the {record.get('type')} record failed "
                               f"({exc!r}); nothing more is written in this process{torn}. Fix "
                               f"the cause (free disk space, say), then resume the run in a new "
                               f"process") from exc
         except BaseException:
             try:
                 after = self._size()
+            except FileNotFoundError:
+                after = None  # a header write that made no file
             except OSError:
                 after = -1  # unknown: treated as a part-written line
             if after != size and after != (size or 0) + len(line.encode("utf-8")):
@@ -265,12 +282,12 @@ class RunLedger:
         if self._on_append is not None:
             self._on_append(record)
 
-    def _size(self) -> int | None:
-        return self._path.stat().st_size if self._path.exists() else None
+    def _size(self) -> int:
+        return os.stat(self._path).st_size  # every error is raised, a missing file too
 
     def _cut_back(self, size: int | None) -> OSError | None:
-        """Restore the file to ``size`` bytes (None: it did not exist); the
-        error if that fails, when the torn line stays last."""
+        """Restore the file to ``size`` bytes (None: the header write made
+        it); the error if that fails, when the torn line stays last."""
         try:
             if size is None:
                 self._path.unlink(missing_ok=True)

@@ -152,14 +152,7 @@ def test_a_ledger_that_cannot_be_measured_before_a_write_gives_an_explained_erro
     ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
     ledger.admit("a")
     before = path.read_bytes()
-    real_stat = Path.stat
-
-    def stat(self, *args, **kwargs):
-        if self == path:
-            raise OSError(errno.EIO, "Input/output error")
-        return real_stat(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "stat", stat)
+    stat_fails(monkeypatch, path, errno.EIO)
     with pytest.raises(LedgerError) as raised:
         ledger.record("a", model_calls=1, outcome={})
     monkeypatch.undo()
@@ -170,6 +163,52 @@ def test_a_ledger_that_cannot_be_measured_before_a_write_gives_an_explained_erro
     assert path.read_bytes() == before
     ledger.record("a", model_calls=1, outcome={})
     assert RunLedger(path, run_id=RUN_ID, clock=Clock()).episodes == 1
+
+
+def stat_fails(monkeypatch, path, code, times=None):
+    """``os.stat`` of ``path`` fails with ``code`` (every time, or the first
+    ``times`` times); ``Path.exists`` swallows some such errors."""
+    real_stat, left = os.stat, [times]
+
+    def stat(target, *args, **kwargs):
+        if os.fspath(target) == str(path) and left[0] != 0:
+            if left[0] is not None:
+                left[0] -= 1
+            raise OSError(code, os.strerror(code))
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", stat)
+
+
+@pytest.mark.parametrize("code", [errno.ENOENT, errno.EIO])
+@pytest.mark.parametrize("error", [OSError(errno.ENOSPC, "No space left"), KeyboardInterrupt()])
+def test_a_size_read_that_fails_never_removes_the_ledger(tmp_path, monkeypatch, code, error):
+    """The size read before a write fails once, and the write would fail or
+    be stopped after its whole line: nothing is written, and the records
+    stay."""
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    before = path.read_bytes()
+    fault_once(monkeypatch, path, '"key":"a"', "after", error)
+    stat_fails(monkeypatch, path, code, times=1)
+    with pytest.raises((LedgerError, KeyboardInterrupt)) as raised:
+        ledger.record("a", model_calls=1, outcome={})
+    monkeypatch.undo()
+    assert raised.type is LedgerError and "its size could not be read" in str(raised.value)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("code", [errno.EIO, errno.ENOTDIR])
+def test_a_ledger_that_cannot_be_read_at_the_start_is_never_written(tmp_path, monkeypatch, code):
+    path = tmp_path / "ledger.jsonl"
+    RunLedger(path, run_id=RUN_ID, clock=Clock()).admit("a")
+    before = path.read_bytes()
+    stat_fails(monkeypatch, path, code)
+    with pytest.raises(LedgerError, match="cannot be read"):
+        RunLedger(path, run_id=RUN_ID, clock=Clock())
+    monkeypatch.undo()
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("point", ["before", "half", "after"])
@@ -291,3 +330,21 @@ def test_a_failed_episode_record_leaves_a_ledger_that_reloads(tmp_path, registry
     finally:
         resumed.close()
     assert again.episodes == len(specs)
+
+
+def test_a_write_whose_line_cannot_be_cut_off_says_to_run_repair_ledger_first(tmp_path,
+                                                                             monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    ledger = RunLedger(path, run_id=RUN_ID, clock=Clock())
+    ledger.admit("a")
+    fail_once(monkeypatch, path, '"key":"a"')
+
+    def no_truncate(*args):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "truncate", no_truncate)
+    with pytest.raises(LedgerError) as raised:
+        ledger.record("a", model_calls=1, outcome={})
+    message = str(raised.value)
+    assert "writing the episode record failed" in message
+    assert "could not be cut off" in message and "run repair-ledger first" in message

@@ -66,10 +66,12 @@ missing, unreadable or not its own: exit 2 with the marker). The marker is
 made first, empty, and then filled: a full disk still leaves it. For
 ``run``, ``pilot`` and ``snapshot`` the exceptions are another machine
 taking over the mirror (it holds the run now) and a directory behind its
-mirror: the mirror holds every record, and the command stops with exit 2
-and no marker. A restored directory whose restore note waits for
+mirror or diverged from it (another machine took the run over): the
+command stops with exit 2 and no marker, and records only that directory
+holds stay in it. A restored directory whose restore note waits for
 ``repair-ledger`` gets the marker (exit 2), so the runtime is kept for
-``repair-ledger``; the next snapshot of the same command removes it.
+``repair-ledger``; the last snapshot of a later command (or `snapshot`)
+removes it.
 ``rehearse`` and ``rehearse-run`` never leave the marker: a rehearsal is
 started again, never resumed. The last snapshot is not cut short by a stop.
 ``run``, ``pilot`` and ``snapshot`` hold the run directory's one-writer lock
@@ -519,18 +521,22 @@ def _leave_marker(local: Path, document: Mapping) -> None:
         _say(f"the marker {path} is left empty ({exc!r})")
 
 
-def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True):
+def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True,
+                   restored: bool = False):
     """``RunMirror`` for a command that holds ``local``, or None without a
-    mirror. A refusal while ``local`` holds a ledger leaves the unmirrored
-    marker first, since its newest records may exist only here (the mirror
-    missing, unreadable or another's); not when the mirror holds every
-    record (``NothingUnmirrored``), nor for a rehearsal (``marker=False``).
-    A restore note waiting for ``repair-ledger`` leaves it too, so the
-    runtime that must run ``repair-ledger`` is kept (ADR-0008 D5)."""
+    mirror; ``restored`` when this command has just restored ``local`` (it
+    takes the mirror over, ADR-0008 D5). A refusal while ``local`` holds a
+    ledger leaves the unmirrored marker first, since its newest records may
+    exist only here (the mirror missing, unreadable or another's); not when
+    the mirror holds every record (``NothingUnmirrored``), nor for a
+    rehearsal (``marker=False``), nor on a directory this command has just
+    restored (nothing was written since). A restore note waiting for
+    ``repair-ledger`` leaves it too, so the runtime that must run
+    ``repair-ledger`` is kept (ADR-0008 D5)."""
     if mirror_dir is None:
         return None
     try:
-        return RunMirror(local, mirror_dir)
+        return RunMirror(local, mirror_dir, restored=restored)
     except NothingUnmirrored:
         raise
     except RestoreNotePending as exc:
@@ -538,11 +544,11 @@ def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True)
             _leave_marker(local, {"failures": None, "at": _now(),
                                   "last_error": f"waits for repair-ledger: {exc}"})
             _say(f"UNMIRRORED: {local} waits for repair-ledger; this marker keeps the runtime "
-                 f"so that it can run here. Do what the error below says; the first snapshot "
-                 f"after that removes this marker.")
+                 f"so that it can run here. Do what the error below says; the last snapshot of "
+                 f"that command (or `snapshot`) removes this marker.")
         raise
     except MirrorError as exc:
-        if marker and (local / "ledger.jsonl").exists():
+        if marker and not restored and (local / "ledger.jsonl").exists():
             _leave_marker(local, {"failures": None, "at": _now(),
                                   "last_error": f"not attached to the mirror: {exc}"})
             _say(f"UNMIRRORED: {local} could not be attached to its mirror; its newest records "
@@ -554,24 +560,25 @@ def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True)
 RESTORE_PROGRESS_EVERY = 1000  # files; a run's restore from Drive takes minutes
 
 
-def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
-    """The run or pilot directory from its mirror (ADR-0008 D5). One that
-    holds a run resumes in place (``RunMirror`` checks that it belongs to
-    the mirror and is not behind it); an absent or empty one is restored in
-    full, or starts a new run on a mirror without snapshots. A mirror with
+def _restore_if_missing(local: Path, mirror_dir: Path | None) -> bool:
+    """The run or pilot directory from its mirror (ADR-0008 D5); True when it
+    was restored now. One that holds a run resumes in place (``RunMirror``
+    checks that it belongs to the mirror and is not behind it); an absent or
+    empty one is restored in full, or starts a new run on a mirror without
+    snapshots. A mirror with
     snapshots but none whole, or one that cannot be read now, stops the
     command: a new run never starts over an old one."""
     if mirror_dir is None:
-        return
+        return False
     if local.exists() and any(local.iterdir()):
         if not (local / "ledger.jsonl").exists() and mirror_state(mirror_dir) == "whole":
             raise CliError(f"{local} holds files but no ledger, and the mirror {mirror_dir} "
                            f"holds a run: move {local} away and run the command again to "
                            f"restore the run")
-        return
+        return False
     state = mirror_state(mirror_dir)
     if state == "empty":
-        return  # a new run
+        return False  # a new run
     if state == "broken":
         raise MirrorError(broken_mirror_text(mirror_dir))
 
@@ -582,6 +589,7 @@ def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
     doc = restore(mirror_dir, local, progress)
     (local / UNMIRRORED).unlink(missing_ok=True)  # describes another machine, never mirrored
     _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
+    return True
 
 
 STOPPED = "stopped: every recorded episode is kept; run the same command again to resume"
@@ -673,7 +681,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
     splits, pilot, bank = _manifests(repo)
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     out = Path(args.out_dir)
-    _restore_if_missing(out, args.mirror_dir)
+    restored = _restore_if_missing(out, args.mirror_dir)
     report_path = out / report_name
     if report_path.exists():
         _out(report_path.read_text(encoding="utf-8"))
@@ -695,7 +703,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
                            f"new mirror)")
         if not started.exists():
             _write_json(started, identity)
-        mirror = _attach_mirror(out, args.mirror_dir, marker=not disposable)
+        mirror = _attach_mirror(out, args.mirror_dir, marker=not disposable, restored=restored)
         ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=PILOT_CAPS,
                            session_info=_session_info(gpu, adapter, args.workers,
                                                       args.server_info),
@@ -1534,13 +1542,14 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
     if not disposable:  # a rehearsal checks its own, smaller disk
         _require_run_disk(args.workers, local)
-    _restore_if_missing(local, args.mirror_dir)
+    restored = _restore_if_missing(local, args.mirror_dir)
     adapter = adapter()
     counter = counter()
     record = _run_start(args, local, prepared, adapter, splits, pilot, bank, commit, dirty,
                         counter.identity, _environment(verified))
     with _run_dir_lock(local, marker=not disposable) as lock:  # one writer, before the mirror
-        mirror = _attach_mirror(local, args.mirror_dir, marker=not disposable)
+        mirror = _attach_mirror(local, args.mirror_dir, marker=not disposable,
+                                restored=restored)
         started = time.monotonic()
         budget = None if stop_after_hours is None else stop_after_hours * 3600
 

@@ -415,7 +415,8 @@ def test_the_messages_say_what_to_do_next(tmp_path, capsys):
          "files": {"a": {"sha256": "0" * 64, "size": 1}}}))
     mirror_module._blob(tmp_path / "empty-mirror", "0" * 64).parent.mkdir(parents=True)
     mirror_module._blob(tmp_path / "empty-mirror", "0" * 64).write_bytes(b"bit rot")
-    with pytest.raises(mirror_module.MirrorError, match="no whole snapshot .*Wait a few minutes"):
+    with pytest.raises(mirror_module.MirrorError,
+                       match="no whole snapshot .*delete it .*then run `snapshot`"):
         restore(tmp_path / "empty-mirror", tmp_path / "vm")
     import fcntl
     with open(tmp_path / ".vm.restore-lock", "a+") as lock:  # another restore holds it
@@ -434,3 +435,186 @@ def test_the_restore_record_is_never_snapshotted(command, tmp_path):
     assert RESTORE_RECORD not in latest_snapshot(command.drive)["files"]
     assert command(vm2, "snapshot") == 0 and not (vm2 / RESTORE_RECORD).exists()
     assert RESTORE_RECORD not in latest_snapshot(command.drive)["files"]
+
+
+def fail_before_the_attach(monkeypatch):
+    """The command's model server does not answer: it fails after its
+    restore and before it attaches the mirror. Returns the undo."""
+    real = cli._adapter
+
+    def down(*args):
+        raise cli.CliError("the model server does not answer")
+
+    monkeypatch.setattr(cli, "_adapter", down)
+    return lambda: monkeypatch.setattr(cli, "_adapter", real)
+
+
+def test_only_the_restoring_command_takes_the_mirror_over(command, tmp_path, monkeypatch,
+                                                          capsys):
+    """A directory restored by a command that failed before its first
+    snapshot keeps its restore record; a later command on it is checked
+    like any resume in place, so it never supersedes the episodes another
+    machine mirrored since."""
+    vm1, vm2, vm3 = (tmp_path / f"vm{n}" / "work" for n in (1, 2, 3))
+    assert command(vm1) == 0 and command(vm1) == 0
+    undo = fail_before_the_attach(monkeypatch)
+    assert command(vm2) == 2
+    assert (vm2 / RESTORE_RECORD).exists()
+    undo()
+    assert command(vm3) == 0 and command(vm3) == 0
+    mirrored = mirror_module.read_snapshot_file(command.drive, latest_snapshot(command.drive),
+                                                "ledger.jsonl")
+    capsys.readouterr()
+    assert command(vm2) == 2
+    assert "behind its mirror" in capsys.readouterr().err
+    assert mirror_module.read_snapshot_file(
+        command.drive, latest_snapshot(command.drive), "ledger.jsonl") == mirrored
+
+
+def test_a_restore_record_copied_into_a_stale_directory_grants_nothing(command, tmp_path):
+    vm1, vm2 = tmp_path / "vm1" / "work", tmp_path / "vm2" / "work"
+    assert command(vm1) == 0
+    restore(command.drive, tmp_path / "copy")
+    assert command(vm2) == 0 and command(vm2) == 0
+    shutil.copy(tmp_path / "copy" / RESTORE_RECORD, vm1 / RESTORE_RECORD)
+    assert command(vm1) == 2
+
+
+def test_a_fallback_restore_whose_first_command_failed_resumes_later(command, tmp_path,
+                                                                     monkeypatch):
+    """The later command passes over the snapshot the restore skipped, whose
+    ledger holds records the restored one lacks."""
+    vm1 = tmp_path / "vm1" / "work"
+    assert command(vm1) == 0
+    command.Run.extra = {"derived.json": '{"the same": "every time"}'}
+    assert command(vm1) == 0
+    newest, older = newest_two(command.drive)
+    mirror_module._blob(command.drive, newest["files"]["derived.json"]["sha256"]).write_bytes(
+        b"bit rot")
+    vm2 = tmp_path / "vm2" / "work"
+    undo = fail_before_the_attach(monkeypatch)
+    assert command(vm2) == 2
+    undo()
+    assert command(vm2) == 0
+    assert records(vm2, "restore")[0]["snapshot_seq"] == older["seq"]
+
+
+@pytest.mark.parametrize("victim", ["run-start.json", "trajectories/T-0.jsonl"])
+def test_the_recovery_from_a_blob_that_fails_its_hash_restores_the_run(victim, command,
+                                                                       tmp_path, capsys):
+    """A blob every kept snapshot names holds the wrong content: the
+    errors name the blob file, and the steps they give, followed one by
+    one, end in a restore."""
+    import re
+    vm1, vm2 = tmp_path / "vm1" / "work", tmp_path / "vm2" / "work"
+    for _ in range(4):
+        assert command(vm1) == 0
+    kept = [manifest(command.drive, seq) for seq, _ in mirror_module._snapshot_paths(command.drive)]
+    assert len({doc["files"][victim]["sha256"] for doc in kept}) == 1  # every one names it
+    blob = mirror_module._blob(command.drive, kept[0]["files"][victim]["sha256"])
+    blob.write_bytes(b"bit rot")
+    capsys.readouterr()
+    assert command(vm2) == 2
+    err = capsys.readouterr().err
+    assert str(blob) in err and "do not release that machine" in err
+    if victim == "run-start.json":  # the run notebook reads it before anything else
+        assert cli.main(["run-commit", "--mirror-dir", str(command.drive)]) == 2
+        assert str(blob) in capsys.readouterr().err
+    cell = re.search(r"a new cell `([^`]+)`", err).group(1)
+    exec(cell, {})  # on the machine that holds the run directory
+    assert command(vm1, "snapshot") == 0
+    assert command(vm2) == 0, capsys.readouterr().err
+    assert (vm2 / victim).read_bytes() == (vm1 / victim).read_bytes()
+
+
+@pytest.mark.parametrize("ledger", [b"", b'{"type":"hea'])
+def test_a_restored_ledger_without_a_whole_record_says_to_start_again(ledger, command, tmp_path,
+                                                                      capsys):
+    """An empty ledger, or one whose header is torn, has nothing
+    repair-ledger could keep: no restore note waits, no marker keeps the
+    runtime, and the error says to start again."""
+    vm1, vm2 = tmp_path / "vm1" / "work", tmp_path / "vm2" / "work"
+    vm1.mkdir(parents=True)
+    (vm1 / "run-start.json").write_text(json.dumps(command.Run.start))
+    (vm1 / "ledger.jsonl").write_bytes(ledger)
+    assert command(vm1, "snapshot") == 0
+    capsys.readouterr()
+    assert command(vm2) == 2
+    err = capsys.readouterr().err
+    assert "holds no whole record" in err and "under a new RUN_ID" in err
+    assert "repair-ledger" not in err
+    assert json.loads((vm2 / RESTORE_RECORD).read_text())["pending_note"] is None
+    assert (vm2 / "ledger.jsonl").read_bytes() == ledger
+    assert not (vm2 / cli.UNMIRRORED).exists()
+
+
+def test_a_read_error_right_after_a_restore_leaves_no_marker(command, tmp_path, monkeypatch,
+                                                              capsys):
+    """Nothing was written since the restore, so the runtime need not be
+    kept; the error says to wait and run again."""
+    vm1, vm2 = tmp_path / "vm1" / "work", tmp_path / "vm2" / "work"
+    assert command(vm1) == 0
+    real, calls = mirror_module._blob_names, [0]
+
+    def hiccup(mirror):
+        calls[0] += 1
+        if calls[0] == 3:  # the mirror's state, the restore, then the attach
+            raise OSError(5, "Input/output error")
+        return real(mirror)
+
+    monkeypatch.setattr(mirror_module, "_blob_names", hiccup)
+    capsys.readouterr()
+    assert command(vm2) == 2
+    err = capsys.readouterr().err
+    assert "Input/output error" in err and "wait a few minutes and run the command again" in err
+    assert "UNMIRRORED" not in err and not (vm2 / cli.UNMIRRORED).exists()
+    assert command(vm2) == 0
+
+
+def test_the_refusals_say_what_the_code_does(command, tmp_path, capsys):
+    vm1, vm2 = tmp_path / "vm1" / "work", tmp_path / "vm2" / "work"
+    mirror_a_torn_ledger(command, tmp_path)
+    capsys.readouterr()
+    assert command(vm2) == 2  # only the last snapshot of a command removes the marker
+    assert "the last snapshot of that command (or `snapshot`) removes this marker" in \
+        capsys.readouterr().err
+    path = vm1 / "ledger.jsonl"
+    path.write_bytes(path.read_bytes().splitlines(keepends=True)[0])
+    assert command(vm1, "snapshot") == 2  # `snapshot` restores nothing: `run` does
+    err = capsys.readouterr().err
+    assert "or has diverged from it" in err and "run `run` (or `pilot`) again" in err
+    torn = str(mirror_module._torn_id(tmp_path / MIRROR_ID_FILE, OSError("torn")))
+    assert "If the mirror holds no snapshot yet" in torn and "move the run directory away" in torn
+    (vm2 / RESTORE_RECORD).write_text("{}")
+    with pytest.raises(mirror_module.MirrorError) as raised:
+        mirror_module.restore_record(vm2)
+    assert "nothing else writes it" not in str(raised.value)
+
+
+def test_a_fallback_restore_reads_a_failing_blob_once_and_reports_every_pass(tmp_path,
+                                                                            monkeypatch):
+    local, drive = tmp_path / "local", tmp_path / "drive"
+    ledger = RunLedger(local / "ledger.jsonl", run_id="r", clock=Clock())
+    mirror = RunMirror(local, drive)
+    (local / "a.json").write_text("a")
+    assert mirror.snapshot() == 1
+    (local / "b.json").write_text("b")
+    for key in ("e0", "e1"):
+        ledger.admit(key)
+        assert mirror.snapshot() is not None
+    rotten = mirror_module._blob(drive, manifest(drive, 3)["files"]["b.json"]["sha256"])
+    rotten.write_bytes(b"bit rot")
+    reads, real = [], Path.read_bytes
+
+    def read_bytes(self):
+        if self == rotten:
+            reads.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    calls = []
+    assert restore(drive, tmp_path / "vm2", lambda done, total: calls.append((done, total)))[
+        "seq"] == 1
+    assert len(reads) == 1  # snapshot 3 reads it, snapshot 2 knows it fails
+    totals = [len(manifest(drive, seq)["files"]) for seq in (3, 2, 1)]
+    assert [c for c in calls if c[0] == c[1]] == [(t, t) for t in totals]  # every pass ends

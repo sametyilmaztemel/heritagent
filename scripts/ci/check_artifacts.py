@@ -93,7 +93,22 @@ def _generic_prereg_checks(prereg: dict, err) -> None:
 def _enforce_exp0001_locked_values(manifest: dict, prereg: dict, err) -> None:
     """EXP-0001's locked scientific preregistration: enforced at EVERY
     lifecycle status (preregistered-locked, running, completed, incomplete,
-    aborted) — a status change never exempts the locked values."""
+    aborted) — a status change never exempts the locked values. The
+    decision rules come first: a broken expected_results block never hides
+    them."""
+    # the PRIMARY support criteria are locked decision rules — expectations
+    # never replace them, at any lifecycle status
+    evaluation = manifest.get("evaluation")
+    statistics = evaluation.get("statistics") if isinstance(evaluation, dict) else None
+    if not isinstance(statistics, dict):
+        statistics = {}
+    for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
+                          ("h1_supported_if", LOCKED_H1_CRITERION),
+                          ("seed_consistency", LOCKED_SEED_CRITERION)):
+        actual = statistics.get(field)
+        if actual != locked:
+            err(f"locked primary support criterion {field} changed: "
+                f"{actual!r} != {locked!r}")
     if prereg.get("expected_results_filled") is not True:
         err("preregistration.expected_results_filled must be true (the "
             "preregistration is locked and can never revert to unfilled)")
@@ -200,22 +215,8 @@ def _enforce_exp0001_locked_values(manifest: dict, prereg: dict, err) -> None:
 
     scan(prereg, "preregistration")
 
-    # the PRIMARY support criteria are locked decision rules — expectations
-    # never replace them, at any lifecycle status
-    evaluation = manifest.get("evaluation")
-    statistics = evaluation.get("statistics") if isinstance(evaluation, dict) else None
-    if not isinstance(statistics, dict):
-        statistics = {}
-    for field, locked in (("h2_supported_if", LOCKED_H2_CRITERION),
-                          ("h1_supported_if", LOCKED_H1_CRITERION),
-                          ("seed_consistency", LOCKED_SEED_CRITERION)):
-        actual = statistics.get(field)
-        if actual != locked:
-            err(f"locked primary support criterion {field} changed: "
-                f"{actual!r} != {locked!r}")
 
-
-def check_preregistration(manifest: dict, label: str) -> list[str]:
+def check_preregistration(manifest: dict, label: str, *, bound: bool = False) -> list[str]:
     """Manifest preregistration checks (issue #6, SPEC section 33).
 
     Lifecycle-safe and scoped: a preregistration block claiming
@@ -226,7 +227,9 @@ def check_preregistration(manifest: dict, label: str) -> list[str]:
     the exact prereg (drift still fails CI), and ``preregistered-locked``
     is the only valid pre-execution status. Future experiment manifests
     (EXP-0002, ...) are never constrained by EXP-0001's seeds, criteria
-    strings, gate shape or caps."""
+    strings, gate shape or caps. ``bound``: the file at EXP-0001's own
+    path, checked as EXP-0001 whatever its id or blocks say; a missing
+    preregistration block there is a FAIL line, never a skip."""
     issues: list[str] = []
 
     def err(message: str) -> None:
@@ -234,21 +237,27 @@ def check_preregistration(manifest: dict, label: str) -> list[str]:
 
     experiment = manifest.get("experiment")
     if not isinstance(experiment, dict):
-        return issues  # not an experiment manifest body
+        if not bound:
+            return issues  # not an experiment manifest body
+        experiment = {}
     prereg = experiment.get("preregistration")
-    if prereg is None:
+    if bound and not isinstance(prereg, dict):
+        err(f"is the EXP-0001 manifest, but has no preregistration block (got "
+            f"{type(prereg).__name__}); restore it")
+        prereg = {}
+    elif prereg is None:
         return issues  # pre-preregistration manifests are allowed
-    if not isinstance(prereg, dict):
+    elif not isinstance(prereg, dict):
         err(f"preregistration must be a mapping, got {type(prereg).__name__}")
         return issues
+    else:
+        _generic_prereg_checks(prereg, err)
 
-    _generic_prereg_checks(prereg, err)
-
-    if experiment.get("id") != EXP0001_ID:
+    if experiment.get("id") != EXP0001_ID and not bound:
         return issues  # future experiments: generic checks only
 
     status = experiment.get("status")
-    if status not in EXP0001_LIFECYCLE_STATUSES:
+    if not isinstance(status, str) or status not in EXP0001_LIFECYCLE_STATUSES:
         err(f"invalid EXP-0001 lifecycle status {status!r}; allowed: "
             f"{sorted(EXP0001_LIFECYCLE_STATUSES)}")
     # locked values are enforced REGARDLESS of the (valid or invalid)
@@ -468,7 +477,8 @@ def check_manifests() -> list[str]:
         if not isinstance(data, dict):
             errors.append(f"{rel(path)}: top level is {type(data).__name__}, expected a mapping")
             continue
-        errors.extend(check_preregistration(data, rel(path)))
+        errors.extend(check_preregistration(data, rel(path),
+                                            bound=rel(path) == EXP0001_MANIFEST))
         experiment = data.get("experiment")
         experiment_id = experiment.get("id") if isinstance(experiment, dict) else None
         # bound by its path: editing its own id must not lift the binding

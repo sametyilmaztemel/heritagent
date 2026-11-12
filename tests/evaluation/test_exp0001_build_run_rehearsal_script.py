@@ -116,3 +116,39 @@ def test_a_cached_error_of_a_game_no_longer_played_does_not_fail_the_build(
                                  "text": None, "error": "OSError: gone", "basis": basis}) + "\n")
     code, made = build(builder, monkeypatch, tmp_path, splits)
     assert code == 0 and made == []
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_the_data_are_checked_against_the_manifests_before_any_row_is_made(
+        builder, monkeypatch, tmp_path, splits, matches):  # noqa: F811
+    pilot, bank = PILOTS[splits["manifest_sha256"]], bank_of(splits)
+    events = []
+
+    def verify(*args):
+        events.append(("verify", args))
+        if not matches:
+            raise RuntimeError("a game file the manifests do not hash")
+        return {"release": "0.2.2"}
+
+    def in_process(pool, function, jobs, workers, on_result):
+        for job in jobs:
+            events.append(("row", job[1:]))
+            on_result(function(*job))
+
+    monkeypatch.setattr(builder, "_manifests", lambda: (splits, pilot, bank))
+    monkeypatch.setattr(data, "verify_data", verify)
+    monkeypatch.setattr(builder, "_bounded_map", in_process)
+    monkeypatch.setattr(builder, "start_text", start_text)
+    monkeypatch.setattr(builder, "plan_in_process", plan_in_process)
+    argv = ["--data-root", str(tmp_path / "data"), "--cache", str(tmp_path / "cache"),
+            "--out", str(tmp_path / "script.json"), "--workers", "1"]
+    if matches:
+        assert builder.main(argv) == 0
+    else:
+        with pytest.raises(RuntimeError, match="do not hash"):
+            builder.main(argv)
+    assert events[0] == ("verify", (tmp_path / "data", splits, pilot, bank))
+    assert [kind for kind, _ in events].count("verify") == 1
+    if not matches:
+        assert len(events) == 1 and not (tmp_path / "script.json").exists()
+        assert not (tmp_path / "cache").exists()
