@@ -109,6 +109,6 @@ The run notebook's first cell lists four preconditions. Their status (R, the tak
 1. the run rehearsal passed on a CPU runtime for the run's commit, model and worker count: **not yet** (the owner's step, about 1.5–3 hours with `WORKERS = 16`, M);
 2. the pilot ran, its report was read and the ADR-0011 D6 decision made: done (ADR-0012, owner, 2026-10-19);
 3. the compute cap decided: done (ADR-0012 D9);
-4. the Critic's clearance: **open** (builder-2's duty, on the commit the run will use, posted on #13).
+4. the Critic's clearance: given on 2026-11-12 (builder-2's review workflows; posted on #13 with the commit it covers). A later change to the run path needs its own review.
 
-The two owner decisions to settle before the run were made on 2026-11-12: the G0 prompt's history stays as it is (ADR-0003 note N1), and the teacher is asked for at most 5 proposals per call (ADR-0011 note N1). The second changes the run protocol's hash, and the run rehearsal must be of the run's commit. The other open owner decisions are listed in `research/third-agent/TAKEOVER-2026-10-13.md` §5. Next: the Critic's clearance and the run rehearsal, then the EXP-0001 run.
+The two owner decisions to settle before the run were made on 2026-11-12: the G0 prompt's history stays as it is (ADR-0003 note N1), and the teacher is asked for at most 5 proposals per call (ADR-0011 note N1). The second changes the run protocol's hash, and the run rehearsal must be of the run's commit. The other open owner decisions are listed in `research/third-agent/TAKEOVER-2026-10-13.md` §5; three of them (items 23, 32 and 42) are choices that cannot be made under the same experiment id once the run has started. Next: the run rehearsal, then the EXP-0001 run.
