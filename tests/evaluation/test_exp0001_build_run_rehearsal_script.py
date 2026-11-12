@@ -137,6 +137,9 @@ def test_the_data_are_checked_against_the_manifests_before_any_row_is_made(
 
     monkeypatch.setattr(builder, "_manifests", lambda: (splits, pilot, bank))
     monkeypatch.setattr(data, "verify_data", verify)
+    # the builder reads the installed ALFWorld and TextWorld versions; the tests
+    # jobs do not install them
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.4.2")
     monkeypatch.setattr(builder, "_bounded_map", in_process)
     monkeypatch.setattr(builder, "start_text", start_text)
     monkeypatch.setattr(builder, "plan_in_process", plan_in_process)
