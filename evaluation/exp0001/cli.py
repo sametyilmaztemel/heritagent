@@ -79,6 +79,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -97,6 +98,7 @@ from evaluation.exp0001.mirror import (
     RunMirror,
     check_mirror_dir,
     latest_snapshot,
+    mirror_state,
     restore,
     snapshot_file,
 )
@@ -149,9 +151,18 @@ def _json(path: Path) -> dict:
 
 
 def _write_json(path: Path, document) -> None:
+    """Through a temporary file and a replace: a reader (``serve`` reading
+    its server file, say) never meets a half-written file."""
+    import os
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def git_state(repo: Path) -> tuple[str, bool]:
@@ -285,10 +296,25 @@ def cmd_mirror_check(args) -> int:
 
 
 def cmd_run_commit(args) -> int:
-    data = snapshot_file(args.mirror_dir, "run-start.json") if Path(args.mirror_dir).exists() \
-        else None
+    """The commit of the run in the mirror, or an empty line for a new run:
+    only a mirror without snapshots is a new run (a run notebook starts one
+    on the empty line)."""
+    state = mirror_state(args.mirror_dir)
+    if state == "broken":
+        raise MirrorError(_broken_mirror(args.mirror_dir))
+    data = snapshot_file(args.mirror_dir, "run-start.json") if state == "whole" else None
     print("" if data is None else json.loads(data.decode("utf-8"))["code"]["commit"])
     return 0
+
+
+def _broken_mirror(mirror_dir: Path) -> str:
+    return (f"the mirror {mirror_dir} holds snapshot manifests but no whole snapshot: Google "
+            f"Drive may still be syncing from the last session. Wait a few minutes and run "
+            f"again; never start a new run on this mirror. If a machine still holds the run "
+            f"directory, `snapshot` from that directory makes the mirror whole again. If none "
+            f"does and the mirror stays like this, the snapshot files deleted before are in the "
+            f"Drive Trash for 30 days (restore them to the mirror there), or start the run "
+            f"again under a new RUN_ID")
 
 
 def cmd_prepare_model(args) -> int:
@@ -464,12 +490,35 @@ def _final_snapshot(mirror: RunMirror | None, local: Path, *, marker: bool = Tru
     return False
 
 
+RESTORE_PROGRESS_EVERY = 1000  # files; a run's restore from Drive takes minutes
+
+
 def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
-    if mirror_dir is None or (local.exists() and any(local.iterdir())):
+    """The run or pilot directory from its mirror (ADR-0008 D5). One that
+    holds a run resumes in place (``RunMirror`` checks that it belongs to
+    the mirror and is not behind it); an absent or empty one is restored in
+    full, or starts a new run on a mirror without snapshots. A mirror with
+    snapshots but none whole, or one that cannot be read now, stops the
+    command: a new run never starts over an old one."""
+    if mirror_dir is None:
         return
-    if latest_snapshot(mirror_dir) is None:
-        return  # a fresh run
-    doc = restore(mirror_dir, local)
+    if local.exists() and any(local.iterdir()):
+        if not (local / "ledger.jsonl").exists() and mirror_state(mirror_dir) == "whole":
+            raise CliError(f"{local} holds files but no ledger, and the mirror {mirror_dir} "
+                           f"holds a run: move {local} away and run the command again to "
+                           f"restore the run")
+        return
+    state = mirror_state(mirror_dir)
+    if state == "empty":
+        return  # a new run
+    if state == "broken":
+        raise MirrorError(_broken_mirror(mirror_dir))
+
+    def progress(done: int, total: int) -> None:
+        if done % RESTORE_PROGRESS_EVERY == 0 or done == total:
+            _out(f"[restore] {done}/{total} files from {mirror_dir}")
+
+    doc = restore(mirror_dir, local, progress)
     (local / UNMIRRORED).unlink(missing_ok=True)  # describes another machine, never mirrored
     _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)")
 
@@ -599,7 +648,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
             ledger=ledger, trajectories_dir=out / "trajectories", run_id=run_id,
             code_commit=commit, budgets=protocol_budgets(), workers=args.workers)
         started = _now()
-        report, stopped, mirrored = None, False, False
+        report, stopped, mirrored, broken = None, False, False, None
         try:
             try:
                 measured = run_pilot(executor, pilot, compile_runtime_config(g0, registry),
@@ -613,13 +662,25 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
             freeze_json(report_path, report)
         except KeyboardInterrupt:
             stopped = True
+        except BrokenProcessPool as exc:
+            broken = exc
         finally:
             mirrored = _final_snapshot(mirror, out, marker=not disposable)
+    if broken is not None:
+        raise _worker_died(broken)
     if stopped:  # a rehearsal's records are disposable: it says itself that it stopped
         return 130 if disposable else _stopped(mirrored)
     _out(json.dumps({"measures": report["measures"], "projection": report["projection"]},
                     indent=2))
     return 0 if mirrored else EXIT_UNMIRRORED
+
+
+def _worker_died(exc: BaseException) -> CliError:
+    """A worker process killed (by the memory limit or a full disk): an
+    explained error after the last snapshot, its marker rule unchanged."""
+    return CliError(f"a worker process of the run ended abruptly ({exc}); out of memory or "
+                    f"disk? A High-RAM runtime, or fewer workers, then a rehearsal of that worker "
+                    f"count")
 
 
 def _pilot_report(args, measured, splits, pilot, adapter, prepared, gpu, verified, commit,
@@ -767,6 +828,8 @@ def cmd_rehearse(args) -> int:
         checks["preflight"] = preflight["teacher_reply"] == {"proposals": []}
         _require_schema_compiled(server, check_schema, checks)
         server.outage_seed = attempt_sampling_seed(PILOT_ATTEMPT_SEED, games[len(games) // 2], 1)
+        if mirror_dir is not None:  # a mirror is made without parents: its own new directory
+            Path(mirror_dir).mkdir(parents=True, exist_ok=True)
         try:
             if run() == 130:  # stopped (the stop button, or the kernel): no second pass
                 return _rehearsal_stopped()
@@ -1059,6 +1122,7 @@ def cmd_rehearse_run(args) -> int:
             return code
 
         # pass 1: the blip, then the server dies in seed 11's R2
+        Path(args.mirror_dir).mkdir(parents=True, exist_ok=True)  # made without parents
         try:
             one_pass()
             checks["the server's death stopped the first pass"] = False
@@ -1292,6 +1356,33 @@ def _require_recycled_workers(workers: int) -> None:
 
 GAME_DISK_BYTES = 33 * 2 ** 20  # what an opened game keeps until its process ends (measured)
 RUN_DISK_BYTES = 2 * 2 ** 30  # the rehearsal's run directory and trajectories, with room
+# a run directory's disk per episode: the calibration pilot's largest trajectory was 1.22 MB
+# (its mean 0.36 MB; a trajectory grows with the square of its steps), and a ledger line is
+# about 1 KB
+EPISODE_DISK_BYTES = 1_250_000
+
+
+def _disk_needs(games: int, out_dir: Path | None, out_bytes: int) -> dict[str, int]:
+    """Bytes needed per filesystem: ``games`` under the temporary directory
+    and ``out_bytes`` under ``out_dir``, summed when they share a disk."""
+    import os
+    import tempfile
+    temp = tempfile.gettempdir()
+    if out_dir is None:
+        return {temp: games + out_bytes}
+    existing = next(p for p in (Path(out_dir), *Path(out_dir).absolute().parents) if p.exists())
+    if os.stat(existing).st_dev == os.stat(temp).st_dev:
+        return {temp: games + out_bytes}
+    return {temp: games, str(existing): out_bytes}
+
+
+def _require_free(needs: Mapping[str, int], what: str) -> None:
+    import shutil
+    for where, need in needs.items():
+        free = shutil.disk_usage(where).free
+        if free < need:
+            raise CliError(f"{what} needs about {need / 2 ** 30:.0f} GB of free disk under "
+                           f"{where}; {free / 2 ** 30:.0f} GB are free")
 
 
 def _require_rehearsal_disk(workers: int, out_dir: Path | None = None) -> None:
@@ -1301,25 +1392,35 @@ def _require_rehearsal_disk(workers: int, out_dir: Path | None = None) -> None:
     (the same disk unless it is elsewhere): a full disk would show hours in.
     The mirror's own disk (Drive on Colab) is not measured."""
     import os
-    import shutil
-    import tempfile
     from evaluation.exp0001 import run_rehearsal as rr
     from evaluation.exp0001.episodes import WORKER_TASKS
     census = min(workers, os.cpu_count() or 1) * rr.CENSUS_TASKS_PER_CHILD
     games = max(workers * WORKER_TASKS, census) * GAME_DISK_BYTES
-    temp = tempfile.gettempdir()
-    needs = {temp: games + RUN_DISK_BYTES}
-    if out_dir is not None:
-        existing = next(p for p in (Path(out_dir), *Path(out_dir).absolute().parents)
-                        if p.exists())
-        if os.stat(existing).st_dev != os.stat(temp).st_dev:
-            needs = {temp: games, str(existing): RUN_DISK_BYTES}
-    for where, need in needs.items():
-        free = shutil.disk_usage(where).free
-        if free < need:
-            raise CliError(f"the run rehearsal with {workers} workers needs about "
-                           f"{need / 2 ** 30:.0f} GB of free disk under {where}; "
-                           f"{free / 2 ** 30:.0f} GB are free")
+    _require_free(_disk_needs(games, out_dir, RUN_DISK_BYTES),
+                  f"the run rehearsal with {workers} workers")
+
+
+def _require_run_disk(workers: int, local: Path) -> None:
+    """Before anything is written: room under the temporary directory for
+    TextWorld's copies in the run's worker processes (``WORKER_TASKS``
+    games each, until a process is replaced), and under ``local`` for
+    ``EPISODE_DISK_BYTES`` per episode the cap still allows (ADR-0012 D9),
+    summed when both are one disk. The mirror's disk (Drive) is not
+    measured here."""
+    from evaluation.exp0001.episodes import WORKER_TASKS
+    from evaluation.exp0001.protocol import CAPS
+    recorded = 0
+    ledger = local / "ledger.jsonl"
+    if ledger.exists():
+        for line in ledger.read_bytes().splitlines():
+            try:
+                recorded += json.loads(line).get("type") == "episode"
+            except (ValueError, AttributeError):
+                continue  # a torn last line: repair-ledger's, not this check's
+    remaining = max(CAPS["episodes_max"] - recorded, 0)
+    _require_free(_disk_needs(workers * WORKER_TASKS * GAME_DISK_BYTES, local,
+                              remaining * EPISODE_DISK_BYTES),
+                  f"the run with {workers} workers and {remaining} episodes left under the cap")
 
 
 def _require_run_rehearsal(args, prepared: dict) -> None:
@@ -1351,6 +1452,8 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
     commit, dirty = git_state(repo)
     splits, pilot, bank = _manifests(repo)
     verified = verify_data(args.data_root, splits, pilot, bank)  # seconds; before any episode
+    if not disposable:  # a rehearsal checks its own, smaller disk
+        _require_run_disk(args.workers, local)
     _restore_if_missing(local, args.mirror_dir)
     adapter = adapter()
     counter = counter()
@@ -1377,7 +1480,7 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                          pause_when=pause if budget is not None or pause_when is not None
                          else None,
                          lock=lock)
-        report, stopped, mirrored = None, False, False
+        report, stopped, mirrored, broken = None, False, False, None
         try:
             report = run.run()
         except RunPaused as exc:
@@ -1387,10 +1490,14 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                  f"command again to resume.")
         except KeyboardInterrupt:
             stopped = True
+        except BrokenProcessPool as exc:
+            broken = exc
         finally:
             mirrored = _final_snapshot(mirror, local, marker=not disposable)
             if mirror and mirror.failures:
                 _say(f"[mirror] {mirror.failures} snapshot(s) failed; last: {mirror.last_error}")
+    if broken is not None:
+        raise _worker_died(broken)
     if stopped:
         return 130 if disposable else _stopped(mirrored)
     if report is not None:
@@ -1456,10 +1563,25 @@ def cmd_figures(args) -> int:
 
 
 def cmd_repair_ledger(args) -> int:
-    note = repair_torn_tail(Path(args.run_dir) / "ledger.jsonl")
+    local = Path(args.run_dir)
+    if not (local / "ledger.jsonl").exists():
+        raise CliError(f"{local} holds no run or pilot ledger")
+    with _run_dir_lock(local):  # never under a command that still appends to it
+        note = repair_torn_tail(local / "ledger.jsonl")
     print("the ledger ends with a complete record; nothing to repair" if note is None
           else json.dumps(note))
     return 0
+
+
+def _hours(text: str) -> float:
+    import math
+    try:
+        hours = float(text)
+    except ValueError:
+        hours = math.nan
+    if not math.isfinite(hours) or hours <= 0:
+        raise argparse.ArgumentTypeError(f"a finite number of hours above 0, not {text!r}")
+    return hours
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1535,7 +1657,7 @@ def parser() -> argparse.ArgumentParser:
         else:
             p.add_argument("--local-dir", type=Path, required=True)
             p.add_argument("--run-id", default=None, help="required for a new run")
-            p.add_argument("--stop-after-hours", type=float, default=None,
+            p.add_argument("--stop-after-hours", type=_hours, default=None,
                            help="admit no new episode after this many hours of this session; "
                                 "the run stays resumable (compute-unit budgeting)")
             p.add_argument("--rehearsal-passed", type=Path, required=True,

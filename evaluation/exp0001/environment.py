@@ -56,10 +56,17 @@ def read_pin(env_dir: Path, name: str) -> str:
 
 def installed_versions() -> dict[str, list[str]]:
     """Every distribution this interpreter sees, by canonical name, in the
-    order of ``sys.path`` (an import takes the first)."""
+    order of ``sys.path`` (an import takes the first). One without a name
+    (a ``.dist-info`` without METADATA, left by a broken install) is listed
+    by its path, so the check names it instead of failing."""
     found: dict[str, list[str]] = {}
     for dist in metadata.distributions():
-        found.setdefault(canonical(dist.metadata["Name"]), []).append(dist.version)
+        name = dist.metadata.get("Name")
+        if name:
+            found.setdefault(canonical(name), []).append(dist.version)
+        else:
+            where = getattr(dist, "_path", "an unknown path")
+            found.setdefault(f"a distribution without METADATA at {where}", []).append(None)
     return found
 
 
