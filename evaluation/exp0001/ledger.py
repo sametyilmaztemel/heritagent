@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections.abc import Callable, Mapping
 from fractions import Fraction
 from pathlib import Path
@@ -97,8 +98,10 @@ class RunLedger:
                  on_append: Callable[[dict], None] | None = None, readonly: bool = False):
         """``session_info`` is recorded in this process's session record
         (for example the accelerator); ``on_append`` is called after every
-        appended record, when no other run file is half-written (the run
-        mirror takes its snapshots there). A ``readonly`` ledger reads the
+        appended record (the run mirror takes its snapshots there): every file
+        a ledger record refers to is whole then; the trajectory of an episode
+        still in flight may be half-written, has no record, and a resume
+        replaces it (ADR-0008 D5). A ``readonly`` ledger reads the
         file and never writes, so it opens no session."""
         self._path = Path(path)
         self._clock = clock
@@ -117,6 +120,7 @@ class RunLedger:
         self._notes: list[dict] = []
         self._reserve_checks: list[dict] = []
         self._session_start: float | None = None  # this process's session
+        self._write_failed: str | None = None  # set once a write fails: no later write
         if self._path.exists():
             self._load(run_id)
         elif readonly:
@@ -212,12 +216,34 @@ class RunLedger:
                 self._model_calls += attempt["reserved"]
 
     def _write(self, record: dict) -> None:
+        """Append one line. A write that fails (a full disk, say) is cut back
+        off, and this process writes nothing more: a later line glued onto a
+        part-written one would leave a corrupt line inside the ledger, which
+        no repair can cut off (ADR-0008 D5). If the cut fails too, the torn
+        line is the last one, and repair_torn_tail cuts it off."""
         if self._readonly:
             raise LedgerError(f"{self._path} is open read-only")
+        if self._write_failed is not None:
+            raise LedgerError(f"{self._path}: an earlier write in this process failed "
+                              f"({self._write_failed}); nothing more is written. Resume in a new "
+                              f"process (run repair-ledger first if the ledger ends with a torn "
+                              f"line)")
         line = json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-            handle.flush()
+        size = self._path.stat().st_size if self._path.exists() else None
+        try:
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+                handle.flush()
+        except BaseException as exc:
+            self._write_failed = repr(exc)
+            try:
+                if size is None:
+                    self._path.unlink(missing_ok=True)
+                else:
+                    os.truncate(self._path, size)
+            except OSError:
+                pass  # the torn line stays last: repair_torn_tail cuts it off
+            raise
         if self._on_append is not None:
             self._on_append(record)
 
