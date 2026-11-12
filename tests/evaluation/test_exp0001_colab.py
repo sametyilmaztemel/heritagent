@@ -24,7 +24,13 @@ from evaluation.exp0001.backends import (
 )
 from evaluation.exp0001.episodes import EpisodeExecutor
 from evaluation.exp0001.ledger import RunLedger
-from evaluation.exp0001.mirror import MirrorError, RunMirror, latest_snapshot, restore
+from evaluation.exp0001.mirror import (
+    RESTORE_RECORD,
+    MirrorError,
+    RunMirror,
+    latest_snapshot,
+    restore,
+)
 from evaluation.exp0001.pilot import PILOT_MEASURES
 from evaluation.exp0001.pilot_run import (
     GATE_EPISODES_PER_CANDIDATE,
@@ -76,6 +82,8 @@ def test_a_snapshot_restores_byte_for_byte_and_leaves_a_restore_note(tmp_path):
     assert doc["seq"] == 2
     restored = files(tmp_path / "restored")
     ledger_bytes = restored.pop("ledger.jsonl")
+    record = json.loads(restored.pop(RESTORE_RECORD))  # this machine's, until the first snapshot
+    assert record["snapshot_seq"] == 2 and record["skipped"] == [] and not record["pending_note"]
     assert ledger_bytes.startswith(expected.pop("ledger.jsonl")) and restored == expected
     reopened = RunLedger(tmp_path / "restored" / "ledger.jsonl", run_id="r", clock=Clock())
     assert reopened.notes[0]["type"] == "restore" and reopened.notes[0]["snapshot_seq"] == 2

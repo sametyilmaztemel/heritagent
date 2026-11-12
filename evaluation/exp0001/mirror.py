@@ -13,7 +13,11 @@ Every file is stored once under its content hash
 (``snapshot-<seq>.json``) of path -> hash, written after its blobs, so a
 crash during a snapshot leaves the previous one whole. A restore takes the
 newest snapshot whose blobs all exist and match their hashes, and records
-itself as a ``restore`` note in the ledger.
+itself as a ``restore`` note in the ledger. It also leaves a restore record
+(``.restore.json``, never snapshotted) in the run directory until the
+directory's first snapshot: the snapshot it restored, the snapshots it had
+to skip and why, and a restore note still to be appended when the restored
+ledger ends with a torn line (``repair-ledger`` appends it after its cut).
 
 A blob holds its file gzip-compressed (layout 0.2), still named by the hash
 of the uncompressed file, which every reader checks after decompressing:
@@ -59,7 +63,9 @@ GZIP_LEVEL = 6  # with mtime 0: the same file always makes the same blob
 MIRROR_ID_SCHEMA = "heritagent/exp0001-mirror-id/0.1"
 MIRROR_ID_FILE = "mirror-id.json"  # in the mirror: written once, when the mirror is made
 BINDING_FILE = ".mirror-id.json"  # in the run directory: the id of the mirror it belongs to
-SKIPPED_NAMES = (".lock", "UNMIRRORED.json", BINDING_FILE)  # these describe this machine only
+RESTORE_RECORD = ".restore.json"  # in a restored run directory until its first snapshot
+RESTORE_SCHEMA = "heritagent/exp0001-restore/0.1"
+SKIPPED_NAMES = (".lock", "UNMIRRORED.json", BINDING_FILE, RESTORE_RECORD)  # this machine only
 START_RECORDS = ("run-start.json", "pilot-start.json")
 # Drive uploads the mount's writes in the background, perhaps not in the
 # order they were made (U), and each kept manifest names its own ledger
@@ -79,8 +85,22 @@ class MirrorError(RuntimeError):
     mirror)."""
 
 
+class NothingUnmirrored(MirrorError):
+    """A refusal that leaves no record only on this machine: the mirror
+    holds all the run directory holds (a directory behind its mirror, or a
+    restored one whose restore note waits for ``repair-ledger``)."""
+
+
 class _NotWhole(MirrorError):
     """One snapshot cannot be restored (a file fails its hash or is gone)."""
+
+    def __init__(self, rel: str, reason: str):
+        super().__init__(f"{rel}: {reason}")
+        self.rel = rel
+
+
+class _NotAnId(OSError):
+    """A mirror id file that is there but holds no whole mirror id."""
 
 
 def _sha256(data: bytes) -> str:
@@ -159,8 +179,8 @@ def _unpack(snapshot: Mapping, rel: str, data: bytes) -> bytes:
     try:
         return gzip.decompress(data)
     except (OSError, EOFError, zlib.error) as exc:
-        raise _NotWhole(f"{rel}: the mirrored content does not match its hash (its compressed "
-                        f"blob cannot be read: {exc})") from None
+        raise _NotWhole(rel, f"the mirrored content does not match its hash (its compressed "
+                             f"blob cannot be read: {exc})") from None
 
 
 def _blob_names(mirror: Path) -> set[str]:
@@ -200,19 +220,43 @@ def latest_snapshot(mirror_dir: Path) -> dict | None:
     return next(_whole_snapshots(Path(mirror_dir)), None)
 
 
+def _holds_blobs(mirror: Path) -> bool:
+    """Whether any blob is in the mirror; stops at the first one."""
+    root = mirror / "blobs"
+    if not root.is_dir():
+        return False
+    return any(not blob.name.startswith(".") for prefix in root.iterdir() if prefix.is_dir()
+               for blob in prefix.iterdir())
+
+
 def mirror_state(mirror_dir: Path) -> str:
-    """``"empty"`` (no snapshot manifest: a new run may start here; blobs
-    without any manifest hold nothing a restore could use), ``"whole"`` (a
-    whole snapshot), or ``"broken"`` (manifests, but none whole: Drive may
-    still be syncing, or uploads were lost; never a new run). A mirror that
-    cannot be read now raises MirrorError."""
+    """``"empty"`` (no snapshot manifest and no blob: a new run may start
+    here), ``"whole"`` (a whole snapshot), or ``"broken"`` (manifests or
+    blobs, but no whole snapshot: Drive may still be syncing, or uploads
+    were lost, and the blobs are what a recovery from the Drive Trash
+    needs; never a new run). A mirror that cannot be read now raises
+    MirrorError."""
     mirror = Path(mirror_dir)
     if latest_snapshot(mirror) is not None:
         return "whole"
     try:
-        return "broken" if _snapshot_paths(mirror) else "empty"
+        return "broken" if _snapshot_paths(mirror) or _holds_blobs(mirror) else "empty"
     except OSError as exc:
         raise _unreadable(mirror, exc) from None
+
+
+_RECOVERY = ("Google Drive may still be syncing from the last session. Wait a few minutes and "
+             "run again; never start a new run on this mirror. If a machine still holds the run "
+             "directory, `snapshot` from that directory makes the mirror whole again. If none "
+             "does and the mirror stays like this, the snapshot files deleted before are in the "
+             "Drive Trash for 30 days (restore them to the mirror there), or start the run again "
+             "under a new RUN_ID")
+
+
+def broken_mirror_text(mirror_dir: Path) -> str:
+    """What to do with a mirror that holds snapshot files but no whole
+    snapshot."""
+    return f"the mirror {mirror_dir} holds snapshot files but no whole snapshot: {_RECOVERY}"
 
 
 def snapshot_file(mirror_dir: Path, relpath: str) -> bytes | None:
@@ -275,9 +319,12 @@ def check_mirror_dir(mirror_dir: Path, *, files: int = 20, need_bytes: int = 0,
     if free is not None and free < need_bytes:
         raise MirrorError(
             f"the mirror's filesystem ({mirror_dir}) has {free / 1e9:.1f} GB free of "
-            f"{total / 1e9:.1f} GB, below the {need_bytes / 1e9:.1f} GB a run may need there. "
-            f"Free space on Google Drive: delete files you do not need, then empty the Drive "
-            f"Trash (deleted snapshots stay there for 30 days and count against storage), allow "
+            f"{total / 1e9:.1f} GB, below the {need_bytes / 1e9:.1f} GB asked for (mirror-check "
+            f"--need-gb; a rehearsal or the pilot needs far less than a run). These figures are "
+            f"what the Drive mount reports and may be wrong: compare them with "
+            f"drive.google.com/settings/storage. Free space on Google Drive: delete files you do "
+            f"not need, then empty the Drive Trash (deleted snapshots stay there for 30 days and "
+            f"count against storage), allow "
             f"time for the storage figure to update (up to a few days after many deletions), "
             f"mount Drive again (force_remount=True) and run mirror-check again")
     return {"mirror_dir": str(mirror_dir), "seconds_per_small_file": round(seconds, 4),
@@ -298,11 +345,20 @@ def _read_id(path: Path) -> str | None:
     except FileNotFoundError:
         return None
     except ValueError as exc:
-        raise OSError(f"{path} is not a mirror id ({exc})") from None
+        raise _NotAnId(f"{path} is not a mirror id ({exc})") from None
     if not isinstance(doc, dict) or doc.get("schema") != MIRROR_ID_SCHEMA \
             or not isinstance(doc.get("mirror_id"), str):
-        raise OSError(f"{path} is not a mirror id")
+        raise _NotAnId(f"{path} is not a mirror id")
     return doc["mirror_id"]
+
+
+def _torn_id(path: Path, exc: BaseException) -> MirrorError:
+    return MirrorError(
+        f"{exc}: the file says which run directory the mirror belongs to, and it is torn or "
+        f"empty. If Google Drive was mounted just now, wait a few minutes and run the command "
+        f"again. Otherwise run `snapshot` from the machine that holds the run directory (it "
+        f"writes the file again); if no machine holds it any more, delete {path}, and the next "
+        f"command restores the run from its snapshots and writes a new one")
 
 
 def _id_document(mirror_id: str) -> bytes:
@@ -318,26 +374,38 @@ def _start_identity(files: Mapping[str, Mapping]) -> str | None:
 
 
 def _restore_into(mirror: Path, doc: Mapping, staging: Path,
-                  progress: Callable[[int, int], None] | None) -> None:
-    total = len(doc["files"])
+                  progress: Callable[[int, int], None] | None) -> list[_NotWhole]:
+    """The files of ``doc`` into ``staging``; the files that are not whole,
+    each one (none for a whole snapshot): a restore records every blob that
+    failed, so that later snapshots never trust one by name."""
+    total, failed = len(doc["files"]), []
     if progress is not None:
         progress(0, total)
     for done, (rel, entry) in enumerate(sorted(doc["files"].items()), 1):
         try:
             data = _blob(mirror, entry["sha256"]).read_bytes()
         except FileNotFoundError:
-            raise _NotWhole(f"{rel}: its blob is gone from the mirror (a run may be writing "
-                            f"it)") from None
+            failed.append(_NotWhole(rel, "its blob is gone from the mirror (a run may be "
+                                         "writing it)"))
+            continue
         except OSError as exc:
             raise _unreadable(mirror, exc) from None
-        data = _unpack(doc, rel, data)
+        try:
+            data = _unpack(doc, rel, data)
+        except _NotWhole as exc:
+            failed.append(exc)
+            continue
         if _sha256(data) != entry["sha256"]:
-            raise _NotWhole(f"{rel}: the mirrored content does not match its hash")
+            failed.append(_NotWhole(rel, "the mirrored content does not match its hash"))
+            continue
+        if failed:
+            continue  # checked, not written: this snapshot is not restored
         target = staging / Path(*_relative(rel).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         if progress is not None:
             progress(done, total)
+    return failed
 
 
 def restore(mirror_dir: Path, local_dir: Path,
@@ -348,7 +416,11 @@ def restore(mirror_dir: Path, local_dir: Path,
     target, which is renamed into place at the end. An error, a stop or a
     kill part-way leaves the target as it was; the next restore removes the
     staging directory. The target must be empty or absent: a restore never
-    overwrites a run. ``progress(done, total)`` follows the files."""
+    overwrites a run. ``progress(done, total)`` follows the files.
+
+    A ledger that ends with a torn line is restored as it is, never cut
+    here (ADR-0008 D5): its restore note waits in the restore record until
+    ``repair-ledger`` has cut the line on purpose."""
     import fcntl
     mirror, local = Path(mirror_dir), Path(local_dir)
     local.parent.mkdir(parents=True, exist_ok=True)
@@ -357,39 +429,49 @@ def restore(mirror_dir: Path, local_dir: Path,
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise MirrorError(f"another restore of {local} is running") from None
+            raise MirrorError(f"another restore of {local} is running: wait until it ends "
+                              f"and run the command again") from None
         if local.exists() and any(local.iterdir()):
             raise MirrorError(f"{local} is not empty; a restore never overwrites a run "
                               f"directory")
         shutil.rmtree(staging, ignore_errors=True)  # a killed restore's: no record in it
         try:
             mirror_id = _read_id(mirror / MIRROR_ID_FILE)
+        except _NotAnId as exc:
+            raise _torn_id(mirror / MIRROR_ID_FILE, exc) from None
         except OSError as exc:
             raise _unreadable(mirror, exc) from None
-        failed = []
+        failed, skipped = [], []
         try:
             for doc in _whole_snapshots(mirror):
-                try:
-                    _restore_into(mirror, doc, staging, progress)
-                except _NotWhole as exc:
-                    failed.append(f"snapshot {doc['seq']}: {exc}")
-                    _print_warning(f"[restore] snapshot {doc['seq']} is not whole ({exc}); "
-                                   f"trying the next older one")
-                    shutil.rmtree(staging, ignore_errors=True)
-                    continue
-                break
+                bad = _restore_into(mirror, doc, staging, progress)
+                if not bad:
+                    break
+                failed.append(f"snapshot {doc['seq']}: {'; '.join(map(str, bad))}")
+                skipped += [{"seq": doc["seq"], "file": exc.rel,
+                             "sha256": doc["files"][exc.rel]["sha256"], "reason": str(exc)}
+                            for exc in bad]
+                _print_warning(f"[restore] snapshot {doc['seq']} is not whole "
+                               f"({'; '.join(map(str, bad))}); trying the next older one")
+                shutil.rmtree(staging, ignore_errors=True)
             else:
                 raise MirrorError(f"{mirror} holds no whole snapshot"
-                                  + (f" ({'; '.join(failed)})" if failed else ""))
+                                  + (f" ({'; '.join(failed)})" if failed else "")
+                                  + f". {_RECOVERY}")
             staging.mkdir(exist_ok=True)  # a snapshot of no files
             if mirror_id is not None:  # a mirror written before ids existed has none
                 _write_atomic(staging / BINDING_FILE, _id_document(mirror_id))
+            digest = _sha256(json.dumps(doc, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"))
+            note = {"type": "restore", "snapshot_seq": doc["seq"], "snapshot_sha256": digest}
             ledger = staging / "ledger.jsonl"
-            if ledger.exists():
-                digest = _sha256(json.dumps(doc, sort_keys=True,
-                                            separators=(",", ":")).encode("utf-8"))
-                append_note(ledger, {"type": "restore", "snapshot_seq": doc["seq"],
-                                     "snapshot_sha256": digest})
+            torn = ledger.exists() and not ledger.read_bytes().endswith(b"\n")
+            _write_atomic(staging / RESTORE_RECORD, json.dumps(
+                {"schema": RESTORE_SCHEMA, "snapshot_seq": doc["seq"], "snapshot_sha256": digest,
+                 "skipped": skipped, "pending_note": note if torn else None},
+                sort_keys=True).encode("utf-8"))
+            if ledger.exists() and not torn:
+                append_note(ledger, note)
             if local.exists():
                 local.rmdir()  # empty, checked above
             os.rename(staging, local)
@@ -406,6 +488,59 @@ def _print_warning(message: str) -> None:
         pass  # nobody reads this process's output any more (its notebook kernel died)
 
 
+def restore_record(local_dir: Path) -> dict | None:
+    """The restore record of a run directory restored and not snapshotted
+    since, or None."""
+    path = Path(local_dir) / RESTORE_RECORD
+    try:
+        doc = json.loads(path.read_bytes().decode("utf-8"))
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict) or doc.get("schema") != RESTORE_SCHEMA:
+        raise MirrorError(f"{path} is not a restore record (a restore writes it whole, and "
+                          f"nothing else writes it). Keep {local_dir} and its records as they "
+                          f"are, and report the file before going on")
+    return doc
+
+
+def require_no_pending_note(local_dir: Path) -> None:
+    """A restored run directory whose restore note waits for
+    ``repair-ledger`` is not resumed, snapshotted or taken over."""
+    record = restore_record(local_dir)
+    if record is not None and record.get("pending_note") is not None:
+        raise NothingUnmirrored(_pending_note_text(Path(local_dir)))
+
+
+def _pending_note_text(local: Path) -> str:
+    return (f"{local} was restored from its mirror, and its ledger ends with a torn line (a "
+            f"write a crash interrupted), so its restore note is still to be appended. Run "
+            f"repair-ledger --run-dir {local} (it cuts the line on purpose, keeps the cut bytes "
+            f"and appends both notes), then the command again")
+
+
+def append_pending_restore_note(local_dir: Path) -> dict | None:
+    """The restore note a restore of a ledger with a torn last line left
+    pending, appended once ``repair-ledger`` has cut the line, and cleared
+    from the restore record (ADR-0008 D5). None when no note is pending."""
+    local = Path(local_dir)
+    record = restore_record(local)
+    if record is None or record.get("pending_note") is None:
+        return None
+    note, ledger = record["pending_note"], local / "ledger.jsonl"
+    lines = ledger.read_bytes().splitlines()
+    try:
+        appended = bool(lines) and json.loads(lines[-1]) == note
+    except ValueError:
+        appended = False  # a torn last line: append_note refuses it
+    if not appended:  # else a repair stopped before it cleared the record
+        append_note(ledger, note)
+    _write_atomic(local / RESTORE_RECORD,
+                  json.dumps({**record, "pending_note": None}, sort_keys=True).encode("utf-8"))
+    return note
+
+
 class RunMirror:
     """Snapshots of ``local_dir`` into ``mirror_dir``. Pass ``on_append`` to
     the run ledger: it snapshots at most every ``min_interval_seconds``, and
@@ -416,7 +551,10 @@ class RunMirror:
 
     The mirror must be the run directory's own (``_attach``); every
     snapshot first checks that it still is, so an unmounted Drive fails
-    the snapshot instead of taking it on this machine's disk."""
+    the snapshot instead of taking it on this machine's disk. A run
+    directory restored and not snapshotted since takes the mirror over
+    (ADR-0008 D5), and writes again the blobs its restore found failing
+    their hash when a file of it has that content."""
 
     def __init__(self, local_dir: Path, mirror_dir: Path, *, min_interval_seconds: float = 60.0,
                  clock: Callable[[], float] = time.monotonic,
@@ -431,27 +569,34 @@ class RunMirror:
         self._stale = False  # a snapshot failed: _known may name blobs the mirror lacks
         self.failures = 0
         self.last_error: str | None = None
+        require_no_pending_note(self.local)
+        self._restored = restore_record(self.local)
+        # blobs a restore found failing their hash: never trusted by name
+        self._suspect = {skip["sha256"] for skip in (self._restored or {}).get("skipped", [])}
         try:
-            self._attach()
-            snapshots = _snapshot_paths(self.mirror)
+            snapshots, docs = self._attach()
             self._seq = snapshots[0][0] if snapshots else 0
             self._known = _blob_names(self.mirror)
+            if self._restored is None:  # a restored directory takes the mirror over
+                self._require_not_behind(docs)
             self._token = secrets.token_hex(16)
             _write_atomic(self.mirror / OWNER_FILE,
                           json.dumps({"token": self._token, "pid": os.getpid()}).encode("utf-8"))
         except OSError as exc:
+            where = "" if self.mirror.parent.is_dir() else (
+                f"; if Drive is mounted, its folder {self.mirror.parent} does not exist: check "
+                f"--mirror-dir, or make the folder (the notebooks' mirror-check cell does)")
             raise MirrorError(f"the mirror directory {self.mirror} cannot be used ({exc}); on "
-                              f"Colab, mount Google Drive first") from exc
+                              f"Colab, mount Google Drive first{where}") from exc
 
-    def _attach(self) -> None:
+    def _attach(self) -> tuple[list[tuple[int, Path]], list[dict]]:
         """The mirror checked against the run directory (ADR-0008 D5: one
         run directory, one mirror), and the two bound. A run directory that was
         mirrored before takes only its own mirror, which must exist. Any
-        other takes a mirror without snapshots (and makes it, without
-        parents), or one whose snapshots hold its own start record (a mirror
-        written before ids existed). A run directory behind its mirror's
-        newest whole snapshot is refused: resuming it would overwrite newer
-        records."""
+        other takes a mirror without snapshots or blobs (and makes it,
+        without parents), or one whose snapshots hold its own start record (a
+        mirror written before ids existed). Returns the snapshot listing and
+        the manifests that could be read, newest first, each read once."""
         bound = _read_id(self.local / BINDING_FILE)
         if bound is not None and not self.mirror.is_dir():
             raise MirrorError(f"the mirror directory {self.mirror} cannot be used: it does not "
@@ -461,37 +606,51 @@ class RunMirror:
                               f"run's own mirror")
         if bound is None:
             self.mirror.mkdir(exist_ok=True)  # no parents: an unmounted Drive fails here
-        self._require_own_layout()
-        mine = _read_id(self.mirror / MIRROR_ID_FILE)
+        snapshots = _snapshot_paths(self.mirror)
+        docs = [doc for doc in (_read_snapshot(*s) for s in snapshots) if doc is not None]
+        self._require_own_layout(docs)
+        try:
+            mine = _read_id(self.mirror / MIRROR_ID_FILE)
+        except _NotAnId as exc:
+            mine = self._id_again(bound, docs, exc)
         if bound is not None and mine != bound:
             raise MirrorError(f"{self.mirror} is not the mirror {self.local} was mirrored to "
                               f"(its id {mine}, the run directory's {bound}): give the run's own "
                               f"--mirror-dir")
         if bound is None:
-            snapshots = _snapshot_paths(self.mirror)
             if snapshots:
-                newest = next((doc for doc in (_read_snapshot(*s) for s in snapshots)
-                               if doc is not None), None)
-                theirs = None if newest is None else _start_identity(newest["files"])
+                theirs = None if not docs else _start_identity(docs[0]["files"])
                 if theirs is None or theirs != self._local_start():
                     raise MirrorError(
                         f"{self.mirror} holds the snapshots of another run directory, not of "
                         f"{self.local}: give this run directory its own --mirror-dir (a new "
                         f"run needs a new mirror, a new RUN_ID)")
+            elif _holds_blobs(self.mirror):
+                raise MirrorError(broken_mirror_text(self.mirror))
             if mine is None:
                 mine = secrets.token_hex(16)
                 _write_atomic(self.mirror / MIRROR_ID_FILE, _id_document(mine))
             self.local.mkdir(parents=True, exist_ok=True)
             _write_atomic(self.local / BINDING_FILE, _id_document(mine))
-        self._require_not_behind()
+        return snapshots, docs
 
-    def _require_own_layout(self) -> None:
+    def _id_again(self, bound: str | None, docs: list[dict], exc: OSError) -> str:
+        """A torn or empty mirror id written again from the binding of the
+        run directory whose start record the mirror's newest snapshot holds."""
+        own = self._local_start()
+        if bound is None or not docs or own is None or _start_identity(docs[0]["files"]) != own:
+            raise _torn_id(self.mirror / MIRROR_ID_FILE, exc)
+        _write_atomic(self.mirror / MIRROR_ID_FILE, _id_document(bound))
+        self._warn(f"[mirror] {exc}; written again from {self.local}'s binding, whose start "
+                   f"record the mirror's newest snapshot holds")
+        return bound
+
+    def _require_own_layout(self, docs: list[dict]) -> None:
         """A run continues at the commit it started with, so its mirror
         holds one layout: a mirror with snapshots of another layout is never
         written into, before anything is written."""
-        for seq, path in _snapshot_paths(self.mirror):
-            doc = _read_snapshot(seq, path)
-            if doc is not None and doc["schema"] != MIRROR_SCHEMA:
+        for doc in docs:
+            if doc["schema"] != MIRROR_SCHEMA:
                 raise MirrorError(
                     f"{self.mirror} holds snapshots of the layout {doc['schema']!r}, written by "
                     f"older code; this code writes {MIRROR_SCHEMA!r} and never mixes the two. "
@@ -505,15 +664,18 @@ class RunMirror:
                 return f"{name}:{_sha256(path.read_bytes())}"
         return None
 
-    def _require_not_behind(self) -> None:
+    def _require_not_behind(self, docs: list[dict]) -> None:
         """The complete records of the ledger in the newest whole snapshot
         are the start of the local ledger: the ledger only grows (a repair
         cuts only a torn last line, a restore appends a note), so anything
-        else is a stale or diverged copy."""
+        else is a stale or diverged copy. A directory just restored is not
+        checked: it takes the mirror over."""
         ledger = self.local / "ledger.jsonl"
         if not ledger.exists():
             return
-        for doc in _whole_snapshots(self.mirror):
+        for doc in docs:
+            if not all(entry["sha256"] in self._known for entry in doc["files"].values()):
+                continue
             try:
                 theirs = read_snapshot_file(self.mirror, doc, "ledger.jsonl")
             except MirrorError:
@@ -521,7 +683,7 @@ class RunMirror:
             if theirs is None:
                 return
             if not ledger.read_bytes().startswith(theirs[:theirs.rfind(b"\n") + 1]):
-                raise MirrorError(
+                raise NothingUnmirrored(
                     f"the ledger in the mirror's snapshot {doc['seq']} ({self.mirror}) holds "
                     f"records that {ledger} lacks: this run directory is behind its mirror, "
                     f"and resuming it would overwrite newer records. Move {self.local} away "
@@ -580,10 +742,11 @@ class RunMirror:
                 data = path.read_bytes()
                 digest = _sha256(data)
                 blob = _blob(self.mirror, digest)
-                if digest not in self._known and not blob.exists():
+                if digest in self._suspect or (digest not in self._known and not blob.exists()):
                     for directory in (self.mirror / "blobs", blob.parent):
                         directory.mkdir(exist_ok=True)  # never a parent above the mirror
                     _write_atomic(blob, gzip.compress(data, compresslevel=GZIP_LEVEL, mtime=0))
+                    self._suspect.discard(digest)
                 self._known.add(digest)
                 cached = self._cache[rel] = (key, digest, len(data))
             files[rel] = {"sha256": cached[1], "size": cached[2]}
@@ -592,6 +755,12 @@ class RunMirror:
         _write_atomic(self.mirror / f"snapshot-{seq:08d}.json",
                       json.dumps(doc, sort_keys=True, separators=(",", ":")).encode("utf-8"))
         self._seq = seq
+        if self._restored is not None:  # a later resume in place is checked again
+            (self.local / RESTORE_RECORD).unlink(missing_ok=True)
+            self._restored = None
+        # A manifest of a layout this code cannot read (MirrorError) found by the
+        # collection is raised past this whole snapshot: newer code writes the mirror,
+        # a second writer, which stops this one as a take-over does.
         self._collect(seq)
         return seq
 

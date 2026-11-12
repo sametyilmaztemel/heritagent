@@ -11,7 +11,9 @@ The Colab notebooks call these commands; each one can also be run by hand.
                   every locked package found once, nothing outside the lock
                   but this project, vllm on the PATH from it)
   mirror-check    write, replace, read and time small files in the mirror
-                  directory (on Colab, Google Drive)
+                  directory (on Colab, Google Drive), and report its free space
+                  as the mount reports it (fails below ``--need-gb``, 10 GB
+                  by default)
   run-commit      the code commit a run started at, from its mirror (empty for
                   a new run)
   prepare-model   download and hash one pinned model revision -> prepared.json
@@ -43,7 +45,8 @@ The Colab notebooks call these commands; each one can also be run by hand.
   status          a read-only summary of a run (or pilot) directory
   snapshot        take a snapshot of a run (or pilot) directory now, for example
                   after Drive is mounted again (exit code 3 if it fails)
-  repair-ledger   cut off a torn last ledger line, keeping it on record
+  repair-ledger   cut off a torn last ledger line, keeping it on record, then
+                  append the restore note a restore of that ledger left pending
   figures         paper figures, their tables and captions from a run directory
                   or its mirror (read-only; needs matplotlib)
 
@@ -57,10 +60,15 @@ variable ``HERITAGENT_STOP_WITH_PARENT``), with every recorded episode kept;
 Python's traceback (1). A failed last snapshot leaves ``UNMIRRORED.json`` in
 the run directory, also after an error: the newest records exist only on
 this machine, and the notebooks keep the runtime. So does a SIGTERM while
-the command holds its directory (the stop button's second press). For
-``run``, ``pilot`` and ``snapshot`` the one exception is another machine
-taking over the mirror: it holds the run now, and the command stops with
-exit 2 and no marker. ``rehearse`` and ``rehearse-run`` never leave the
+the command holds its directory (the stop button's second press), and a
+refusal to attach a directory that holds a ledger to its mirror (the mirror
+missing, unreadable or not its own: exit 2 with the marker). The marker is
+made first, empty, and then filled: a full disk still leaves it. For
+``run``, ``pilot`` and ``snapshot`` the exceptions are another machine
+taking over the mirror (it holds the run now), a directory behind its
+mirror, and a restored one whose restore note waits for ``repair-ledger``:
+the mirror holds every record, and the command stops with exit 2 and no
+marker. ``rehearse`` and ``rehearse-run`` never leave the
 marker: a rehearsal is started again, never resumed. The last snapshot is
 not cut short by a stop. ``run``, ``pilot`` and ``snapshot`` hold the run
 directory's one-writer lock from before they touch the mirror until after
@@ -95,10 +103,14 @@ from evaluation.exp0001.data import fetch_data, verify_data
 from evaluation.exp0001.ledger import LedgerError, RunLedger, repair_torn_tail
 from evaluation.exp0001.mirror import (
     MirrorError,
+    NothingUnmirrored,
     RunMirror,
+    append_pending_restore_note,
+    broken_mirror_text,
     check_mirror_dir,
     latest_snapshot,
     mirror_state,
+    read_snapshot_file,
     restore,
     snapshot_file,
 )
@@ -310,24 +322,14 @@ def cmd_mirror_check(args) -> int:
 
 def cmd_run_commit(args) -> int:
     """The commit of the run in the mirror, or an empty line for a new run:
-    only a mirror without snapshots is a new run (a run notebook starts one
-    on the empty line)."""
-    state = mirror_state(args.mirror_dir)
-    if state == "broken":
-        raise MirrorError(_broken_mirror(args.mirror_dir))
-    data = snapshot_file(args.mirror_dir, "run-start.json") if state == "whole" else None
+    only a mirror without snapshots or blobs is a new run (a run notebook
+    starts one on the empty line)."""
+    doc = latest_snapshot(args.mirror_dir)
+    if doc is None and mirror_state(args.mirror_dir) == "broken":
+        raise MirrorError(broken_mirror_text(args.mirror_dir))
+    data = None if doc is None else read_snapshot_file(args.mirror_dir, doc, "run-start.json")
     print("" if data is None else json.loads(data.decode("utf-8"))["code"]["commit"])
     return 0
-
-
-def _broken_mirror(mirror_dir: Path) -> str:
-    return (f"the mirror {mirror_dir} holds snapshot manifests but no whole snapshot: Google "
-            f"Drive may still be syncing from the last session. Wait a few minutes and run "
-            f"again; never start a new run on this mirror. If a machine still holds the run "
-            f"directory, `snapshot` from that directory makes the mirror whole again. If none "
-            f"does and the mirror stays like this, the snapshot files deleted before are in the "
-            f"Drive Trash for 30 days (restore them to the mirror there), or start the run "
-            f"again under a new RUN_ID")
 
 
 def cmd_prepare_model(args) -> int:
@@ -495,12 +497,46 @@ def _final_snapshot(mirror: RunMirror | None, local: Path, *, marker: bool = Tru
         if not marker:
             _say(f"the rehearsal's last snapshot failed ({error or mirror.last_error})")
             return False
-        _write_json(path, {"failures": mirror.failures,
-                           "last_error": error or mirror.last_error, "at": _now()})
+        _leave_marker(local, {"failures": mirror.failures,
+                              "last_error": error or mirror.last_error, "at": _now()})
     _say(f"UNMIRRORED: the last snapshot failed ({error or mirror.last_error}); the newest "
          f"records of {local} exist only on this machine. Mount Google Drive again and run "
          f"`snapshot` before the runtime is released.")
     return False
+
+
+def _leave_marker(local: Path, document: Mapping) -> None:
+    """The unmirrored marker: first an empty file, which is all the
+    notebooks look for, then its content, best effort. A full disk fails
+    the second write (a temporary file and a replace), never the first."""
+    path = local / UNMIRRORED
+    path.touch()
+    try:
+        _write_json(path, document)
+    except OSError as exc:
+        _say(f"the marker {path} is left empty ({exc!r})")
+
+
+def _attach_mirror(local: Path, mirror_dir: Path | None, *, marker: bool = True):
+    """``RunMirror`` for a command that holds ``local``, or None without a
+    mirror. A refusal while ``local`` holds a ledger leaves the unmirrored
+    marker first, since its newest records may exist only here (the mirror
+    missing, unreadable or another's); not when the mirror holds every
+    record (``NothingUnmirrored``), nor for a rehearsal (``marker=False``)."""
+    if mirror_dir is None:
+        return None
+    try:
+        return RunMirror(local, mirror_dir)
+    except NothingUnmirrored:
+        raise
+    except MirrorError as exc:
+        if marker and (local / "ledger.jsonl").exists():
+            _leave_marker(local, {"failures": None, "at": _now(),
+                                  "last_error": f"not attached to the mirror: {exc}"})
+            _say(f"UNMIRRORED: {local} could not be attached to its mirror; its newest records "
+                 f"may exist only on this machine. Fix what the error below says, then run "
+                 f"`snapshot` before the runtime is released.")
+        raise
 
 
 RESTORE_PROGRESS_EVERY = 1000  # files; a run's restore from Drive takes minutes
@@ -525,7 +561,7 @@ def _restore_if_missing(local: Path, mirror_dir: Path | None) -> None:
     if state == "empty":
         return  # a new run
     if state == "broken":
-        raise MirrorError(_broken_mirror(mirror_dir))
+        raise MirrorError(broken_mirror_text(mirror_dir))
 
     def progress(done: int, total: int) -> None:
         if done % RESTORE_PROGRESS_EVERY == 0 or done == total:
@@ -573,9 +609,9 @@ def _marker_on_sigterm(local: Path):
 
     def terminated(signum, frame):
         try:
-            _write_json(local / UNMIRRORED, {"failures": None, "at": _now(),
-                                             "last_error": "terminated (SIGTERM) before its "
-                                                           "last snapshot was confirmed"})
+            _leave_marker(local, {"failures": None, "at": _now(),
+                                  "last_error": "terminated (SIGTERM) before its last snapshot "
+                                                "was confirmed"})
         except Exception as exc:  # noqa: BLE001 - say so; the process ends either way
             _say(f"UNMIRRORED: the marker could not be written ({exc!r}); the newest records "
                  f"of {local} may exist only on this machine. Run `snapshot` before the "
@@ -647,7 +683,7 @@ def _pilot(args, *, gpu: dict, prepared: dict, adapter, counter, run_id: str = P
                            f"new mirror)")
         if not started.exists():
             _write_json(started, identity)
-        mirror = RunMirror(out, args.mirror_dir) if args.mirror_dir else None
+        mirror = _attach_mirror(out, args.mirror_dir, marker=not disposable)
         ledger = RunLedger(out / "ledger.jsonl", run_id=run_id, clock=time.time, caps=PILOT_CAPS,
                            session_info=_session_info(gpu, adapter, args.workers,
                                                       args.server_info),
@@ -1395,7 +1431,9 @@ def _require_free(needs: Mapping[str, int], what: str) -> None:
         free = shutil.disk_usage(where).free
         if free < need:
             raise CliError(f"{what} needs about {need / 2 ** 30:.0f} GB of free disk under "
-                           f"{where}; {free / 2 ** 30:.0f} GB are free")
+                           f"{where}; {free / 2 ** 30:.0f} GB are free (GB here: 2**30 bytes, "
+                           f"GiB). Free space there (delete files you no longer need under it) "
+                           f"or use a runtime with a larger disk, then run the command again")
 
 
 def _require_rehearsal_disk(workers: int, out_dir: Path | None = None) -> None:
@@ -1473,7 +1511,7 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
     record = _run_start(args, local, prepared, adapter, splits, pilot, bank, commit, dirty,
                         counter.identity, _environment(verified))
     with _run_dir_lock(local, marker=not disposable) as lock:  # one writer, before the mirror
-        mirror = RunMirror(local, args.mirror_dir) if args.mirror_dir else None
+        mirror = _attach_mirror(local, args.mirror_dir, marker=not disposable)
         started = time.monotonic()
         budget = None if stop_after_hours is None else stop_after_hours * 3600
 
@@ -1525,7 +1563,7 @@ def cmd_snapshot(args) -> int:
     if not (local / "ledger.jsonl").exists():
         raise CliError(f"{local} holds no run or pilot ledger")
     with _run_dir_lock(local):  # a command still running takes its own snapshots
-        if not _final_snapshot(RunMirror(local, args.mirror_dir), local):
+        if not _final_snapshot(_attach_mirror(local, args.mirror_dir), local):
             return EXIT_UNMIRRORED
     _out(f"snapshot of {local} taken in {args.mirror_dir}")
     return 0
@@ -1581,8 +1619,11 @@ def cmd_repair_ledger(args) -> int:
         raise CliError(f"{local} holds no run or pilot ledger")
     with _run_dir_lock(local):  # never under a command that still appends to it
         note = repair_torn_tail(local / "ledger.jsonl")
+        restored = append_pending_restore_note(local)  # after the cut, never before
     print("the ledger ends with a complete record; nothing to repair" if note is None
           else json.dumps(note))
+    if restored is not None:
+        print(json.dumps(restored))
     return 0
 
 
