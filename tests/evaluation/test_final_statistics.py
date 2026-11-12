@@ -525,3 +525,81 @@ def test_the_median_is_the_middle_not_the_mean():
     assert a["total_tokens_to_success"]["mean"]["exact"] == "310/1"
     with pytest.raises(FinalStatisticsError, match="must be a list or tuple"):
         summarize_adaptation_cost(set(tasks), outcomes)
+
+
+def test_arm_a_rates_count_its_one_run_once_per_seed():
+    """D7: arm A's single run stands in for every seed, so its pooled rate
+    equals its per-seed rate."""
+    # an incomplete record carries the rates without running the bootstrap
+    record = analyze_final_evaluation(make_data(a_eval=lambda i: i < 30,
+                                                a_reg=lambda t: t != "reg-00", complete=False,
+                                                reason="descriptive rates only"))
+    success = record["t_eval"]["success_rate"]["A"]
+    regression = record["t_reg"]["regression_rate"]["A"]
+    for seed in MINING_SEEDS:
+        assert success["per_seed"][str(seed)] == {"count": 30, "recorded": 134,
+                                                  "rate": {"exact": "15/67", "float": 15 / 67}}
+        assert regression["per_seed"][str(seed)] == {"count": 1, "recorded": 40,
+                                                     "rate": {"exact": "1/40", "float": 1 / 40}}
+    assert success["pooled"]["exact"] == "15/67" and regression["pooled"]["exact"] == "1/40"
+
+
+@pytest.mark.parametrize("change,message", [
+    ({"seed": True}, "bootstrap seed must be an explicit int"),
+    ({"seed": None}, "bootstrap seed must be an explicit int"),
+    ({"denominator": 0}, "denominator must be a positive int"),
+    ({"denominator": True}, "denominator must be a positive int"),
+    ({"numerators": []}, "bootstrap requires at least one cluster"),
+    ({"numerators": [1, 4]}, r"cluster delta 1 must be an int numerator with \|delta\| <= 1"),
+    ({"numerators": [True]}, "cluster delta 0 must be an int numerator"),
+    ({"numerators": [0.5]}, "cluster delta 0 must be an int numerator"),
+    ({"n_resamples": 0}, "n_resamples must be a positive int"),
+    ({"n_resamples": True}, "n_resamples must be a positive int"),
+    ({"confidence": 1.0}, r"confidence must be in \(0, 1\)"),
+    ({"confidence": 0}, r"confidence must be in \(0, 1\)"),
+])
+def test_bootstrap_inputs_outside_the_rule_fail_closed(change, message):
+    args = {"numerators": [1, -1, 0], "denominator": 3, "seed": 0, "n_resamples": 10,
+            "confidence": 0.95, **change}
+    numerators, denominator = args.pop("numerators"), args.pop("denominator")
+    with pytest.raises(FinalStatisticsError, match=message):
+        exact_cluster_bootstrap(numerators, denominator, **args)
+
+
+@pytest.mark.parametrize("data,message", [
+    (_with(BASE, t_eval_task_ids=("",) + T_EVAL[1:]), "T_eval task ids must be non-empty strings"),
+    (_with(BASE, t_reg_task_ids=(7,) + T_REG[1:]), "T_reg task ids must be non-empty strings"),
+])
+def test_task_ids_that_are_not_names_fail_closed(data, message):
+    with pytest.raises(FinalStatisticsError, match=message):
+        analyze_final_evaluation(data)
+
+
+def test_a_genome_that_is_not_a_mapping_fails_closed(registry):  # noqa: F811
+    with pytest.raises(FinalStatisticsError, match="genome must be a dict, got list"):
+        measure_genome_size([], registry, _WordCounter())
+
+
+def test_a_genome_size_entry_that_is_not_a_mapping_fails_closed(registry):  # noqa: F811
+    sizes, _ = _sizes(registry)
+    sizes[("B", 23)] = 3
+    with pytest.raises(FinalStatisticsError, match=r"genome size \('B', 23\) must be a mapping"):
+        summarize_genome_sizes(sizes)
+
+
+@pytest.mark.parametrize("tasks", [[], ["t-0", "t-0"], ["t-0", ""], ["t-0", 1]])
+def test_transfer_task_ids_must_be_distinct_names(tasks):
+    outcomes = {key: {} for key in [("A", None)] + [(a, s) for a in ("B", "C")
+                                                    for s in MINING_SEEDS]}
+    with pytest.raises(FinalStatisticsError,
+                       match="transfer task ids must be distinct non-empty strings"):
+        summarize_adaptation_cost(tasks, outcomes)
+
+
+def test_a_transfer_run_that_is_not_a_mapping_fails_closed():
+    tasks = ["t-0"]
+    outcomes = {key: {"t-0": TransferOutcome(True, 1, 1)}
+                for key in [("A", None)] + [(a, s) for a in ("B", "C") for s in MINING_SEEDS]}
+    outcomes[("C", 41)] = [TransferOutcome(True, 1, 1)]
+    with pytest.raises(FinalStatisticsError, match="arm C run 41 must be a mapping"):
+        summarize_adaptation_cost(tasks, outcomes)

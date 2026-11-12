@@ -326,3 +326,27 @@ def test_the_cell_tau_r_decides_whether_a_4a_failure_makes_a_cell_unidentifiable
         assert cell["identifiable"] is True and cell["hypothetical_promote"] == ["b"]
     loose = grid["cells"]["tau_c=0.08|tau_r=0.05"]
     assert loose["identifiable"] is False and loose["unidentified_stage2"] == ["a"]
+
+
+def test_a_harmful_pair_whose_winner_leaves_a_cell_eliminates_no_one_there(tmp_path):
+    """a (contribution 0.9) eliminates b (0.1) in the primary run. a's 4A
+    drop is 1/40, above tau_r 0.02, so the tau_r=0.02 cells hold b alone
+    and the pair, collected for the primary set, no longer applies: b is
+    promoted there (ADR-0012 D7)."""
+    world = build_world(tmp_path, candidates=("a", "b"),
+                        ablation_deltas={"a": 0.9, "b": 0.1},
+                        interaction={"both": (False, ()), "neither": (True, ())})
+    orch, somatic, cig_store, runner, inputs, registry = world
+    runner.set("treg-a-39", "with_trait", False, ("a",))
+    outcome = orch.run(inputs)
+    assert outcome.verdicts == {"a": "promote", "b": "reject"}
+    grid = orch.sensitivity_recomputation("b")
+    assert grid["primary_eligible"] == ["a", "b"]
+    for tau_c in (0.03, 0.05, 0.08):
+        cell = grid["cells"][f"tau_c={tau_c}|tau_r=0.02"]
+        assert (cell["identifiable"], cell["hypothetical_eligible"],
+                cell["eliminated_by_interaction"], cell["hypothetical_promote"]) == (
+            True, ["b"], [], ["b"])
+        primary = grid["cells"][f"tau_c={tau_c}|tau_r=0.03"]
+        assert (primary["hypothetical_eligible"], primary["eliminated_by_interaction"],
+                primary["hypothetical_promote"]) == (["a", "b"], ["b"], ["a"])

@@ -56,19 +56,14 @@ TAU_K_TOKENS = 512
 OVERHEAD_THRESHOLD_TEXT = "expression_tokens <= 512 (tau_k)"
 
 
-def drop_within(successes: int, total: int, tau: float) -> bool:
-    """Exact ``1 - successes/total <= tau`` in rational arithmetic.
-
-    A drop of exactly tau must pass: with binary floats 1 - 38/40 is
-    0.050000000000000044, which would make the tau_r = 0.05 sensitivity cell
-    reject 2/40 and collapse it onto the tau_r = 0.03 cell."""
-    return Fraction(total - successes, total) <= Fraction(repr(tau))
-
-
 def paired_drop_within(successes_with: int, successes_without: int, total: int,
                        tau: float) -> bool:
     """Exact ``(successes_without - successes_with) / total <= tau`` (ADR-0009
-    D1): the trait's net loss against G0 at the same settings."""
+    D1): the trait's net loss against G0 at the same settings.
+
+    A drop of exactly tau must pass: with binary floats 1 - 38/40 is
+    0.050000000000000044, which would make the tau_r = 0.05 sensitivity cell
+    (ADR-0012 D7) reject 2/40 and collapse it onto the tau_r = 0.03 cell."""
     return Fraction(successes_without - successes_with, total) <= Fraction(repr(tau))
 
 

@@ -6,7 +6,8 @@ Default mode (offline, gates PRs):
 2. the example genomes pass the EAG loader (schema + semantic checks): the
    doc example in architecture/eag-v0-schema.md and the G0 seed genome;
 3. every tracked experiment manifest parses as a YAML mapping (style lint is
-   yamllint's job, see .yamllint.yaml);
+   yamllint's job, see .yamllint.yaml), and EXP-0001's locked values equal
+   the constants the run executes;
 4. every relative Markdown link in a tracked *.md file resolves.
 
 --external-links instead checks the citations in research/**/*.md for link
@@ -60,6 +61,8 @@ LOCKED_MINING_SEEDS = [11, 23, 41]
 LOCKED_H2_CRITERION = "C-B >= +5pp on T_eval, CI excl. 0, AND reg(C) < reg(B), CI excl. 0"
 LOCKED_H1_CRITERION = "C-A > 0, CI excl. 0"
 LOCKED_SEED_CRITERION = "direction holds in >= 2/3 mining seeds"
+LOCKED_PRIMARY_STATISTIC = "cluster bootstrap 95% CI over tasks, 10k resamples"
+LOCKED_LIFETIME_PAIRING = "first-success-first-failure"  # ADR-0007 E1; no code constant
 
 
 def _valid_iso_date(value) -> bool:
@@ -249,6 +252,82 @@ def check_preregistration(manifest: dict, label: str) -> list[str]:
     _enforce_exp0001_locked_values(manifest, prereg, err)
     return issues
 
+
+def exp0001_code_bindings() -> list[tuple[str, object, str]]:
+    """(manifest path, value the run executes, its source) for the locked
+    EXP-0001 values that a code constant carries. Each path is read in its
+    own parent block, so a value that also appears elsewhere in the
+    manifest (mining_seeds under compute_cap) cannot stand in for it."""
+    from evaluation.benchmarks.alfworld.splits import POOL_PER_FAMILY_MIN, T_EVAL_SIZE
+    from evaluation.exp0001 import protocol
+    from evaluation.exp0001.benefit_bank import BANK_PER_FAMILY
+    from evaluation.metrics import final_statistics
+    from inheritance.interaction import HARMFUL_PAIR_DELTA
+    from inheritance.overlay import EVAL_TEMPERATURE, evaluation_settings
+    from inheritance.regression import REGRESSION_TASK_COUNT, TAU_K_TOKENS
+    from runtime.seed_g0 import EPISODE_MAX_STEPS
+
+    return [
+        ("evaluation.mining_seeds", list(final_statistics.MINING_SEEDS),
+         "final_statistics.MINING_SEEDS"),
+        ("evaluation.mining_seeds", list(protocol.MINING_SEEDS), "protocol.MINING_SEEDS"),
+        ("evaluation.statistics.primary", LOCKED_PRIMARY_STATISTIC,
+         "check_artifacts.LOCKED_PRIMARY_STATISTIC"),
+        ("environment.splits.T_eval.size", T_EVAL_SIZE, "splits.T_EVAL_SIZE"),
+        ("environment.splits.T_reg.size", REGRESSION_TASK_COUNT,
+         "regression.REGRESSION_TASK_COUNT"),
+        ("environment.splits.T_mine.per_family_min", POOL_PER_FAMILY_MIN["t_mine"],
+         "splits.POOL_PER_FAMILY_MIN['t_mine']"),
+        ("environment.splits.T_gate.benefit_bank.per_family", BANK_PER_FAMILY,
+         "benefit_bank.BANK_PER_FAMILY"),
+        ("environment.episode_max_steps", EPISODE_MAX_STEPS, "seed_g0.EPISODE_MAX_STEPS"),
+        ("model.eval_temperature", EVAL_TEMPERATURE, "overlay.EVAL_TEMPERATURE"),
+        ("model.eval_temperature", evaluation_settings().temperature,
+         "overlay.evaluation_settings().temperature"),
+        ("model.mining_temperature", protocol.MINING_TEMPERATURE,
+         "protocol.MINING_TEMPERATURE"),
+        ("genome.candidate_set.cap", protocol.CANDIDATE_CAP, "protocol.CANDIDATE_CAP"),
+        ("inheritance.expression_overhead_cap_tokens", TAU_K_TOKENS,
+         "regression.TAU_K_TOKENS"),
+        ("inheritance.stages.interaction.harmful_pair_threshold", HARMFUL_PAIR_DELTA,
+         "interaction.HARMFUL_PAIR_DELTA"),
+        ("run_protocol.lifetime.attempts_per_task", protocol.LIFETIME_ATTEMPTS_PER_TASK,
+         "protocol.LIFETIME_ATTEMPTS_PER_TASK"),
+        ("run_protocol.lifetime.temperature", protocol.MINING_TEMPERATURE,
+         "protocol.MINING_TEMPERATURE"),
+        ("run_protocol.lifetime.pairing", LOCKED_LIFETIME_PAIRING,
+         "check_artifacts.LOCKED_LIFETIME_PAIRING"),
+        ("run_protocol.t_reg.size", protocol.T_REG_SIZE, "protocol.T_REG_SIZE"),
+        ("run_protocol.t_reg.seed", protocol.T_REG_SEED, "protocol.T_REG_SEED"),
+        ("run_protocol.benefit_bank.per_family", BANK_PER_FAMILY,
+         "benefit_bank.BANK_PER_FAMILY"),
+    ]
+
+
+def _same(actual, expected) -> bool:
+    """Equal and of the same type, so 1 never stands in for 1.0 or True."""
+    if isinstance(expected, list):
+        return isinstance(actual, list) and len(actual) == len(expected) and \
+            all(_same(a, e) for a, e in zip(actual, expected))
+    return type(actual) is type(expected) and actual == expected
+
+
+def check_exp0001_code_binding(manifest: dict, label: str) -> list[str]:
+    """The locked EXP-0001 manifest values equal the constants the run
+    executes (SPEC section 33): a manifest edit, or a code edit, that
+    separates them fails CI. Change both only through a pre-registered
+    amendment."""
+    issues = []
+    for path, expected, source in exp0001_code_bindings():
+        node = manifest
+        for key in path.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+        if not _same(node, expected):
+            issues.append(f"{label}: {path} is {node!r}, but {source} is {expected!r}; the "
+                          f"manifest is locked, so restore the value or pre-register an "
+                          f"amendment")
+    return issues
+
 FENCED_BLOCK = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1", re.S | re.M)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 MD_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'(][^)]*)?\s*\)")
@@ -384,6 +463,9 @@ def check_manifests() -> list[str]:
             errors.append(f"{rel(path)}: top level is {type(data).__name__}, expected a mapping")
             continue
         errors.extend(check_preregistration(data, rel(path)))
+        experiment = data.get("experiment")
+        if isinstance(experiment, dict) and experiment.get("id") == EXP0001_ID:
+            errors.extend(check_exp0001_code_binding(data, rel(path)))
     print(f"manifests: {len(paths)} checked")
     return errors
 

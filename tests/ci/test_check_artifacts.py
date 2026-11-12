@@ -412,8 +412,8 @@ def test_required_prereg_sections_must_exist():
 
 
 def _load_manifest():
-    """Parse the REAL tracked EXP-0001 manifest (requires pyyaml; skipped
-    in envs without it — the CI artifacts job always has it)."""
+    """Parse the REAL tracked EXP-0001 manifest (requires pyyaml, which the
+    dev extra installs for the CI tests jobs; skipped where it is missing)."""
     yaml = pytest.importorskip("yaml")
     root = Path(__file__).resolve().parents[2]
     path = root / "experiments" / "manifests" / "EXP-0001-minimal-cig.yaml"
@@ -425,3 +425,81 @@ def test_real_exp0001_manifest_satisfies_prereg_invariants(ca):
     invariant checker."""
     data = _load_manifest()
     assert ca.check_preregistration(data, "EXP-0001-minimal-cig.yaml") == []
+
+
+def test_the_real_manifest_names_the_values_the_run_executes(ca):
+    """SPEC section 33: each locked value equals its code constant."""
+    assert ca.check_exp0001_code_binding(_load_manifest(), "EXP-0001-minimal-cig.yaml") == []
+
+
+def _drifted(value):
+    if isinstance(value, list):
+        return value[:-1] + [value[-1] + 1]
+    if isinstance(value, str):
+        return value + " (edited)"
+    return value + (1 if isinstance(value, int) else 0.25)
+
+
+# every locked value with a code constant; a binding row removed fails here
+@pytest.mark.parametrize("path", sorted({
+    "evaluation.mining_seeds", "evaluation.statistics.primary",
+    "environment.splits.T_eval.size", "environment.splits.T_reg.size",
+    "environment.splits.T_mine.per_family_min",
+    "environment.splits.T_gate.benefit_bank.per_family", "environment.episode_max_steps",
+    "model.eval_temperature", "model.mining_temperature", "genome.candidate_set.cap",
+    "inheritance.expression_overhead_cap_tokens",
+    "inheritance.stages.interaction.harmful_pair_threshold",
+    "run_protocol.lifetime.attempts_per_task", "run_protocol.lifetime.pairing",
+    "run_protocol.lifetime.temperature", "run_protocol.t_reg.size",
+    "run_protocol.t_reg.seed", "run_protocol.benefit_bank.per_family"}))
+def test_a_locked_value_edited_in_its_own_block_fails_the_binding(ca, path):
+    """The same list or number elsewhere in the manifest (compute_cap's
+    mining_seeds, the budgets' 512) never stands in for the edited one."""
+    manifest = _load_manifest()
+    *parents, key = path.split(".")
+    node = manifest
+    for parent in parents:
+        node = node[parent]
+    node[key] = _drifted(node[key])
+    issues = ca.check_exp0001_code_binding(manifest, "m")
+    assert issues and all(issue.startswith(f"m: {path} is ") for issue in issues)
+
+
+def test_a_value_of_another_type_fails_the_binding(ca):
+    manifest = _load_manifest()
+    manifest["model"]["eval_temperature"] = 0  # YAML 0, not 0.0
+    manifest["environment"]["splits"]["T_eval"]["size"] = 134.0
+    manifest["genome"]["candidate_set"].pop("cap")
+    issues = ca.check_exp0001_code_binding(manifest, "m")
+    assert sorted({issue.split(" is ")[0] for issue in issues}) == [
+        "m: environment.splits.T_eval.size", "m: genome.candidate_set.cap",
+        "m: model.eval_temperature"]
+
+
+def test_the_locked_primary_statistic_is_the_final_bootstrap(ca):
+    """ADR-0006 D2: the primary line names the final analysis's confidence
+    and resample count."""
+    from evaluation.metrics.final_statistics import (
+        FINAL_BOOTSTRAP_CONFIDENCE,
+        FINAL_BOOTSTRAP_RESAMPLES,
+    )
+    assert ca.LOCKED_PRIMARY_STATISTIC == (
+        f"cluster bootstrap {FINAL_BOOTSTRAP_CONFIDENCE:.0%} CI over tasks, "
+        f"{FINAL_BOOTSTRAP_RESAMPLES // 1000}k resamples")
+    assert FINAL_BOOTSTRAP_RESAMPLES % 1000 == 0
+
+
+def test_only_the_exp0001_manifest_is_bound_to_the_code(ca, monkeypatch, tmp_path):
+    yaml = pytest.importorskip("yaml")
+    manifest = _load_manifest()
+    manifest["evaluation"]["mining_seeds"] = [11, 23, 42]
+    other = {"experiment": {"id": "EXP-0002"}, "evaluation": {"mining_seeds": [1]}}
+    folder = tmp_path / "experiments" / "manifests"
+    folder.mkdir(parents=True)
+    (folder / "EXP-0001-minimal-cig.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (folder / "EXP-0002.yaml").write_text(yaml.safe_dump(other), encoding="utf-8")
+    monkeypatch.setattr(ca, "REPO_ROOT", tmp_path)
+    errors = ca.check_manifests()
+    assert len(errors) == 2 and all(
+        e.startswith("experiments/manifests/EXP-0001-minimal-cig.yaml: evaluation.mining_seeds")
+        for e in errors)
