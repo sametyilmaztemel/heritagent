@@ -635,8 +635,9 @@ def test_the_run_command_says_which_snapshots_its_restore_passed_over(command, t
     out = capsys.readouterr()
     assert f"[restore] snapshot {newest['seq']} is passed over: the blobs of 1 of its" in out.err
     assert (f"restored {vm2} from mirror snapshot {older['seq']}" in out.out
-            and f"passed over the newer snapshot(s) {newest['seq']}, whose work runs again"
-            in out.out)
+            and f"passed over the newer snapshot(s) {newest['seq']}, whose work runs again "
+            f"(on record in the restore record, and in the ledger's restore note once it is "
+            f"appended)" in out.out)
     note = records(vm2, "restore")[0]
     assert note["snapshot_seq"] == older["seq"]
     assert [entry["seq"] for entry in note["passed_over"]] == [newest["seq"]]

@@ -951,7 +951,12 @@ def test_the_run_notebook_says_how_mining_and_a_failing_mirror_meet_a_stop():
     # the pause's threshold is the mirror's own constant (job m builds it)
     failures = cli.MIRROR_FAILURES_BEFORE_PAUSE
     assert f"Drive'a kopya üst üste {failures} kez alınamazsa koşu yeni bölüm başlatmaz" in intro
-    for needed in ("en yeni kayıtlar o zaman yalnızca bu makinededir",
+    # the pause, too, waits for a seed's mining; a good last copy ends the cell cleanly, and
+    # the records are only on the runtime when the last snapshot fails too
+    for needed in ("durur (miner adımı sürüyorsa o tohumun miner adımı bitince)",
+                   "Son kopya alınırsa hücre süre dolmuş gibi temiz biter ve tüm kayıtlar "
+                   "Drive'dadır; son kopya da alınamazsa en yeni kayıtlar o zaman yalnızca bu "
+                   "makinededir",
                    "çalışma zamanını bırakmayın", "force_remount=True",
                    "koşu hücresini (11) yeniden çalıştırın"):
         assert needed in intro, needed

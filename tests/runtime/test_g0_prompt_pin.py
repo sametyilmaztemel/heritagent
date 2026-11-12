@@ -24,8 +24,10 @@ Why these are pinned:
   2026-11-12). Since the pilot's commit, an Action Input holding NaN,
   Infinity, an overflowing number, a lone surrogate escape or nesting
   deeper than 32 levels is a format failure retried inside the step (PR
-  #83); at 492d06b it was a rejected tool call that used a step, or, for
-  the lone surrogate, a command sent to the game. So the sentence before
+  #83); at 492d06b it was a rejected tool call that used a step (an integer
+  of more than 4,300 digits, or nesting of about 500 levels and more,
+  raised an exception out of the loop), or, for the lone surrogate, a
+  command sent to the game. So the sentence before
   holds only for what this file scripts, which has no such reply. The
   pilot's measures, on which ADR-0012's calibration rests, were taken with
   this prompt.

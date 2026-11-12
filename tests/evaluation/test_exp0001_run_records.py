@@ -393,8 +393,11 @@ def test_the_protocol_constants_are_the_manifests(registry):  # noqa: F811
 
 def test_every_item_required_at_run_time_has_its_place(registry):  # noqa: F811
     """The manifest's required_at_run_time list: each label is a field of the
-    run-start record, or a run artifact written later. A label with no place,
-    or a place with nothing in it, fails here."""
+    run-start record, or a run artifact written later. A label with no place
+    fails here, and the six record fields are checked to be filled; the two
+    later artifacts (frozen-candidate-set-artifact, run-log) are only named
+    here and are written by the run (the pipeline's end-to-end tests cover
+    them)."""
     import re
     from evaluation.exp0001 import pipeline
     from evaluation.exp0001.provenance import REQUIRED_AT_RUN_TIME

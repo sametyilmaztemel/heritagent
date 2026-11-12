@@ -277,13 +277,18 @@ class Exp0001Run:
         if run_start.get("schema") != RUN_START_SCHEMA \
                 or (run_start.get("gate") or {}).get("threshold_version") != THRESHOLD_VERSION \
                 or not isinstance(run_start.get("benefit_bank"), Mapping):
-            raise ProvenanceError(f"the run-start record is not a {RUN_START_SCHEMA} record of "
-                                  f"thresholds {THRESHOLD_VERSION} with a benefit bank "
-                                  f"(ADR-0012 D1, D10)")
-        # the record's protocol is this code's: the run reads only the caps from
-        # it (tests run with small caps), so a record naming another value, the
-        # teacher's per-call request among them (ADR-0011 note N1), would be
-        # recorded while the code runs its own
+            raise ProvenanceError(f"the run-start record (schema {run_start.get('schema')!r}) "
+                                  f"is not a {RUN_START_SCHEMA} record of thresholds "
+                                  f"{THRESHOLD_VERSION} with a benefit bank (ADR-0012 D1, D10; "
+                                  f"ADR-0011 note N1)")
+        # the record's protocol is this code's. Compared: the protocol block less
+        # `caps` (the run reads only the caps from it; tests run with small caps)
+        # and `miner.proposals_per_call`, the teacher's per-call request (ADR-0011
+        # note N1); a record naming another value would be recorded while the code
+        # runs its own. The record's other code-derived blocks (generation,
+        # candidate_set, gate, final_statistics, the miner's hashes) are not read
+        # back: a resume through the command line needs the record's commit, so
+        # they cannot differ there.
         recorded = run_start.get("protocol")
         recorded = recorded if isinstance(recorded, Mapping) else {}
         protocol = plain(PROTOCOL)

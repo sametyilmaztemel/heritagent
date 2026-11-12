@@ -595,7 +595,8 @@ def _restore_if_missing(local: Path, mirror_dir: Path | None) -> bool:
     passed = [entry["seq"] for entry in restore_record(local).get("passed_over", [])]
     _out(f"restored {local} from mirror snapshot {doc['seq']} ({len(doc['files'])} files)"
          + (f"; passed over the newer snapshot(s) {', '.join(map(str, passed))}, whose work "
-            f"runs again (on record in the restore note)" if passed else ""))
+            f"runs again (on record in the restore record, and in the ledger's restore note "
+            f"once it is appended)" if passed else ""))
     return True
 
 
@@ -1407,6 +1408,18 @@ def _run_start(args, local: Path, prepared: dict, adapter: VLLMServerAdapter, sp
         run_id=args.run_id, started_at=_now(), environment=environment)
 
 
+# reads of the server's /version before `run` refuses it, and the wait between them: one
+# failed read must not cost the A100 setup, which a refusal in the notebook releases
+VERSION_TRIES = 6
+VERSION_RETRY_SECONDS = 5.0
+_version_wait = time.sleep  # the tests replace it
+
+
+def _known_version(version) -> bool:
+    """A version the run-start record can hold: a non-empty string."""
+    return isinstance(version, str) and bool(version.strip())
+
+
 def cmd_run(args) -> int:
     from evaluation.exp0001 import rehearsal, run_rehearsal
 
@@ -1421,13 +1434,24 @@ def cmd_run(args) -> int:
     _require_recycled_workers(args.workers)
 
     def adapter():
+        # the record is write-once and a resume on another version fails: a version is read
+        # up to VERSION_TRIES times (each a whole `_adapter`, so the adapter carries the
+        # version checked here), and only a run with none of them is refused
         served = _adapter(args, prepared)
+        for _ in range(VERSION_TRIES - 1):
+            if _known_version(served.metadata().backend_version):
+                break
+            _version_wait(VERSION_RETRY_SECONDS)
+            served = _adapter(args, prepared)
         version = served.metadata().backend_version
-        if version is None:  # the record is write-once and a resume on another version fails
-            raise CliError(f"the server's version cannot be read ({args.server_url}/version did "
-                           f"not answer; the server is still starting, or /version failed): "
-                           f"wait and run the cell again. A run records the version it starts "
-                           f"with and resumes only on it (ADR-0008 D4)")
+        if not _known_version(version):
+            raise CliError(f"the server's version could not be read in {VERSION_TRIES} tries "
+                           f"({args.server_url}/version gave none, {VERSION_RETRY_SECONDS:g} s "
+                           f"apart; the server is still starting, or /version failed). In the "
+                           f"notebook this error releases the GPU when AUTO_RELEASE is True, so "
+                           f"start the notebook again; with AUTO_RELEASE = False, wait and run "
+                           f"the cell again. A run records the version it starts with and "
+                           f"resumes only on it (ADR-0008 D4)")
         if version == rehearsal.STAND_IN_VERSION:
             raise CliError(f"{args.server_url} is a rehearsal's stand-in server, not vLLM")
         return served
@@ -1548,11 +1572,16 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
     unmirrored marker). ``stop_after_hours`` counts from the run's start in
     this session, after the restore, the checks and the lock.
 
-    With a mirror the run also pauses once ``MIRROR_FAILURES_BEFORE_PAUSE``
-    snapshots in a row have failed (ADR-0008 D5): no new episode is
-    admitted, the episodes in flight are recorded, and the last snapshot
-    decides the exit (0 when it succeeds, else the marker and 3). The pause
-    is asked only before an admission, not during a seed's teacher calls."""
+    With a mirror the real run (not ``disposable``) also pauses once
+    ``MIRROR_FAILURES_BEFORE_PAUSE`` snapshots in a row have failed
+    (ADR-0008 D5): no new episode is admitted, the episodes in flight are
+    recorded, and the last snapshot decides the exit (0 when it succeeds,
+    else the marker and 3). The pause is asked only before an admission, not
+    during a seed's teacher calls. A rehearsal's records are disposable, so
+    a failing mirror never pauses it (the pause would protect nothing, and
+    its directories cannot be run again): its predicate is installed only
+    for a time limit or an outer ``pause_when``, and a failed last snapshot
+    ends it with 3 and no marker."""
     from evaluation.exp0001.pipeline import Exp0001Run
 
     repo, local = Path(args.repo), Path(args.local_dir)
@@ -1572,9 +1601,10 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
         started = time.monotonic()
         budget = None if stop_after_hours is None else stop_after_hours * 3600
         mirror_failing = [False]  # at the last question: the failing mirror pauses the run
+        watch_mirror = mirror is not None and not disposable  # a rehearsal's are disposable
 
         def pause() -> bool:
-            mirror_failing[0] = mirror is not None and \
+            mirror_failing[0] = watch_mirror and \
                 mirror.failures_in_a_row >= MIRROR_FAILURES_BEFORE_PAUSE
             if mirror_failing[0]:
                 return True
@@ -1591,7 +1621,7 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                                                     args.server_info),
                          on_ledger_append=Progress(mirror, args.progress_every),
                          pause_when=pause if budget is not None or pause_when is not None
-                         or mirror is not None else None,
+                         or watch_mirror else None,
                          lock=lock)
         report, stopped, mirrored, broken = None, False, False, None
         paused_by_mirror = False
@@ -1604,8 +1634,8 @@ def _run(args, *, gpu: dict, prepared: dict, adapter, counter,
                      f"mirror failed in a row (last: {mirror.last_error}); no new episode is "
                      f"admitted and every admitted episode is recorded. The newest records of "
                      f"{local} exist only on this runtime: keep the runtime, mount Google Drive "
-                     f"again (force_remount=True) and run the same command again. The last "
-                     f"snapshot is tried now.")
+                     f"again (force_remount=True) and run the same command again, or `snapshot` "
+                     f"to save the records without resuming. The last snapshot is tried now.")
             else:
                 after = "" if stop_after_hours is None else \
                     f" after {stop_after_hours} h of this session"

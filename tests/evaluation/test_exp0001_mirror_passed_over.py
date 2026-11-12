@@ -72,6 +72,25 @@ def test_a_restore_past_a_hash_failure_records_and_prints_the_manifest(tmp_path,
     assert "[restore] snapshot 3 is not whole (f2.json:" in capsys.readouterr().err
 
 
+def test_a_restore_past_a_torn_manifest_records_and_prints_it(tmp_path, capsys):
+    """The newest manifest was cut short (a write Drive did not finish): it
+    is passed over as not whole, printed, and kept in the restore record and
+    the ledger's restore note."""
+    _, drive, _ = three_snapshots(tmp_path)
+    newest = drive / "snapshot-00000003.json"
+    newest.write_bytes(newest.read_bytes()[:40])
+    vm2 = tmp_path / "vm2"
+    assert restore(drive, vm2)["seq"] == 2
+    why = "its manifest is not a whole snapshot manifest (torn, or gone since listed)"
+    record = json.loads((vm2 / RESTORE_RECORD).read_text())
+    assert record["passed_over"] == [{"seq": 3, "why": why}]
+    note = last_note(vm2)
+    assert note["type"] == "restore" and note["snapshot_seq"] == 2
+    assert note["passed_over"] == record["passed_over"]
+    assert f"[restore] snapshot 3 is passed over: {why}; trying the next older one" in \
+        capsys.readouterr().err
+
+
 def test_every_manifest_passed_over_is_on_record_newest_first(tmp_path):
     _, drive, docs = three_snapshots(tmp_path)
     blob(drive, docs[2], "f2.json").unlink()

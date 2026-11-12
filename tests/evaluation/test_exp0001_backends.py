@@ -87,6 +87,7 @@ def test_the_factory_the_run_builds_gives_the_game_the_protocols_step_limit(tree
     # and the opener cli.py leaves to its default is the real game's
     assert inspect.signature(AlfworldEnvFactory).parameters["opener"].default is open_game
 
+
 def test_drifted_or_unknown_games_fail_closed(tree):
     root, manifest = tree
     factory = alfworld_env_factory(root, manifest, opener=lambda g, **_: Session(g))

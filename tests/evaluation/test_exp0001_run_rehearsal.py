@@ -1174,11 +1174,10 @@ def test_run_refuses_a_stand_in_server(tmp_path, monkeypatch, capsys):
     assert "a rehearsal's stand-in server, not vLLM" in capsys.readouterr().err
 
 
-def test_run_refuses_a_server_whose_version_cannot_be_read_before_any_write(
-        tmp_path, monkeypatch, capsys):
-    """ADR-0008 D4: the run-start record names the server's version and a
-    resume on another fails closed. A version recorded as unknown would make
-    the write-once record refuse every later session whose /version answers."""
+def version_server(tmp_path, monkeypatch, versions: list):
+    """``run`` up to its adapter against a vLLM server that serves the model
+    and whose /version gives ``versions`` in turn (the last one after them);
+    returns the reads and the waits asked for."""
     from evaluation.exp0001.protocol import CONTEXT_WINDOW
     real_run = cli._run
     stub_run(monkeypatch, tmp_path)
@@ -1189,7 +1188,7 @@ def test_run_refuses_a_server_whose_version_cannot_be_read_before_any_write(
     monkeypatch.setattr(cli, "verify_data", lambda *args, **kwargs: {})
     monkeypatch.setattr(cli, "_require_run_disk", lambda workers, local: None)
 
-    class Served:  # a vLLM server that serves the model; only /version does not answer
+    class Served:  # a vLLM server that serves the model; only /version may not answer
         def __init__(self, url, model_id, revision, *, backend_version, **options):
             self.backend_version = backend_version
 
@@ -1202,17 +1201,64 @@ def test_run_refuses_a_server_whose_version_cannot_be_read_before_any_write(
         def metadata(self):
             return SimpleNamespace(backend_version=self.backend_version)
 
+    reads, waits = [], []
+
+    def server_version(url):
+        reads.append(url)
+        return versions[min(len(reads), len(versions)) - 1]
+
+    monkeypatch.setattr(cli, "VLLMServerAdapter", Served)
+    monkeypatch.setattr(cli, "_server_version", server_version)
+    monkeypatch.setattr(cli, "_version_wait", waits.append)
+    return reads, waits
+
+
+@pytest.mark.parametrize("version", [None, "", " ", 3])
+def test_run_refuses_a_server_whose_version_cannot_be_read_before_any_write(
+        tmp_path, monkeypatch, capsys, version):
+    """ADR-0008 D4: the run-start record names the server's version and a
+    resume on another fails closed. A version recorded as unknown (or as an
+    empty or non-string one) would make the write-once record refuse every
+    later session whose /version answers. Six reads, five seconds apart,
+    before the refusal."""
     def no_counter(*args, **kwargs):
         raise AssertionError("the token counter was loaded")
 
-    monkeypatch.setattr(cli, "VLLMServerAdapter", Served)
+    reads, waits = version_server(tmp_path, monkeypatch, [version])
     monkeypatch.setattr(cli, "hf_token_counter", no_counter)
-    assert cli._server_version("http://127.0.0.1:9") is None  # nothing listens there
     argv = run_argv(tmp_path, "--rehearsal-passed", "x", "--server-url", "http://127.0.0.1:9")
     assert cli.main(argv) == 2
     err = capsys.readouterr().err
-    assert "the server's version cannot be read" in err and "run the cell again" in err, err
+    assert len(reads) == cli.VERSION_TRIES == 6
+    assert waits == [cli.VERSION_RETRY_SECONDS] * 5 and cli.VERSION_RETRY_SECONDS == 5
+    assert "the server's version could not be read in 6 tries (http://127.0.0.1:9/version " \
+        "gave none, 5 s apart;" in err, err
+    assert "In the notebook this error releases the GPU when AUTO_RELEASE is True, so start " \
+        "the notebook again; with AUTO_RELEASE = False, wait and run the cell again." in err
+    assert "resumes only on it (ADR-0008 D4)" in err
     assert not (tmp_path / "work").exists()
+
+
+def test_run_takes_a_version_read_on_a_later_try(tmp_path, monkeypatch):
+    """/version gives none twice, then one: the run takes the adapter that
+    carries it, after two waits."""
+    reads, waits = version_server(tmp_path, monkeypatch, [None, None, "0.29.0"])
+    got = []
+
+    def run(args, *, adapter, **kwargs):
+        got.append(adapter())
+        return 0
+
+    monkeypatch.setattr(cli, "_run", run)
+    assert cli.main(run_argv(tmp_path, "--rehearsal-passed", "x")) == 0
+    assert len(reads) == 3 and waits == [cli.VERSION_RETRY_SECONDS] * 2
+    assert got[0].metadata().backend_version == "0.29.0"
+
+
+def test_a_server_that_does_not_answer_gives_no_version():
+    """Nothing listens on port 9: the real read gives no version (the case
+    the tries above stand in for)."""
+    assert cli._server_version("http://127.0.0.1:9") is None
 
 
 def test_rehearsal_check_reads_a_run_record_as_run_does(committed, tmp_path, monkeypatch,

@@ -205,7 +205,7 @@ def build_run_start_record(*, code_commit: str, code_dirty: bool, model: Mapping
                        "mining_temperature": PROTOCOL["mining_temperature"],
                        "stop": list(STOP_SEQUENCES),
                        "episode_max_steps": EPISODE_MAX_STEPS,
-                       # what every request sends besides temperature (ADR-0008 D4,
+                       # the neutral sampling values every request sends (ADR-0008 D4,
                        # ADR-0011 D5)
                        "sampling": dict(NEUTRAL_SAMPLING)},
         "protocol": plain(PROTOCOL),

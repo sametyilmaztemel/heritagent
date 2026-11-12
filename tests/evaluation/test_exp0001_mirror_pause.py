@@ -78,7 +78,7 @@ def command(monkeypatch, tmp_path):
     def run() -> int:
         return cli.main(command_argv("run", local, drive))
 
-    run.Run, run.local, run.mirrors = ThisRun, local, mirrors
+    run.Run, run.local, run.mirrors, run.drive = ThisRun, local, mirrors, drive
     run.unmount = lambda: drive.rename(away)
     run.mount = lambda: away.exists() and away.rename(drive)
     return run
@@ -104,7 +104,12 @@ def test_a_mirror_gone_mid_run_pauses_the_run_and_leaves_the_marker(command, cap
     assert (command.local / cli.UNMIRRORED).exists()
     err = capsys.readouterr().err
     assert "snapshots to the mirror failed in a row" in err
-    assert "exist only on this runtime: keep the runtime, mount Google Drive again" in err
+    # the pause names the mirror's own last error
+    assert mirror.last_error.startswith(f"the mirror {command.drive} cannot be read (")
+    assert f"failed in a row (last: {mirror.last_error}); no new episode is admitted" in err
+    assert "exist only on this runtime: keep the runtime, mount Google Drive again " \
+        "(force_remount=True) and run the same command again, or `snapshot` to save the " \
+        "records without resuming. The last snapshot is tried now." in err
     assert "UNMIRRORED: the last snapshot failed" in err
 
 
@@ -174,3 +179,38 @@ def test_a_snapshot_that_succeeds_resets_the_count_in_a_row(tmp_path):
     (tmp_path / "away").rename(drive)
     assert mirror.snapshot() is not None
     assert (mirror.failures, mirror.failures_in_a_row) == (2, 0)
+
+
+@pytest.mark.parametrize("disposable, outer", [(True, None), (True, lambda: False),
+                                               (False, None)])
+def test_a_failing_mirror_pauses_the_real_run_and_never_a_rehearsal(
+        command, monkeypatch, capsys, disposable, outer):
+    """Through the real ``_run`` with ``disposable`` set as ``rehearse-run``
+    sets it: Drive goes away after the second episode and six or more
+    snapshots fail in a row. A rehearsal goes to its end (its records are
+    disposable, and its directories cannot be run again), with or without
+    an outer ``pause_when``; its failed last snapshot ends it with 3 and no
+    marker. The real run pauses."""
+    real = cli._run
+
+    def as_set(*args, **kwargs):
+        return real(*args, **{**kwargs, "disposable": disposable, "pause_when": outer})
+
+    monkeypatch.setattr(cli, "_run", as_set)
+    command.Run.after = staticmethod(lambda index: index == 1 and command.unmount())
+    assert command() == cli.EXIT_UNMIRRORED
+    run, mirror = command.Run.made[-1], command.mirrors[-1]
+    recorded = records(command.local, "episode")
+    err = capsys.readouterr().err
+    if disposable:
+        assert max(run.in_a_row) >= cli.MIRROR_FAILURES_BEFORE_PAUSE + 1  # six in a row
+        assert len(recorded) == PausingRun.EPISODES
+        assert (run.pause_when is None) == (outer is None)
+        assert not any(run.answers)
+        assert not (command.local / cli.UNMIRRORED).exists()
+        assert "failed in a row" not in err
+        assert "the rehearsal's last snapshot failed" in err
+    else:
+        assert run.answers[-1] is True and len(recorded) < PausingRun.EPISODES
+        assert (command.local / cli.UNMIRRORED).exists()
+        assert "snapshots to the mirror failed in a row" in err
