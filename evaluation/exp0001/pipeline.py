@@ -286,7 +286,7 @@ class Exp0001Run:
         # and `miner.proposals_per_call`, the teacher's per-call request (ADR-0011
         # note N1); a record naming another value would be recorded while the code
         # runs its own. The record's other code-derived blocks (generation,
-        # candidate_set, gate, final_statistics, the miner's hashes) are not read
+        # candidate_set, the gate's thresholds, final_statistics, the miner's hashes) are not read
         # back: a resume through the command line needs the record's commit, so
         # they cannot differ there.
         recorded = run_start.get("protocol")

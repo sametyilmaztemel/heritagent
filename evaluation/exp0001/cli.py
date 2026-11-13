@@ -1449,9 +1449,10 @@ def cmd_run(args) -> int:
                            f"({args.server_url}/version gave none, {VERSION_RETRY_SECONDS:g} s "
                            f"apart; the server is still starting, or /version failed). In the "
                            f"notebook this error releases the GPU when AUTO_RELEASE is True, so "
-                           f"start the notebook again; with AUTO_RELEASE = False, wait and run "
-                           f"the cell again. A run records the version it starts with and "
-                           f"resumes only on it (ADR-0008 D4)")
+                           f"start the notebook again; when the runtime is kept (AUTO_RELEASE = "
+                           f"False, or an UNMIRRORED marker), wait and run the cell again. A run "
+                           f"records the version it starts with and resumes only on it "
+                           f"(ADR-0008 D4)")
         if version == rehearsal.STAND_IN_VERSION:
             raise CliError(f"{args.server_url} is a rehearsal's stand-in server, not vLLM")
         return served

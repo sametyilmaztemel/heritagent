@@ -1234,7 +1234,8 @@ def test_run_refuses_a_server_whose_version_cannot_be_read_before_any_write(
     assert "the server's version could not be read in 6 tries (http://127.0.0.1:9/version " \
         "gave none, 5 s apart;" in err, err
     assert "In the notebook this error releases the GPU when AUTO_RELEASE is True, so start " \
-        "the notebook again; with AUTO_RELEASE = False, wait and run the cell again." in err
+        "the notebook again; when the runtime is kept (AUTO_RELEASE = False, or an UNMIRRORED " \
+        "marker), wait and run the cell again." in err
     assert "resumes only on it (ADR-0008 D4)" in err
     assert not (tmp_path / "work").exists()
 

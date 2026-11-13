@@ -199,7 +199,7 @@ def test_a_failing_mirror_pauses_the_real_run_and_never_a_rehearsal(
     monkeypatch.setattr(cli, "_run", as_set)
     command.Run.after = staticmethod(lambda index: index == 1 and command.unmount())
     assert command() == cli.EXIT_UNMIRRORED
-    run, mirror = command.Run.made[-1], command.mirrors[-1]
+    run = command.Run.made[-1]
     recorded = records(command.local, "episode")
     err = capsys.readouterr().err
     if disposable:
