@@ -78,8 +78,8 @@ BOOTSTRAP_METHOD = "percentile-paired-cluster-bootstrap-exact"
 # research/proposals/ADR-0006-notes-proposal.md, N1
 UNCERTAINTY = ("task clusters only, conditional on the mining seeds {seeds}; seed-to-seed "
                "variability is not resampled")
-# ADR-0006 D4, scoped by ADR-0009 D5 in D5's words; the in-sample reading is proposed for the
-# owner in research/proposals/ADR-0006-notes-proposal.md, N4
+# ADR-0006 D4, scoped by ADR-0009 D5 in D5's words; the in-sample reading is ADR-0006's notes
+# N4 and N5 (owner, 2026-11-13), which leave this label as it is
 REGRESSION_CLAUSE_SCOPE = ("measured on T_reg, the suite the gate's stage 4A used to decide "
                            "which traits arm C keeps (ADR-0009 D5)")
 

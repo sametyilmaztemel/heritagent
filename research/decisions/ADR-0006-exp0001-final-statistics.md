@@ -1,6 +1,6 @@
 # ADR-0006 — EXP-0001 final-evaluation statistics: the open analysis choices are pre-registered
 
-Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explicit answers in chat to eight questions, each on the recommended option; D8 followed the own review of #68). **Codex cross-review requested (SPEC §32).** **Amended by ADR-0009** (owner, 2026-10-15): D2 extends D7 to every arm (each distinct genome is evaluated once and every arm and seed whose genome it is reads its cells), and D5 scopes the H2 regression clause (see D4). Artifacts: `evaluation/metrics/final_statistics.py`, `experiments/manifests/EXP-0001-minimal-cig.yaml` (`evaluation.statistics.final_rule`), `tests/evaluation/test_final_statistics.py` · Origin: issue #13 Phase A ("statistics: paired per-task arm contrasts on T_eval, 10k task-cluster bootstrap, primary H2/H1 rules exactly as preregistered, ≥ 2/3 seed direction requirement, regression contrast, bloat and adaptation-cost secondary outputs"); ADR-0005, which left the H1/H2 bootstrap to #13.
+Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explicit answers in chat to eight questions, each on the recommended option; D8 followed the own review of #68). **Codex cross-review requested (SPEC §32).** **Amended by ADR-0009** (owner, 2026-10-15): D2 extends D7 to every arm (each distinct genome is evaluated once and every arm and seed whose genome it is reads its cells), and D5 scopes the H2 regression clause (see D4). **Notes N4 and N5** (how the H2 regression clause is read) recorded on the owner's decision of 2026-11-13 (explicit answer in chat; at the end of this record). Artifacts: `evaluation/metrics/final_statistics.py`, `experiments/manifests/EXP-0001-minimal-cig.yaml` (`evaluation.statistics.final_rule`), `tests/evaluation/test_final_statistics.py` · Origin: issue #13 Phase A ("statistics: paired per-task arm contrasts on T_eval, 10k task-cluster bootstrap, primary H2/H1 rules exactly as preregistered, ≥ 2/3 seed direction requirement, regression contrast, bloat and adaptation-cost secondary outputs"); ADR-0005, which left the H1/H2 bootstrap to #13.
 
 **Problem.**
 - The locked text fixes the core of the final analysis:
@@ -34,6 +34,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - **D4 Regression rate.** reg(arm) is the fraction of the arm's T_reg tasks it fails. Every T_reg task was solved by G0. The H2 contrast reg(C)−reg(B) is the same under any formula that subtracts a per-task baseline, so this choice fixes reported levels, not the H2 outcome.
   - [corrected after independent verification 2026-10-15] "Solved by G0" means solved in at least one temperature-0.7 lifetime attempt (ADR-0007 E3), not at the evaluation's temperature 0.
   - Scope (ADR-0009 D5): the H2 regression clause is measured on T_reg, the suite the gate's stage 4A already used to decide which traits arm C keeps (paired against G0 since ADR-0009 D1).
+  - (Notes N4 and N5, owner, 2026-11-13: how this clause is read. See "Notes N4 and N5" at the end of this record.)
 - **D5 Incomplete data fail closed.**
   - A primary H1/H2 outcome exists only when every (arm, seed, task) cell on T_eval and T_reg holds exactly one recorded outcome.
   - An episode cut off by infrastructure is not a failure; it must be completed (part of the option the owner chose). A step budget that runs out is a failure, ALFWorld's `won` being false (ADR-0003 D6).
@@ -61,7 +62,7 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - Not decided here; these stay with #13's runner and the Critic:
   - how the T_reg derivation picks its one shared set (D8) (since decided by ADR-0007 E3: among the T_mine tasks G0 solved in at least one lifetime episode of any seed);
   - the 20-task transfer subset for adaptation cost, which has no pool yet (since decided by ADR-0007 E4: the ablation pool);
-  - how the threshold-sensitivity grid (design §5, "report how arm-C composition and T_eval outcomes would change") is reported for compositions that were never run on T_eval.
+  - how the threshold-sensitivity grid (design §5, "report how arm-C composition and T_eval outcomes would change") is reported for compositions that were never run on T_eval (since decided by the owner on 2026-11-13, in the note under ADR-0012 D7: a table derived after the run, which restates the run's outcome where the composition is the run's and reports the others as not identifiable).
 - The output states rule outcomes only. It never calls a result validated (SPEC §32) and makes no causal or inheritance claim (SPEC §34).
 
 **Research implication.**
@@ -75,3 +76,38 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 - The pre-registration's expectations and caps are unchanged. Its immutability clause applies once execution starts, and it has not started.
 - D7 lowers the planned final-evaluation episode count (design §7: "3 arms × (134 + 40 + 20) × 3 mining seeds") by 388 (2 × (134 + 40 + 20)). The hard caps are unchanged.
 - A new module and its tests; one import line in `scripts/ci/smoke_installed.py`; the manifest line; the takeover note. No existing behaviour changes.
+
+## Notes N4 and N5: how the H2 regression clause is read
+The owner accepted these two notes in chat on 2026-11-13 ("32 kabul"), before any EXP-0001 episode. The question was item 32 of the takeover note's §5 as builder-2 put it in chat: notes N4 and N5, accept or reject ("Kabul ya da ret"). They were proposed on 2026-10-16 in `research/proposals/ADR-0006-notes-proposal.md` and keep that file's numbers; its notes N1 to N3 were not put to the owner and stay proposed there. builder-2's Critic cross-review of this section is posted on issue #13.
+
+Neither note changes a threshold, a rule or a computation, and the code is unchanged. The report's `h2.regression_clause.scope` label keeps D4's scope sentence in ADR-0009 D5's words; the reading is here. An H2 regression clause that is not met leaves H2 unsupported, as before.
+
+**N4. The regression clause is in sample (under D4).** D4 says the H2 regression clause is measured on T_reg, the suite that stage 4A already used to decide which traits arm C keeps. It follows that:
+- the clause checks, in sample, the regression that the gate controls;
+- it is not an out-of-sample estimate;
+- it favours C over B by construction.
+
+The third point names the direction of a selection effect: arm C's traits were kept or dropped on these 40 tasks, and arm B's were not. It does not say the clause will be met (N5).
+
+**N5. Detectability under the locked rule (Research implication).** Status M. Computed with the pinned implementation before any data. Where the tasks fall in `task_id` order can change a bound, so each case names how its placements were covered: "every placement" means all of them were computed; otherwise random placements and a search for the extreme ones were computed, and the stated range is what they found, not a proof.
+
+Re-checked by builder-2 on 2026-11-13, before this note was recorded: the three "every placement" cases of the regression clause were recomputed on the pinned index stream and agree (V); 4,000 fresh random placements of each success-clause case fall inside the stated outcomes and ranges (V for those placements; the ranges stay M).
+
+- **The regression clause at n = 40.** Take C failing k fewer T_reg tasks than B, on the same tasks in every seed:
+  - k = 3 (7.5 pp) gives an upper bound of exactly 0 in every placement (all 9,880), so the clause fails;
+  - k = 4 (10 pp) gives −1/40 in every placement (all 91,390), so it passes.
+
+  So the floor is k = 4, and a larger k passes too. On disjoint tasks per seed, k = 1 fails in every placement (all 9,880, upper bound 0), and k = 2 (5 pp) passes in every placement (all 3,838,380, upper bound −1/60).
+- **The expected reduction.** The pre-registered expectation is 3–8 pp (1.2–3.2 tasks). In the same-tasks pattern, all of that range is below the floor.
+- **The success clause at n = 134.** The point estimate is +7.46 pp (5/67) in each case below, above the 5 pp threshold, so the lower bound decides.
+  - 20 wins and 10 losses per seed, on the same tasks in every seed: the clause failed in all of 12,000 random placements (lower bound −1/134 ≈ −0.0075, or 0). A search for extreme placements found lower bounds from −1/67 to +1/134, and at +1/134 the clause passes. So the outcome depends on where those tasks fall in `task_id` order; in a typical placement it fails.
+  - 15 wins and 5 losses on the same tasks: it passed in every placement computed (lower bound 1/134 to 1/67).
+  - On disjoint tasks per seed, both passed in every placement computed: the lower bound ranged from 9/402 to 14/402 (about +0.022 to +0.035) for 20 and 10, and from 14/402 to 17/402 (about +0.035 to +0.042) for 15 and 5.
+
+  The expected central value is +7 pp.
+- **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. Near the success clause's boundary, where the tasks fall in `task_id` order can decide the success clause. Both follow from the pre-registered bootstrap at these sample sizes, and no threshold changes.
+
+**The reading.** A null on the regression clause is read as "below detectability at n = 40", not as evidence against the mechanism. This interprets a future result, which is why it is the owner's decision, taken before any data.
+- A null here means the clause is not met and its interval includes 0. An interval wholly above 0 (C failing more T_reg tasks than B) is not a null, and this reading does not cover it.
+- A null is no evidence for the mechanism either.
+- The reading changes no rule outcome: H2 is supported only when all three of its clauses are met.

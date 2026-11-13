@@ -1,8 +1,8 @@
 # Proposed notes for ADR-0006 — reading the final statistics
 
-Date: 2026-10-16 · Status: **PROPOSED** (builder-2, for the owner's decision). Not part of ADR-0006. ADR-0009 D5 authorizes one note in ADR-0006, the scope of the H2 regression clause, and that note is in ADR-0006 D4. The notes below go beyond D5's text. Builder-2's own review of the ADR-0009 D1/D2/D5 PR found that they had been added to ADR-0006 under D5's label without that basis, so they were moved here. Only the owner's decision moves any of them into ADR-0006.
+Date: 2026-10-16 · Status: **N4 and N5 ACCEPTED by the owner on 2026-11-13** ("32 kabul"; they are now in ADR-0006, "Notes N4 and N5"); **N1 to N3 PROPOSED** (builder-2, for the owner's decision; not part of ADR-0006). ADR-0009 D5 authorizes one note in ADR-0006, the scope of the H2 regression clause, and that note is in ADR-0006 D4. The notes below go beyond D5's text. Builder-2's own review of the ADR-0009 D1/D2/D5 PR found that they had been added to ADR-0006 under D5's label without that basis, so they were moved here. Only the owner's decision moves any of them into ADR-0006.
 
-None of them changes a threshold, a rule or a computation. They state, before any EXP-0001 data, how the pre-registered rule's outcomes are to be read. The code already behaves as they describe. The results record carries plain labels for two of them (N1 and N4), as noted; the interpretive parts are only here.
+None of them changes a threshold, a rule or a computation. They state, before any EXP-0001 data, how the pre-registered rule's outcomes are to be read. The code already behaves as they describe. The results record carries plain labels for two of them (N1 and N4), as noted; the interpretive parts are only here. Since 2026-11-13 the reading of N4 and N5 is in ADR-0006; their text below is kept as it was put to the owner.
 
 ## N1 — The intervals are conditional on the three mining seeds (under D1)
 
@@ -25,6 +25,8 @@ H1 and H2 are each tested at 95 %, as the locked design states them. There is no
 
 ## N4 — The regression clause is in sample (under D4)
 
+*Accepted by the owner on 2026-11-13 and recorded in ADR-0006 ("Notes N4 and N5"). Kept here as proposed.*
+
 ADR-0006 D4 now says the H2 regression clause is measured on T_reg, the suite that stage 4A already used to decide which traits arm C keeps. The proposed addition says what follows from that:
 
 - the clause checks, in sample, the regression that the gate controls;
@@ -34,6 +36,8 @@ ADR-0006 D4 now says the H2 regression clause is measured on T_reg, the suite th
 The record's `scope` label on the clause states only D4's scope, in D5's words; this reading would be added with the note.
 
 ## N5 — Detectability under the locked rule (Research implication)
+
+*Accepted by the owner on 2026-11-13 and recorded in ADR-0006 ("Notes N4 and N5"). Kept here as proposed.*
 
 Status M. Computed with the pinned implementation before any data. Where the tasks fall in `task_id` order can change a bound, so each case names how its placements were covered: "every placement" means all of them were computed; otherwise random placements and a search for the extreme ones were computed, and the stated range is what they found, not a proof.
 
@@ -58,3 +62,5 @@ The proposal reads a null on the regression clause as "below detectability at n 
 - **Accept all.** Builder-2 adds N1–N5 to ADR-0006 as notes under the owner's decision of that date.
 - **Accept some.** Builder-2 adds only the chosen ones.
 - **Reject.** They stay here as a record. The code's record labels (`uncertainty`, `scope`) are descriptions and stay either way, unless the owner says otherwise.
+
+*2026-11-13: the owner accepted N4 and N5 ("32 kabul", to builder-2's question on those two notes). N1 to N3 were not put to him and stay open (takeover note §5, item 32).*
