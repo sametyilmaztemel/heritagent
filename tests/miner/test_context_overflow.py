@@ -72,11 +72,19 @@ class Window(ScriptedAdapter):
         return super().structured_generate(messages, settings, schema)
 
 
+def prompts_in_both_forms(pair):
+    """The pair's teacher prompt in each evidence form, as the miner sends it:
+    with the per-call request (ADR-0011 note N1), not K, and the universe
+    MiningBatch sorts."""
+    return [render_teacher_prompt(evidence_text=render_pair_evidence(pair, form)[0],
+                                  family_universe=tuple(sorted(FAMILIES)),
+                                  proposals_per_call=MiningSettings().proposals_per_call)
+            for form in EVIDENCE_FORMS]
+
+
 def between_the_forms(pair):
     """A limit the short form's prompt fits and the full form's does not."""
-    full, short = (len(render_teacher_prompt(evidence_text=render_pair_evidence(pair, form)[0],
-                                             family_universe=FAMILIES, max_proposals=10))
-                   for form in EVIDENCE_FORMS)
+    full, short = (len(prompt) for prompt in prompts_in_both_forms(pair))
     assert short < full
     return (short + full) // 2
 
@@ -122,6 +130,8 @@ def test_a_prompt_that_fits_only_without_the_lists_is_mined_in_that_form(tmp_pat
                      responses=[{"proposals": [GOLDEN_PROPOSALS[0]]}])
     frozen = miner_with(registry, teacher).mine(batch)
     assert len(teacher.prompts) == 2 and short in teacher.prompts[1]
+    # the limit was measured on the prompts the miner sent
+    assert teacher.prompts == prompts_in_both_forms(pair)
     record = frozen.mining_records[0]
     assert record["evidence_form"] == WITHOUT_ADMISSIBLE_COMMANDS
     assert record["evidence_sha256"] == short_sha

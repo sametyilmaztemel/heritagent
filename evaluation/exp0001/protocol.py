@@ -18,6 +18,9 @@ MINING_TEMPERATURE = 0.7  # manifest model.mining_temperature
 T_REG_SIZE = 40
 T_REG_SEED = 0  # E3
 CANDIDATE_CAP = 10  # manifest genome.candidate_set.cap (K)
+# ADR-0011 note N1 (owner, 2026-11-12): the prompt asks each teacher call for at most 5
+# proposals; K stays the batch cap; the request is not enforced
+TEACHER_PROPOSALS_PER_CALL = 5
 MAX_TOKENS_PER_REQUEST = 512
 MAX_TOTAL_RETRIES = 10
 CONTEXT_WINDOW = 32768  # ADR-0009 D4, kept by ADR-0011 D5 (Qwen3.8-27B's native length is 262,144)
@@ -61,6 +64,7 @@ PROTOCOL = MappingProxyType({
     "benefit_bank": {"file": "EXP-0001-benefit-bank.json", "sha256": LOCKED_BENEFIT_BANK_SHA256,
                      "per_family": 192},
     "candidate_cap": CANDIDATE_CAP,
+    "teacher_proposals_per_call": TEACHER_PROPOSALS_PER_CALL,
     "candidate_ranking": ("miner-estimated-generality", "discovery-order"),
     # one source for the step budget: the loop, the game's own limit and the record
     "budgets": {"max_steps": EPISODE_MAX_STEPS, "max_total_retries": MAX_TOTAL_RETRIES,

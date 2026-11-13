@@ -39,7 +39,7 @@ from evaluation.exp0001.pilot_run import (
     project_exp0001,
     run_pilot,
 )
-from evaluation.exp0001.protocol import CAPS
+from evaluation.exp0001.protocol import CAPS, TEACHER_PROPOSALS_PER_CALL
 from runtime.model_adapters.base import GenerationSettings, ModelMessage, ToolSpec
 from runtime.model_adapters.errors import BackendUnavailableError, ModelResponseError
 from runtime.model_adapters.openai_server import (
@@ -524,6 +524,13 @@ def test_the_pilot_counts_each_pairs_miner_prompt_in_both_forms(tmp_path, regist
     assert miner["full"]["min"] == 40_000 and miner["without_admissible_commands"]["n"] == pairs
     assert miner["pairs_that_fit"] == {"full": 0, "only_without_admissible_commands": pairs,
                                        "neither": 0}
+    # counted as the run's miner sends it: one request line, the per-call
+    # request and not K (ADR-0011 note N1)
+    for prompt in counted:
+        requests = [line for line in prompt.splitlines() if "Return at most" in line]
+        assert len(requests) == 1, requests
+        assert requests[0].startswith(
+            f"Return at most {TEACHER_PROPOSALS_PER_CALL} proposals."), requests
 
 
 def test_a_system_prompt_is_counted_with_the_chat_template():

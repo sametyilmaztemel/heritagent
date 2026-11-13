@@ -43,6 +43,7 @@ from evaluation.exp0001.provenance import (
     ProvenanceError,
     build_run_start_record,
     canonical_sha256,
+    verify_run_start_record,
 )
 from genome.validation.registry import TraitRegistry
 from inheritance.runner import RunnerContractError
@@ -367,6 +368,35 @@ def test_the_generation_settings_are_the_protocols(clean):
     assert all(s.stop == ("\nObservation:",) and s.max_tokens == 512 for s in agent.settings)
     assert {(s.temperature, s.seed) for s in teacher.settings} == {(0.7, seed)
                                                                  for seed in MINING_SEEDS}
+
+
+def test_the_runs_miner_asks_each_call_for_five_and_caps_the_batch_at_ten(tmp_path, splits,
+                                                                          monkeypatch):
+    """ADR-0011 note N1 (owner, 2026-11-12): the run's MiningSettings carry
+    the per-call request (5) and K (10), and the prompt the teacher receives
+    asks for 5. The run stops at its first teacher call."""
+    from evaluation.exp0001 import pipeline
+    from evaluation.exp0001.protocol import CANDIDATE_CAP, TEACHER_PROPOSALS_PER_CALL
+    settings, prompts = [], []
+    real = pipeline.TraitMiner
+
+    def recording(*args, **kwargs):
+        settings.append(kwargs["settings"])
+        return real(*args, **kwargs)
+
+    class OneCall(Teacher):
+        def structured_generate(self, messages, generation, schema):
+            prompts.append(messages[-1].content)
+            raise RuntimeError("the first teacher call")
+
+    monkeypatch.setattr(pipeline, "TraitMiner", recording)
+    with pytest.raises(RuntimeError, match="the first teacher call"):
+        make_run(tmp_path / "run", splits, teacher=OneCall()).run()
+    assert TEACHER_PROPOSALS_PER_CALL == 5 and CANDIDATE_CAP == 10
+    assert [(s.proposals_per_call, s.max_proposals) for s in settings] == [(5, 10)]
+    [prompt] = prompts
+    assert [line for line in prompt.splitlines() if line.startswith("Return at most ")] == [
+        "Return at most 5 proposals. Return ZERO proposals when the"]
 
 
 def report_g0(run_dir):
@@ -1040,7 +1070,13 @@ def test_a_pair_sent_in_both_evidence_forms_is_charged_two_calls():
     (lambda r: r["g0"].update({"genome_id": "G-0000000000000000"}), "another G0"),
     (lambda r: r["splits"].update({"manifest_sha256": "0" * 64}), "another split manifest"),
     # ADR-0012 D1, D10: a record of another schema or threshold version is another run
-    (lambda r: r.update({"schema": "heritagent/exp0001-run-start/0.1"}), "not a heritagent"),
+    (lambda r: r.update({"schema": "heritagent/exp0001-run-start/0.1"}),
+     r"\(schema 'heritagent/exp0001-run-start/0\.1'\) is not a heritagent"),
+    # ADR-0011 note N1: a 0.2 record carries no per-call request; the message names the
+    # record's own schema and both references
+    (lambda r: r.update({"schema": "heritagent/exp0001-run-start/0.2"}),
+     r"\(schema 'heritagent/exp0001-run-start/0\.2'\) is not a "
+     r"heritagent/exp0001-run-start/0\.3 record .*\(ADR-0012 D1, D10; ADR-0011 note N1\)$"),
     (lambda r: r["gate"].update({"threshold_version": "EXP-0001-CIG-M0-v1"}), "not a heritagent"),
     (lambda r: r.pop("benefit_bank"), "with a benefit bank"),
     (lambda r: r["benefit_bank"].update({"bank_sha256": "0" * 64}), "another benefit bank"),
@@ -1057,6 +1093,37 @@ def test_the_run_binds_the_records_identity(tmp_path, splits, change, message):
     # directory is free: the constructor released its lock itself
     make_run(tmp_path / "run", splits).close()
     del failed
+
+
+@pytest.mark.parametrize("change,named", [
+    # ADR-0011 note N1: the record names the per-call request the run sends
+    (lambda r: (r["protocol"].update({"teacher_proposals_per_call": 7}),
+                r["miner"].update({"proposals_per_call": 7})),
+     "protocol.teacher_proposals_per_call, miner.proposals_per_call"),
+    (lambda r: r["miner"].update({"proposals_per_call": 7}), "in miner.proposals_per_call$"),
+    (lambda r: r["protocol"].update({"candidate_cap": 7}), "in protocol.candidate_cap$"),
+    (lambda r: r["protocol"].pop("mining_seeds"), "in protocol.mining_seeds$"),
+    (lambda r: r["protocol"].update({"extra": 1}), "in protocol.extra$"),
+])
+def test_the_run_refuses_a_record_of_another_protocol(tmp_path, splits, change, named):
+    """The run reads only the caps from the record's protocol; a record that
+    names any other value than this code's, re-hashed like a real one, is
+    refused before anything is written."""
+    record = run_start(tmp_path, splits)
+    change(record)
+    record["record_sha256"] = canonical_sha256(
+        {k: v for k, v in record.items() if k != "record_sha256"})
+    verify_run_start_record(record)  # the record itself is consistent
+    with pytest.raises(ProvenanceError, match=named):
+        make_run(tmp_path / "run", splits, record=record)
+    assert not (tmp_path / "run").exists()
+
+
+def test_a_record_with_other_caps_only_is_a_record_of_this_protocol(tmp_path, splits):
+    caps = {**CAPS, "episodes_max": 1}
+    record = run_start(tmp_path, splits, caps)
+    assert record["protocol"]["caps"] != CAPS
+    assert make_run(tmp_path / "run", splits, record=record).run()["episodes"] == 1
 
 
 @pytest.mark.parametrize("name,field", [("model", "revision"), ("model", "backend"),

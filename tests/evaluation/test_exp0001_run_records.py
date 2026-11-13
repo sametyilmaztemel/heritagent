@@ -285,6 +285,11 @@ def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
     assert len(record["miner"]["prompt_sha256"]) == 64 == len(record["miner"]["output_schema_sha256"])
     assert record["candidate_set"] == {"cap": 10, "ranking": ["miner-estimated-generality",
                                                              "discovery-order"]}
+    # ADR-0011 note N1 (owner, 2026-11-12): each teacher call is asked for at most 5
+    # proposals, K = 10 stays the batch cap; both blocks carry the request
+    assert record["miner"]["proposals_per_call"] == 5
+    assert record["protocol"]["teacher_proposals_per_call"] == 5
+    assert record["protocol"]["candidate_cap"] == 10
     assert record["gate"]["threshold_version"] == "EXP-0001-CIG-M0-v2"  # ADR-0012 D10
     bank = load("EXP-0001-benefit-bank.json")
     assert record["benefit_bank"] == {
@@ -296,6 +301,17 @@ def test_the_record_carries_every_frozen_input(registry):  # noqa: F811
     assert record["weights"]["sha256"] == "b" * 64
     assert record["protocol"]["budgets"] == {"max_steps": 50, "max_total_retries": 10,
                                              "max_tokens_per_request": 512}
+
+
+def test_the_neutral_sampling_values_are_the_locked_ones(registry):  # noqa: F811
+    """ADR-0008 D4, ADR-0011 D5. The rehearsals compare each request with the
+    constant itself, so only its literal values pin it; the run-start record
+    names them."""
+    from runtime.model_adapters.openai_server import NEUTRAL_SAMPLING
+    locked = {"top_p": 1.0, "top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0,
+              "presence_penalty": 0.0, "frequency_penalty": 0.0}
+    assert NEUTRAL_SAMPLING == locked
+    assert make_record(registry)["generation"]["sampling"] == locked
 
 
 def test_a_frozen_artifact_is_never_replaced(tmp_path):
@@ -321,9 +337,12 @@ def test_the_keyed_hash_rules_match_the_adr_literally():
         "4dd26dc60550bc68da4f70496be51d08234b6cb5febf8989bec0feaf58512d9a"
 
 
-def test_the_protocol_constants_are_the_manifests():
+def test_the_protocol_constants_are_the_manifests(registry):  # noqa: F811
     """pyyaml is not a test dependency: the locked lines are read with patterns."""
+    import hashlib
     import re
+
+    from genome.validation.identity import _SUPPORTED_SCHEMA_VERSION
     from evaluation.exp0001.protocol import (
         CANDIDATE_CAP,
         LOCKED_BENEFIT_BANK_SHA256,
@@ -347,6 +366,77 @@ def test_the_protocol_constants_are_the_manifests():
     assert load("EXP-0001-splits.json")["manifest_sha256"] == LOCKED_SPLIT_MANIFEST_SHA256
     assert load("EXP-0001-pilot.json")["pilot_sha256"] == LOCKED_PILOT_SHA256
     assert load("EXP-0001-benefit-bank.json")["bank_sha256"] == LOCKED_BENEFIT_BANK_SHA256
+    # genome.schema: the EAG version G0 is written in, the one the identity
+    # contract hashes and the loader validates against
+    genome = re.search(r"^genome:[^\n]*\n((?:  .*\n|\n)+)", text, re.MULTILINE)
+    assert genome, "the genome block is missing"
+    version = re.search(r"^  schema: eag/(\S+)$", genome.group(1), re.MULTILINE).group(1)
+    assert build_g0_seed_genome(registry)["schema_version"] == version \
+        == _SUPPORTED_SCHEMA_VERSION == "0.1"
+    schema = json.loads((MANIFESTS.parents[1] / "genome" / "schema" /
+                         f"eag-{version}.genome.schema.json").read_text(encoding="utf-8"))
+    assert f"/eag/{version}/" in schema["$id"]
+    # run_protocol.lifetime.attempt_seed: each attempt's seed is the sha256 rule
+    # the protocol records, as attempt_sampling_seed computes it
+    lifetime = re.search(r"^  lifetime: \{([^}]*)\}", text, re.MULTILINE)
+    assert lifetime, "run_protocol.lifetime is missing"
+    assert re.search(r"(?:^|, )attempt_seed: ([^,]+)", lifetime.group(1)).group(1) \
+        == "sha256-derived"
+    from evaluation.exp0001.protocol import PROTOCOL
+    assert PROTOCOL["attempt_sampling_seed"] == (
+        "int(sha256('heritagent-attempt|<mining_seed>|<task_id>|<attempt>')[:8], 16) mod 2**31")
+    for mining_seed, task, attempt in ((11, "task-0", 0), (41, "x", 2), (23, "a|b", 1)):
+        key = f"heritagent-attempt|{mining_seed}|{task}|{attempt}".encode("utf-8")
+        assert attempt_sampling_seed(mining_seed, task, attempt) == \
+            int(hashlib.sha256(key).hexdigest()[:8], 16) % 2 ** 31
+
+
+def test_every_item_required_at_run_time_has_its_place(registry):  # noqa: F811
+    """The manifest's required_at_run_time list: each label is a field of the
+    run-start record, or a run artifact written later. A label with no place
+    fails here, and the six record fields are checked to be filled; the two
+    later artifacts (frozen-candidate-set-artifact, run-log) are only named
+    here and are written by the run (the pipeline's end-to-end tests cover
+    them)."""
+    import re
+    from evaluation.exp0001 import pipeline
+    from evaluation.exp0001.provenance import REQUIRED_AT_RUN_TIME
+    from tests.evaluation.test_exp0001_artifacts import MANIFESTS
+    text = (MANIFESTS / "EXP-0001-minimal-cig.yaml").read_text(encoding="utf-8")
+    listed = re.search(r"^\s+required_at_run_time: \[([^\]]+)\]", text, re.MULTILINE).group(1)
+    assert tuple(label.strip() for label in listed.split(",")) == REQUIRED_AT_RUN_TIME
+    record = make_record(registry)
+    assert tuple(record["required_at_run_time"]) == REQUIRED_AT_RUN_TIME
+    in_the_record = {"model-weights-hash": ("weights", "sha256"),
+                     "code-commit": ("code", "commit"),
+                     "split-hashes": ("splits", "manifest_sha256"),
+                     "benefit-bank-hash": ("benefit_bank", "bank_sha256"),
+                     "miner-prompt-hash": ("miner", "prompt_sha256"),
+                     "gate-thresholds": ("gate", "thresholds")}
+    written_by_the_run = {"frozen-candidate-set-artifact": pipeline.CANDIDATES_SCHEMA,  # per seed
+                          "run-log": pipeline.RunLedger}  # ledger.jsonl
+    assert set(in_the_record) | set(written_by_the_run) == set(REQUIRED_AT_RUN_TIME)
+    assert not set(in_the_record) & set(written_by_the_run)
+    for label, (block, key) in in_the_record.items():
+        assert record[block][key], label
+
+
+def test_the_teachers_per_call_request_is_the_one_adr_0011_records():
+    """ADR-0011 note N1 (owner, 2026-11-12) is the locked text that carries
+    the per-call request; the manifest has no line for it (as for the miner's
+    2,048 tokens). Wherever the ADR states the number, it is the constant the
+    run executes, and K stays the manifest's."""
+    import re
+    from evaluation.exp0001.protocol import CANDIDATE_CAP, PROTOCOL, TEACHER_PROPOSALS_PER_CALL
+    from tests.evaluation.test_exp0001_artifacts import ROOT
+    adr = (ROOT / "research" / "decisions" / "ADR-0011-exp0001-qwen3.8-27b.md").read_text(
+        encoding="utf-8")
+    stated = re.findall(r"at most (\d+) proposals per call", adr)
+    assert stated, "ADR-0011 note N1 no longer states the per-call request"
+    assert {int(number) for number in stated} == {TEACHER_PROPOSALS_PER_CALL}
+    assert f'"Return at most {TEACHER_PROPOSALS_PER_CALL} proposals."' in adr
+    assert PROTOCOL["teacher_proposals_per_call"] == TEACHER_PROPOSALS_PER_CALL == 5
+    assert PROTOCOL["candidate_cap"] == CANDIDATE_CAP == 10
 
 
 def test_an_aborted_attempt_is_charged_its_reservation(tmp_path):

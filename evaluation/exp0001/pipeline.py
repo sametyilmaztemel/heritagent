@@ -89,11 +89,14 @@ from evaluation.exp0001.protocol import (
     MINER_MAX_TOKENS,
     MINING_SEEDS,
     MINING_TEMPERATURE,
+    PROTOCOL,
+    TEACHER_PROPOSALS_PER_CALL,
 )
 from evaluation.exp0001.provenance import (
     RUN_START_SCHEMA,
     ProvenanceError,
     freeze_json,
+    plain,
     verify_pre_run_artifacts,
     verify_run_start_record,
 )
@@ -274,9 +277,29 @@ class Exp0001Run:
         if run_start.get("schema") != RUN_START_SCHEMA \
                 or (run_start.get("gate") or {}).get("threshold_version") != THRESHOLD_VERSION \
                 or not isinstance(run_start.get("benefit_bank"), Mapping):
-            raise ProvenanceError(f"the run-start record is not a {RUN_START_SCHEMA} record of "
-                                  f"thresholds {THRESHOLD_VERSION} with a benefit bank "
-                                  f"(ADR-0012 D1, D10)")
+            raise ProvenanceError(f"the run-start record (schema {run_start.get('schema')!r}) "
+                                  f"is not a {RUN_START_SCHEMA} record of thresholds "
+                                  f"{THRESHOLD_VERSION} with a benefit bank (ADR-0012 D1, D10; "
+                                  f"ADR-0011 note N1)")
+        # the record's protocol is this code's. Compared: the protocol block less
+        # `caps` (the run reads only the caps from it; tests run with small caps)
+        # and `miner.proposals_per_call`, the teacher's per-call request (ADR-0011
+        # note N1); a record naming another value would be recorded while the code
+        # runs its own. The record's other code-derived blocks (generation,
+        # candidate_set, the gate's thresholds, final_statistics, the miner's hashes) are not read
+        # back: a resume through the command line needs the record's commit, so
+        # they cannot differ there.
+        recorded = run_start.get("protocol")
+        recorded = recorded if isinstance(recorded, Mapping) else {}
+        protocol = plain(PROTOCOL)
+        differing = [f"protocol.{key}" for key in sorted(set(recorded) | set(protocol))
+                     if key != "caps" and recorded.get(key, ...) != protocol.get(key, ...)]
+        if (run_start.get("miner") or {}).get("proposals_per_call") \
+                != TEACHER_PROPOSALS_PER_CALL:
+            differing.append("miner.proposals_per_call")
+        if differing:
+            raise ProvenanceError(f"the run-start record differs from this code's protocol in "
+                                  f"{', '.join(differing)}")
         # the split, pilot and bank manifests must verify, be the pre-registered
         # ones, and be the ones the record names (ADR-0012 D1)
         verify_pre_run_artifacts(split_manifest, pilot_manifest, benefit_bank,
@@ -368,11 +391,13 @@ class Exp0001Run:
             if not self.ledger.admit_calls(key, MINER_CALLS_PER_PAIR_MAX * len(batch.pairs)):
                 # charged only after the set was frozen: the set was removed by hand
                 raise RunError(f"{key} was charged but its frozen candidate set is missing")
+            # K caps the batch; each call's prompt asks for at most
+            # TEACHER_PROPOSALS_PER_CALL (ADR-0011 note N1)
+            settings = MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
+                                      max_tokens=MINER_MAX_TOKENS, max_proposals=CANDIDATE_CAP,
+                                      proposals_per_call=TEACHER_PROPOSALS_PER_CALL)
             miner = TraitMiner(_Heartbeat(self.teacher, self.ledger.heartbeat), self.registry,
-                               settings=MiningSettings(temperature=MINING_TEMPERATURE, seed=seed,
-                                                       max_tokens=MINER_MAX_TOKENS,
-                                                       max_proposals=CANDIDATE_CAP),
-                               born_generation=0)
+                               settings=settings, born_generation=0)
             mined = miner.mine(batch)
             frozen = freeze_json(path, {
                 "schema": CANDIDATES_SCHEMA, "mining_seed": seed,

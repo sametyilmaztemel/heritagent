@@ -9,6 +9,7 @@ from evaluation.benchmarks.alfworld.splits import (
     collect_games,
 )
 from evaluation.exp0001.backends import (
+    AlfworldEnvFactory,
     BackendError,
     TokenizerCounter,
     alfworld_env_factory,
@@ -59,6 +60,32 @@ def test_a_frozen_game_opens_and_its_session_is_closed(tree):
     assert "Your task is to" in env.start()
     env.close()
     assert Session.closed == 1
+
+
+def test_the_factory_the_run_builds_gives_the_game_the_protocols_step_limit(tree):
+    """The pilot, the rehearsals and the run construct the class directly
+    (cli.py), not through ``alfworld_env_factory``: its own defaults are what
+    the game receives. The game's own limit is the protocol's 50 steps
+    (ADR-0003 D4)."""
+    import inspect
+
+    from evaluation.exp0001.episodes import protocol_budgets
+    from runtime.tool_adapters.alfworld import open_game
+
+    root, manifest = tree
+    opened = []
+
+    def opener(gamefile, **kwargs):
+        opened.append(kwargs)
+        return Session(gamefile)
+
+    factory = AlfworldEnvFactory(root, manifest, opener=opener, extra_games={})
+    game = manifest["pools"]["t_eval"]["games"][0]
+    factory("valid_unseen", game["game_id"]).close()
+    assert opened == [{"max_episode_steps": protocol_budgets().max_steps}]
+    assert protocol_budgets().max_steps == 50
+    # and the opener cli.py leaves to its default is the real game's
+    assert inspect.signature(AlfworldEnvFactory).parameters["opener"].default is open_game
 
 
 def test_drifted_or_unknown_games_fail_closed(tree):
