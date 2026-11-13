@@ -4,7 +4,7 @@
 
 A research framework for **causally-gated assimilation of acquired skills into functional genomes** for evolvable LLM agents, designed to be backbone-agnostic (untested: H4). Full specification: [SPEC.md](SPEC.md) (source document, v0.1).
 
-## Status (2026-11-12) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
+## Status (2026-11-13) — Milestone 0: gate pipeline and EXP-0001 orchestration implemented, EXP-0001 not yet run
 
 Phase 0 (SPEC §40, research grounding, 2026-10-02) is complete: related-work notes in `research/related-work/`, the novelty ledger, and the cross-reviewed ADR-0001 (EAG v0.1 schema) and ADR-0002 (EXP-0001 pre-registered design).
 
@@ -111,4 +111,4 @@ The run notebook's first cell lists four preconditions. Their status (R, the tak
 3. the compute cap decided: done (ADR-0012 D9);
 4. the Critic's clearance: given on 2026-11-12 (builder-2's review workflows; posted on #13 with the commit it covers). A later change to the run path needs its own review.
 
-The two owner decisions to settle before the run were made on 2026-11-12: the G0 prompt's history stays as it is (ADR-0003 note N1), and the teacher is asked for at most 5 proposals per call (ADR-0011 note N1). The second changes the run protocol's hash, and the run rehearsal must be of the run's commit. The other open owner decisions are listed in `research/third-agent/TAKEOVER-2026-10-13.md` §5; items 32 and 42, and item 23 if its rule is to be a field of the report, are choices that cannot be made under the same experiment id once the run has started. Next: the run rehearsal, then the EXP-0001 run.
+The two owner decisions to settle before the run were made on 2026-11-12: the G0 prompt's history stays as it is (ADR-0003 note N1), and the teacher is asked for at most 5 proposals per call (ADR-0011 note N1). The second changes the run protocol's hash, and the run rehearsal must be of the run's commit. On 2026-11-13 the owner decided three more, each recorded before any EXP-0001 episode: a threat line on the missing control arm (the design's §6 item 8), ADR-0006's notes N4 and N5 on how the H2 regression clause is read, and the rule for the threshold-sensitivity grid's T_eval outcomes (a note under ADR-0012 D7: a table derived after the run). None changes the run's code or protocol. The other open owner decisions are listed in `research/third-agent/TAKEOVER-2026-10-13.md` §5. Next: the run rehearsal, then the EXP-0001 run.
