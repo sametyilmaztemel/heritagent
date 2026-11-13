@@ -80,18 +80,20 @@ Date: 2026-10-14 · Status: **ACCEPTED by the owner** (Samet, 2026-10-14, explic
 ## Notes N4 and N5: how the H2 regression clause is read
 The owner accepted these two notes in chat on 2026-11-13 ("32 kabul"), before any EXP-0001 episode. The question was item 32 of the takeover note's §5 as builder-2 put it in chat: notes N4 and N5, accept or reject ("Kabul ya da ret"). They were proposed on 2026-10-16 in `research/proposals/ADR-0006-notes-proposal.md` and keep that file's numbers; its notes N1 to N3 were not put to the owner and stay proposed there. builder-2's Critic cross-review of this section is posted on issue #13.
 
-Neither note changes a threshold, a rule or a computation, and the code is unchanged. The report's `h2.regression_clause.scope` label keeps D4's scope sentence in ADR-0009 D5's words; the reading is here. An H2 regression clause that is not met leaves H2 unsupported, as before.
+*Problem.* D4's scope sentence (ADR-0009 D5) says where the H2 regression clause is measured. What follows from that for reading the clause's outcome stood only in the proposal. A reading chosen after the data would be an analysis choice made late.
+
+*Decision.* The owner accepted N4, N5 and the reading stated after them, in the proposal's words. builder-2 added, when recording them, the sentence after N4's bullets, the re-check line in N5 and the bullets under "The reading"; they bound the accepted text, change none of it, and were reported to the owner with this change. Neither note changes a threshold, a rule or a computation, and the code is unchanged. The report's `h2.regression_clause.scope` label keeps D4's scope sentence in ADR-0009 D5's words; the reading is here. An H2 regression clause that is not met leaves H2 unsupported, as before.
 
 **N4. The regression clause is in sample (under D4).** D4 says the H2 regression clause is measured on T_reg, the suite that stage 4A already used to decide which traits arm C keeps. It follows that:
 - the clause checks, in sample, the regression that the gate controls;
 - it is not an out-of-sample estimate;
 - it favours C over B by construction.
 
-The third point names the direction of a selection effect: arm C's traits were kept or dropped on these 40 tasks, and arm B's were not. It does not say the clause will be met (N5).
+The third point names the direction of a selection effect: every trait arm C keeps passed stage 4A on these 40 tasks (stage 4A removes a candidate that loses 2 or more of them, net, against the seed's cells), and arm B also carries the candidates that failed it or never reached it. It does not say the clause will be met (N5).
 
 **N5. Detectability under the locked rule (Research implication).** Status M. Computed with the pinned implementation before any data. Where the tasks fall in `task_id` order can change a bound, so each case names how its placements were covered: "every placement" means all of them were computed; otherwise random placements and a search for the extreme ones were computed, and the stated range is what they found, not a proof.
 
-Re-checked by builder-2 on 2026-11-13, before this note was recorded: the three "every placement" cases of the regression clause were recomputed on the pinned index stream and agree (V); 4,000 fresh random placements of each success-clause case fall inside the stated outcomes and ranges (V for those placements; the ranges stay M).
+Re-checked by builder-2 on 2026-11-13, before this note was recorded, at `d4a84de` with the index stream of `inheritance.bootstrap.paired_cluster_bootstrap` (seed 0, 10,000 resamples): all four "every placement" cases of the regression clause were recomputed on the pinned index stream and agree (V; three enumerations, since k = 1 on disjoint tasks is the same 9,880 placements as k = 3 on the same tasks); 4,000 fresh random placements of each success-clause case fall inside the stated outcomes and ranges (V for those placements; the ranges stay M). "Disjoint tasks per seed" was taken as: no task moves in more than one seed. A search during the cross-review of this note found one placement of the 15-and-5 disjoint case with a lower bound of 13/402, below the 14/402 stated here; the clause passes there too (V, that placement).
 
 - **The regression clause at n = 40.** Take C failing k fewer T_reg tasks than B, on the same tasks in every seed:
   - k = 3 (7.5 pp) gives an upper bound of exactly 0 in every placement (all 9,880), so the clause fails;
@@ -108,6 +110,15 @@ Re-checked by builder-2 on 2026-11-13, before this note was recorded: the three 
 - **What follows.** An outcome that matches the expectations can fail H2 when the same tasks move in every seed. Near the success clause's boundary, where the tasks fall in `task_id` order can decide the success clause. Both follow from the pre-registered bootstrap at these sample sizes, and no threshold changes.
 
 **The reading.** A null on the regression clause is read as "below detectability at n = 40", not as evidence against the mechanism. This interprets a future result, which is why it is the owner's decision, taken before any data.
-- A null here means the clause is not met and its interval includes 0. An interval wholly above 0 (C failing more T_reg tasks than B) is not a null, and this reading does not cover it.
+- The case N5 computes is the one the reading plainly covers: C failed fewer T_reg tasks than B (the point estimate is below 0), and the interval does not exclude 0 (its upper bound is 0 or above; a bound equal to 0 does not exclude 0, as in the rule outcomes above).
+- The proposal did not define "a null", and one case was not put to the owner: a point estimate of 0 or above whose interval includes 0. N5 computes nothing for it. Whether the reading covers it is the owner's to decide before the final evaluation's outcomes are seen (takeover note §5, item 32). Until then the post-run review reports such an outcome as it is, without this reading.
+- An interval wholly above 0 (C failing more T_reg tasks than B) is not a null.
+- In a seed where arm C's genome is arm B's (the seed has no candidate, or the gate promoted every one), the two arms read the same cells and their difference is exactly 0 (D7), whatever the sample size.
 - A null is no evidence for the mechanism either.
 - The reading changes no rule outcome: H2 is supported only when all three of its clauses are met.
+
+*Reason.* The reading is fixed before any data, so it cannot be fitted to an outcome. N5 shows what the clause can detect at n = 40 under the locked rule, and N4 why a met clause is not an out-of-sample result.
+
+*Research implication.* H2's rule and its outcome are unchanged. What the notes fix is how the post-run review describes the regression clause: a met clause as an in-sample check, and a null, as far as the reading above covers it, as below detectability. No novelty or causal claim.
+
+*Compatibility.* No code, manifest or report change. `research/proposals/ADR-0006-notes-proposal.md` marks N4 and N5 as accepted and keeps their text as proposed.
